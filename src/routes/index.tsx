@@ -1,9 +1,14 @@
+import {createFileRoute, Link} from '@tanstack/react-router'
 import {ReactElement, useState} from "react";
-import reactLogo from "./assets/react.svg";
+import reactLogo from "src/assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import classes from "./index.module.css";
 
-function App(): ReactElement {
+export const Route = createFileRoute('/')({
+  component: Index,
+})
+
+function Index(): ReactElement {
   const [greetMsg, setGreetMsg] = useState("");
   const [name, setName] = useState("");
 
@@ -13,24 +18,26 @@ function App(): ReactElement {
   }
 
   return (
-    <main className="container">
+    <main className={classes.container}>
       <h1>Welcome to Tauri + React</h1>
 
-      <div className="row">
+      <div className={classes.row}>
         <a href="https://vite.dev" target="_blank" rel="noreferrer noopener">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
+          <img src="/vite.svg" className={`${classes.logo} ${classes.vite}`} alt="Vite logo" />
         </a>
         <a href="https://tauri.app" target="_blank" rel="noreferrer noopener">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
+          <img src="/tauri.svg" className={`${classes.logo} ${classes.tauri}`} alt="Tauri logo" />
         </a>
         <a href="https://react.dev" target="_blank" rel="noreferrer noopener">
-          <img src={reactLogo} className="logo react" alt="React logo" />
+          <img src={reactLogo} className={`${classes.logo} ${classes.react}`} alt="React logo" />
         </a>
       </div>
       <p>Click on the Tauri, Vite, and React logos to learn more.</p>
 
+      <Link to="/about">About</Link>
+
       <form
-        className="row"
+        className={classes.form}
         onSubmit={(e) => {
           e.preventDefault();
           void greet();
@@ -47,5 +54,3 @@ function App(): ReactElement {
     </main>
   );
 }
-
-export default App;

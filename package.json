@@ -12,15 +12,18 @@
     "lint": "eslint --cache --fix"
   },
   "dependencies": {
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "@tanstack/react-router": "^1.133.27",
+    "@tanstack/react-router-devtools": "^1.133.27",
     "@tauri-apps/api": "^2.9.0",
-    "@tauri-apps/plugin-opener": "^2.5.0"
+    "@tauri-apps/plugin-opener": "^2.5.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@eslint-react/eslint-plugin": "^2.2.3",
     "@eslint/create-config": "^1.10.0",
     "@eslint/js": "^9.38.0",
+    "@tanstack/router-plugin": "^1.133.27",
     "@tauri-apps/cli": "^2.9.1",
     "@types/node": "^24.9.1",
     "@types/react": "^19.2.2",
@@ -31,6 +34,7 @@
     "husky": "^9.1.7",
     "jiti": "^2.6.1",
     "lint-staged": "^16.2.6",
+    "sass-embedded": "^1.93.2",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.46.2",
     "vite": "^7.1.12"
