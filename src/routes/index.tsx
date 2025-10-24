@@ -1,8 +1,9 @@
 import {createFileRoute, Link} from '@tanstack/react-router'
 import {ReactElement, useState} from "react";
-import reactLogo from "src/assets/react.svg";
+import reactLogo from "@/assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
-import classes from "./index.module.css";
+import classes from "./index.module.scss";
+import {Button} from "@/components/ui/button.tsx";
 
 export const Route = createFileRoute('/')({
   component: Index,
@@ -48,7 +49,7 @@ function Index(): ReactElement {
           onChange={(e) => { setName(e.currentTarget.value); }}
           placeholder="Enter a name..."
         />
-        <button type="submit">Greet</button>
+        <Button type="submit">Greet</Button>
       </form>
       <p>{greetMsg}</p>
     </main>

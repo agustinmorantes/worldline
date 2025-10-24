@@ -14,6 +14,7 @@ dist-ssr
 
 # Cache files
 .eslintcache
+.tanstack
 
 # Editor directories and files
 .vscode/*
