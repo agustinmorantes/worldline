@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Restore cached dirs
+      id: ci-cache-restore
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          node_modules
+          dist
+          src-tauri/target
+        key: ci-cache-${{ runner.os }}
+    
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@v1
+      
+    - run: bun install
+    - run: bun run ci
+
+    - name: Save cache
+      id: ci-cache-save
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          node_modules
+          dist
+          src-tauri/target
+        key: ${{ steps.ci-cache-restore.outputs.cache-primary-key }}
