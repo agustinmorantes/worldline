@@ -1,12 +1,15 @@
 name: Publish
 
 on:
-  push:
-    tags:
-      - v**
+  workflow_run:
+    workflows:
+      - "CI"
+    types:
+      - completed
 
 jobs:
   publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v') }}
     permissions: 
       contents: write
     strategy:
