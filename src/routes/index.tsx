@@ -4,6 +4,7 @@ import reactLogo from "@/assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
 import classes from "./index.module.scss";
 import {Button} from "@/components/ui/button.tsx";
+import {Input} from "@/components/ui/input.tsx";
 
 export const Route = createFileRoute('/')({
   component: Index,
@@ -44,9 +45,9 @@ function Index(): ReactElement {
           void greet();
         }}
       >
-        <input
+        <Input
           id="greet-input"
-          onChange={(e) => { setName(e.currentTarget.value); }}
+          onChange={(e) => { setName(e.currentTarget.value)}}
           placeholder="Enter a name..."
         />
         <Button type="submit">Greet</Button>

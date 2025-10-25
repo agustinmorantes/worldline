@@ -5,6 +5,9 @@ import tseslint from "typescript-eslint";
 
 export default defineConfig([
   {
+    ignores: ["node_modules/**", "dist/**", "build/**", "src-tauri/**", ".idea/**" ],
+  },
+  {
     files: ["**/*.ts", "**/*.tsx"],
 
     // Extend the strictest rule sets available:

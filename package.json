@@ -9,11 +9,13 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "prepare": "bun run .husky/install.mts",
-    "lint": "eslint --cache --fix",
-    "check": "tsc --noEmit"
+    "check": "eslint --cache --fix && tsc --noEmit",
+    "lint": "lint-staged",
+    "ci": "eslint --cache --fix && tsc --noEmit"
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@radix-ui/react-menubar": "^1.1.16",
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tailwindcss/vite": "^4.1.16",
