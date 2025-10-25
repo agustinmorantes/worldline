@@ -13,6 +13,20 @@ jobs:
     steps:
     - uses: actions/checkout@v5
 
+    - name: Install and cache APT pkg deps
+      uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+      with:
+        packages: |
+          libwebkit2gtk-4.1-dev
+          build-essential
+          curl
+          wget
+          file
+          libxdo-dev
+          libssl-dev
+          libayatana-appindicator3-dev
+          librsvg2-dev
+
     - name: Restore cached dirs
       id: ci-cache-restore
       uses: actions/cache/restore@v4
