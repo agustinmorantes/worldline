@@ -11,7 +11,7 @@
     "prepare": "bun run .husky/install.mts",
     "check": "eslint --cache --fix && tsc --noEmit",
     "lint": "lint-staged",
-    "ci": "eslint --cache --fix && tsc --noEmit"
+    "ci": "eslint --fix && tsc --noEmit && cd src-tauri && cargo clippy"
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.16",
