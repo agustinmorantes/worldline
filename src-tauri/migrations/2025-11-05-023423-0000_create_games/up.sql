@@ -1,0 +1,6 @@
+CREATE TABLE `games`(
+	`id` INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	`title` TEXT NOT NULL UNIQUE
+);
+
+CREATE UNIQUE INDEX `idx_games_title` ON `games`(`title`);
