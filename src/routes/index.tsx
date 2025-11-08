@@ -1,58 +1,61 @@
-import {createFileRoute, Link} from '@tanstack/react-router'
-import {ReactElement, useState} from "react";
-import reactLogo from "@/assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import classes from "./index.module.scss";
+import {createFileRoute, Link} from "@tanstack/react-router";
+import {ReactElement, useEffect, useState} from "react";
+import {Game} from "@/models/game.ts";
+import {getGames} from "@/api/games.ts";
 import {Button} from "@/components/ui/button.tsx";
-import {Input} from "@/components/ui/input.tsx";
+import {PlusIcon} from "@heroicons/react/24/solid";
+import {TrashIcon} from "@heroicons/react/24/outline";
 
-export const Route = createFileRoute('/')({
-  component: Index,
+export const Route = createFileRoute("/")({
+  component: GameDashboard
 })
 
-function Index(): ReactElement {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet(): Promise<void> {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
-
+function GameDashboard(): ReactElement {
+  const [games, setGames] = useState<Game[]|undefined>(undefined);
+  
+  useEffect(() =>  {
+    getGames()
+      .then(setGames)
+      .catch(console.error);
+  }, [setGames])
+  
+  const handleDelete = async (game: Game) => {
+    try {
+      await game.delete();
+      // Update UI by removing the deleted game from the state
+      setGames(prevGames => prevGames?.filter(g => g !== game));
+    } catch (error) {
+      console.error("Failed to delete game:", error);
+    }
+  };
+  
   return (
-    <main className={classes.container}>
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className={classes.row}>
-        <a href="https://vite.dev" target="_blank" rel="noreferrer noopener">
-          <img src="/vite.svg" className={`${classes.logo} ${classes.vite}`} alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank" rel="noreferrer noopener">
-          <img src="/tauri.svg" className={`${classes.logo} ${classes.tauri}`} alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank" rel="noreferrer noopener">
-          <img src={reactLogo} className={`${classes.logo} ${classes.react}`} alt="React logo" />
-        </a>
+    <main className="flex flex-col p-8 gap-4">
+      <div className="flex flex-col border rounded overflow-clip">
+        <div className="flex flex-row justify-between items-center p-4">
+          <h1 className="text-lg">Games</h1>
+          <Link to="/game/new">
+            <Button size="icon">
+              <PlusIcon />
+            </Button>
+          </Link>
+        </div>
+        { games?.map(game => game.id === undefined ? undefined : (
+          <Link to="/game/$gameId" params={{gameId: game.id.toString()}} key={game.id}>
+            <div className="flex justify-between items-center py-2 px-4 border-y">
+              <span>{game.title}</span>
+              <Button variant="outline" size="icon" className="text-red-500" 
+                      onClick={e => {
+                        e.preventDefault()
+                        void handleDelete(game)
+                      }}
+              >
+                <TrashIcon />
+              </Button>
+            </div>
+          </Link>
+        ))}
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <Link to="/about">About</Link>
-
-      <form
-        className={classes.form}
-        onSubmit={(e) => {
-          e.preventDefault();
-          void greet();
-        }}
-      >
-        <Input
-          id="greet-input"
-          onChange={(e) => { setName(e.currentTarget.value)}}
-          placeholder="Enter a name..."
-        />
-        <Button type="submit">Greet</Button>
-      </form>
-      <p>{greetMsg}</p>
     </main>
-  );
+  )
 }

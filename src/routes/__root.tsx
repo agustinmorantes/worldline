@@ -3,6 +3,7 @@ import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 import {ReactElement} from "react";
 import {ThemeProvider} from "@/components/theme-provider.tsx";
 import {Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarSeparator, MenubarShortcut, MenubarTrigger} from '@/components/ui/menubar';
+import {Toaster} from "sonner";
 
 const RootLayout = (): ReactElement => (
   <>
@@ -26,6 +27,7 @@ const RootLayout = (): ReactElement => (
       </div>
       <div className="grow overflow-auto flex flex-col items-stretch">
         <Outlet />
+        <Toaster theme="dark" position="top-right"/>
       </div>
     </ThemeProvider>
     { import.meta.env.VITE_DEBUG !== undefined &&
