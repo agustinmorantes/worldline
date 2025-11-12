@@ -2,7 +2,7 @@
 use crate::DbPool;
 use diesel::prelude::*;
 
-pub fn get_tracked_dirs(db: &DbPool) -> Vec<TrackedDir> {
+pub fn get_tracked_dirs(db: DbPool) -> Vec<TrackedDir> {
     let conn = &mut db
         .get()
         .expect("Error getting db connection");
