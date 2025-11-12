@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use crate::commands::add_handlers;
 use anyhow::Context;
 use diesel::r2d2::{ConnectionManager, Pool};
@@ -10,6 +11,7 @@ pub mod commands;
 pub mod models;
 pub mod schema;
 pub mod detection;
+pub mod persistence;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,6 +33,11 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .app_local_data_dir()
         .context("failed to get app data directory")?;
     std::fs::create_dir_all(&data_dir).context("failed to create data directory ")?;
+
+    let working_base = data_dir.join("repository");
+    app.manage(Globals {
+        working_base,
+    });
 
     let db_path = data_dir.join("database.db");
     println!("db path: {}", db_path.display());
@@ -62,8 +69,8 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     notif_app.emit("change-detected", game_id)
                         .ok();
                 }
-                detection::Notification::VersionCreated { game_id, version_id } => {
-                    notif_app.emit("version-created", (game_id, version_id))
+                detection::Notification::VersionCreated { game_id, version_number } => {
+                    notif_app.emit("version-created", (game_id, version_number))
                         .ok();
                 }
                 detection::Notification::Error(err) => {
@@ -80,3 +87,8 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 type DbPool = Arc<Pool<ConnectionManager<SqliteConnection>>>;
+
+#[derive(Clone, Debug)]
+pub struct Globals {
+    working_base: PathBuf,
+}

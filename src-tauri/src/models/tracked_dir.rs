@@ -1,22 +1,6 @@
-use diesel::prelude::*;
+﻿use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
-
-#[derive(Queryable, Selectable, Identifiable, Serialize, Clone, PartialEq, Debug)]
-#[diesel(table_name = crate::schema::games)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub struct Game {
-    pub id: i32,
-    pub title: String,
-}
-
-#[derive(
-    Queryable, Insertable, Identifiable, AsChangeset, Deserialize, Clone, PartialEq, Debug,
-)]
-#[diesel(table_name = crate::schema::games)]
-pub struct GameForm<'a> {
-    pub id: Option<i32>,
-    pub title: &'a str,
-}
+use crate::models::Game;
 
 #[derive(Queryable, Selectable, Identifiable, Associations, Serialize, Clone, PartialEq, Debug)]
 #[diesel(belongs_to(Game))]
@@ -39,8 +23,8 @@ pub struct TrackedDirForm<'a> {
 }
 
 #[derive(Serialize, Clone, PartialEq, Debug)]
-pub struct FullGame {
+pub struct FullTrackedDir {
     #[serde(flatten)]
+    pub tracked_dir: TrackedDir,
     pub game: Game,
-    pub tracked_dirs: Vec<TrackedDir>,
 }

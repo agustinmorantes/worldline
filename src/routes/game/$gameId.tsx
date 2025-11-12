@@ -9,6 +9,8 @@ import {Button} from "@/components/ui/button.tsx";
 import {PlusIcon} from "@heroicons/react/24/solid";
 import {TrashIcon} from "@heroicons/react/24/outline";
 import * as React from "react";
+import {Version} from "@/models/version.ts";
+import {listen} from "@tauri-apps/api/event";
 
 export const Route = createFileRoute('/game/$gameId')({
   component: GameDetail,
@@ -29,6 +31,24 @@ function GameDetail() {
     getGame(id)
       .then(game => { setGame(game); })
       .catch(console.error)
+    
+    // Update state after version creation
+    const unlisten = listen<number[]>("version-created", event => {
+      const gameId = event.payload[0];
+      // const versionId = event.payload[1];
+      
+      if(gameId !== id) return;
+
+      getGame(id)
+        .then(game => { setGame(game); })
+        .catch(console.error)
+    })
+    
+    return () => {
+      unlisten
+        .then(unlistenFn => { unlistenFn() })
+        .catch(console.error)
+    }
   }, [gameId])
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -70,6 +90,13 @@ function GameDetail() {
     updatedGame.tracked_dirs = game.tracked_dirs?.filter(d => d.path !== dir);
     setGame(updatedGame); 
   }
+  
+  function handleRestore(v: Version) {
+    v.restore()
+      .then(() => getGame(id))
+      .then(game => { setGame(game); })
+      .catch(console.error)
+  }
 
   return (
     <main className="flex flex-col gap-4 p-8">
@@ -110,6 +137,25 @@ function GameDetail() {
           </Button>
         </div>
       </form>
+
+      <div className="flex flex-col border rounded overflow-clip">
+        <div className="flex flex-row justify-between items-center p-4">
+          <h1 className="text-lg">Versions</h1>
+        </div>
+        { game?.versions?.map(v => v.id === undefined ? undefined : (
+          <div key={v.id} className="flex justify-between items-center py-2 px-4 border-y">
+            <span>{v.created_at?.toLocaleString()}</span>
+            <Button variant="outline"
+                    onClick={e => {
+                      e.preventDefault()
+                      handleRestore(v)
+                    }}
+            >
+              Restore
+            </Button>
+          </div>
+        ))}
+      </div>
     </main>
   )
 }
