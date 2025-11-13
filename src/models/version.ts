@@ -1,5 +1,5 @@
 import {z} from "zod";
-import {restoreVersion} from "@/api/restore.ts";
+import {tagVersion,restoreVersion} from "@/api/versions.ts";
 
 export const VersionSchema = z.object({
   id: z.number().optional().nullable(),
@@ -36,7 +36,13 @@ export class Version {
     return version;
   }
   
-  restore(): Promise<void> {
-    return restoreVersion(this.id);
+  async restore(): Promise<void> {
+    if(this.id === undefined) return;
+    await restoreVersion(this.id);
+  }
+  
+  async save(): Promise<void> {
+    if(this.id === undefined) return;
+    await tagVersion(this.id, this.tag);
   }
 }

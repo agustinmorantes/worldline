@@ -1,5 +1,6 @@
 import {Game} from "@/models/game.ts";
 import {invoke} from "@tauri-apps/api/core";
+import {InstallScannerItem, InstallScannerItemSchema} from "@/models/install_scanner_item.ts";
 
 export async function getGames(): Promise<Game[]> {
   const response = await invoke("get_games");
@@ -26,4 +27,10 @@ export async function saveGame(game: Game): Promise<Game> {
 export async function deleteGame(id?: number): Promise<void> {
   if(id === undefined) return;
   await invoke("delete_game", {id});
+}
+
+export async function scanInstalled(): Promise<InstallScannerItem[]> {
+  const res = await invoke("scan_installed");
+  if(!Array.isArray(res)) throw new Error("Invalid response")
+  return res.map(e => InstallScannerItemSchema.parse(e))
 }

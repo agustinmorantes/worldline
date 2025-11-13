@@ -5,6 +5,7 @@ import {getGames} from "@/api/games.ts";
 import {Button} from "@/components/ui/button.tsx";
 import {PlusIcon} from "@heroicons/react/24/solid";
 import {TrashIcon} from "@heroicons/react/24/outline";
+import {mockIconPath} from "@/lib/utils.ts";
 
 export const Route = createFileRoute("/")({
   component: GameDashboard
@@ -34,16 +35,34 @@ function GameDashboard(): ReactElement {
       <div className="flex flex-col border rounded overflow-clip">
         <div className="flex flex-row justify-between items-center p-4">
           <h1 className="text-lg">Games</h1>
-          <Link to="/game/new">
-            <Button size="icon">
-              <PlusIcon />
-            </Button>
-          </Link>
+          <div className="flex gap-2">
+            <Link to="/import">
+              <Button>
+                Import
+              </Button>
+            </Link>
+            
+            <Link to="/game/new">
+              <Button size="icon">
+                <PlusIcon />
+              </Button>
+            </Link>
+          </div>
         </div>
         { games?.map(game => game.id === undefined ? undefined : (
           <Link to="/game/$gameId" params={{gameId: game.id.toString()}} key={game.id}>
             <div className="flex justify-between items-center py-2 px-4 border-y">
-              <span>{game.title}</span>
+              <div className="flex gap-4 items-center">
+                <img
+                  src={mockIconPath(game.title)}
+                  onError={e => { e.currentTarget.classList.add("invisible"); }}
+                  className="rounded"
+                  alt=""
+                  width="32px"
+                  height="32px"
+                />
+                <span>{game.title}</span>
+              </div>
               <Button variant="outline" size="icon" className="text-red-500" 
                       onClick={e => {
                         e.preventDefault()

@@ -6,12 +6,14 @@ use diesel::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use std::sync::Arc;
 use tauri::{App, Emitter, Manager};
+use crate::install_scanner::scan_installed;
 
 pub mod commands;
 pub mod models;
 pub mod schema;
 pub mod detection;
 pub mod persistence;
+pub mod install_scanner;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -80,6 +82,8 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    scan_installed();
 
     Ok(())
 }
