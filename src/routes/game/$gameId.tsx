@@ -1,16 +1,16 @@
-import {createFileRoute, useRouter} from '@tanstack/react-router'
+import {createFileRoute, Link, useRouter} from '@tanstack/react-router'
+import * as React from "react";
 import {useEffect, useState} from "react";
 import {Game} from "@/models/game.ts";
 import {getGame} from "@/api/games.ts";
 import {open} from "@tauri-apps/plugin-dialog";
-import {Label} from "@/components/ui/label.tsx";
 import {Input} from "@/components/ui/input.tsx";
 import {Button} from "@/components/ui/button.tsx";
-import {PlusIcon} from "@heroicons/react/24/solid";
-import {TrashIcon} from "@heroicons/react/24/outline";
-import * as React from "react";
+import {ArrowLeftIcon, PlusIcon} from "@heroicons/react/24/solid";
+import {ClockIcon, TrashIcon} from "@heroicons/react/24/outline";
 import {Version} from "@/models/version.ts";
 import {listen} from "@tauri-apps/api/event";
+import {mockIconPath, timeAgo} from "@/lib/utils.ts";
 
 export const Route = createFileRoute('/game/$gameId')({
   component: GameDetail,
@@ -98,14 +98,40 @@ function GameDetail() {
       .catch(console.error)
   }
 
-  return (
+  async function handleTagBlur(v: Version, value: string) {
+    if(game === undefined) return;
+
+    v.tag = value.trim();
+
+    try {
+      await v.save();
+      setGame(game);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return !game ? null : (
     <main className="flex flex-col gap-4 p-8">
+      <Link to="/" className="flex gap-2 items-center mb-1 -mt-2">
+        <ArrowLeftIcon className="size-5" />
+        Go back
+      </Link>
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        <div className="flex flex-col gap-3">
-          <Label htmlFor="title">Title</Label>
-          <Input id="title" name="title" value={game?.title ?? ""}
+        <div className="flex gap-4 items-center p-2">
+          <img
+            src={`/${mockIconPath(game.title)}`}
+            onError={e => { e.currentTarget.classList.add("invisible"); }}
+            className="rounded-lg"
+            alt=""
+            width="64px"
+            height="64px"
+            />
+          <Input id="title" name="title" value={game.title}
+                 className="!text-lg"
                  onChange={(e) => { 
-                    if(game === undefined) return;
                     const updatedGame = Object.assign(new Game(e.target.value), game);
                     updatedGame.title = e.target.value;
                     setGame(updatedGame);
@@ -119,7 +145,7 @@ function GameDetail() {
               <PlusIcon />
             </Button>
           </div>
-          { game?.tracked_dirs?.map(dir => (
+          { game.tracked_dirs?.map(dir => (
             <div key={dir.path} className="flex justify-between items-center py-2 px-4 border-y">
               <span>{dir.path}</span>
               <Button variant="outline" type="button" size="icon" onClick={() => { deleteDir(dir.path); }}>
@@ -142,9 +168,17 @@ function GameDetail() {
         <div className="flex flex-row justify-between items-center p-4">
           <h1 className="text-lg">Versions</h1>
         </div>
-        { game?.versions?.map(v => v.id === undefined ? undefined : (
-          <div key={v.id} className="flex justify-between items-center py-2 px-4 border-y">
-            <span>{v.created_at?.toLocaleString()}</span>
+        { game.versions?.map(v => v.id === undefined ? undefined : (
+          <div key={v.id} className="flex justify-between items-center py-2 px-4 gap-4 border-y">
+            <div className="flex gap-1 items-center">
+              <ClockIcon className="size-5"/>
+              
+              <span className="text-nowrap text-sm min-w-25">{v.created_at ? timeAgo(v.created_at) : ""}</span>
+            </div>
+            <Input autoComplete="off"
+                   placeholder={`Version ${v.version_number.toString()}`}
+                   defaultValue={v.tag ?? ""} 
+                   onBlur={(e) => void handleTagBlur(v, e.target.value)} />
             <Button variant="outline"
                     onClick={e => {
                       e.preventDefault()

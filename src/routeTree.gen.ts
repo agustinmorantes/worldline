@@ -9,12 +9,18 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as ImportRouteImport } from './routes/import'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ExampleIndexRouteImport } from './routes/example/index'
 import { Route as AboutIndexRouteImport } from './routes/about/index'
 import { Route as GameNewRouteImport } from './routes/game/new'
 import { Route as GameGameIdRouteImport } from './routes/game/$gameId'
 
+const ImportRoute = ImportRouteImport.update({
+  id: '/import',
+  path: '/import',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -43,6 +49,7 @@ const GameGameIdRoute = GameGameIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/import': typeof ImportRoute
   '/game/$gameId': typeof GameGameIdRoute
   '/game/new': typeof GameNewRoute
   '/about': typeof AboutIndexRoute
@@ -50,6 +57,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/import': typeof ImportRoute
   '/game/$gameId': typeof GameGameIdRoute
   '/game/new': typeof GameNewRoute
   '/about': typeof AboutIndexRoute
@@ -58,6 +66,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/import': typeof ImportRoute
   '/game/$gameId': typeof GameGameIdRoute
   '/game/new': typeof GameNewRoute
   '/about/': typeof AboutIndexRoute
@@ -65,14 +74,28 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/game/$gameId' | '/game/new' | '/about' | '/example'
+  fullPaths:
+    | '/'
+    | '/import'
+    | '/game/$gameId'
+    | '/game/new'
+    | '/about'
+    | '/example'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/game/$gameId' | '/game/new' | '/about' | '/example'
-  id: '__root__' | '/' | '/game/$gameId' | '/game/new' | '/about/' | '/example/'
+  to: '/' | '/import' | '/game/$gameId' | '/game/new' | '/about' | '/example'
+  id:
+    | '__root__'
+    | '/'
+    | '/import'
+    | '/game/$gameId'
+    | '/game/new'
+    | '/about/'
+    | '/example/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ImportRoute: typeof ImportRoute
   GameGameIdRoute: typeof GameGameIdRoute
   GameNewRoute: typeof GameNewRoute
   AboutIndexRoute: typeof AboutIndexRoute
@@ -81,6 +104,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/import': {
+      id: '/import'
+      path: '/import'
+      fullPath: '/import'
+      preLoaderRoute: typeof ImportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -121,6 +151,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ImportRoute: ImportRoute,
   GameGameIdRoute: GameGameIdRoute,
   GameNewRoute: GameNewRoute,
   AboutIndexRoute: AboutIndexRoute,

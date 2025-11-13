@@ -1,9 +1,9 @@
 use crate::detection::CommandSender;
 use crate::models::*;
-use crate::{detection, persistence, DbPool, Globals};
+use crate::{detection, install_scanner, persistence, DbPool, Globals};
 use anyhow::Result;
 use tauri::{generate_handler, State};
-
+use crate::install_scanner::InstallScannerItem;
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 #[tauri::command]
@@ -54,12 +54,32 @@ fn restore_version(
     ).map_err(|e| format!("{:?}", e))
 }
 
+#[tauri::command]
+fn tag_version(
+    id: i32,
+    tag: String,
+    db: State<DbPool>,
+) -> Result<Version, String> {
+    persistence::versions::tag_version(
+        id,
+        tag,
+        db.inner().clone(),
+    ).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn scan_installed() -> Vec<InstallScannerItem> {
+    install_scanner::scan_installed()
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
         get_game,
         save_game,
         delete_game,
-        restore_version
+        restore_version,
+        tag_version,
+        scan_installed,
     ])
 }

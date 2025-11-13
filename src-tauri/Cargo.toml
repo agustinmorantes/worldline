@@ -1,6 +1,6 @@
 [package]
 name = "savegame-timeline"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -47,3 +47,4 @@ notify = { version = "8.2.0", features = ["serde"] }
 notify-debouncer-full = { version = "0.6.0", features = ["serde"] }
 walkdir = "2.5.0"
 fs_extra = "1.3.0"
+shellexpand = { version = "3.1.1", features = ["path"] }

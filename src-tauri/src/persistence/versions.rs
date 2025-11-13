@@ -63,7 +63,7 @@ pub fn get_version(version_id: i32, db: DbPool) -> Result<FullVersion> {
         .first(conn)
         .context("Error fetching version")?;
 
-    let game: crate::models::Game = games_dsl::games
+    let game: Game = games_dsl::games
         .filter(games_dsl::id.eq(version.game_id))
         .select(Game::as_select())
         .first(conn)
@@ -73,4 +73,20 @@ pub fn get_version(version_id: i32, db: DbPool) -> Result<FullVersion> {
         version,
         game,
     })
+}
+
+pub fn tag_version(version_id: i32, tag: String, db: DbPool) -> Result<Version> {
+    use crate::schema::versions::dsl as versions_dsl;
+
+    let conn = &mut db
+        .get()
+        .context("Error getting db connection")?;
+
+    let updated_version: Version = diesel::update(versions_dsl::versions.filter(versions_dsl::id.eq(version_id)))
+        .set(versions_dsl::tag.eq(tag))
+        .returning(Version::as_returning())
+        .get_result(conn)
+        .context("Error tagging version")?;
+
+    Ok(updated_version)
 }

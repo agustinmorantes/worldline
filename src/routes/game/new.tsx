@@ -56,7 +56,7 @@ function NewGame(): ReactElement {
   
   return (
     <main className="flex flex-col gap-4 p-8">
-      <h1>New Game</h1>
+      <h1 className="text-xl">New Game</h1>
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
         <div className="flex flex-col gap-3">
           <Label htmlFor="title">Title</Label>
