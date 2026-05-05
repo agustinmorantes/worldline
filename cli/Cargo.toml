@@ -1,0 +1,17 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+savegame-timeline-core = { path = "../timeline-core" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+diesel = { version = "2", features = ["sqlite", "r2d2"] }
+diesel_migrations = "2"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"

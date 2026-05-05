@@ -33,8 +33,8 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          node_modules
-          dist
+          gui/node_modules
+          gui/dist
         key: ci-cache-${{ runner.os }}
     
     - name: Setup Bun
@@ -44,17 +44,16 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
     - name: Rust cache
       uses: swatinem/rust-cache@v2
-      with:
-        workspaces: './src-tauri -> target'
       
-    - run: bun install
-    - run: bun run ci
+    - run: cd gui && bun install
+    - run: cd gui && bun run ci
+    - run: cargo test --workspace
 
     - name: Save cache
       id: ci-cache-save
       uses: actions/cache/save@v4
       with:
         path: |
-          node_modules
-          dist
+          gui/node_modules
+          gui/dist
         key: ${{ steps.ci-cache-restore.outputs.cache-primary-key }}

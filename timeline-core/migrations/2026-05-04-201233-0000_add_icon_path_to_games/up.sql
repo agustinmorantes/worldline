@@ -1,0 +1,1 @@
+ALTER TABLE games ADD COLUMN icon_path TEXT;

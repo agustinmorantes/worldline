@@ -1,0 +1,20 @@
+[package]
+name = "savegame-timeline-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+diesel = { version = "2", features = ["sqlite", "returning_clauses_for_sqlite_3_35", "chrono", "r2d2"] }
+diesel_migrations = "2"
+fs_extra = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "ico", "webp"] }
+notify-debouncer-full = "0.3"
+serde = { version = "1", features = ["derive"] }
+shellexpand = "3"
+libsqlite3-sys = { version = "0.35", features = ["bundled"] }
+
+[dev-dependencies]
+mockall = "0.13"
+tempfile = "3"

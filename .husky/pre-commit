@@ -1,1 +1,2 @@
-npm run ci
+cd gui && bun run ci
+cd .. && cargo test --workspace

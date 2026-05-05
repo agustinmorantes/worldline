@@ -46,8 +46,8 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          node_modules
-          dist
+          gui/node_modules
+          gui/dist
         key: ci-cache-${{ runner.os }}
     
     - name: Setup Bun
@@ -57,10 +57,8 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
     - name: Rust cache
       uses: swatinem/rust-cache@v2
-      with:
-        workspaces: './src-tauri -> target'
       
-    - run: bun install
+    - run: cd gui && bun install
 
     - uses: tauri-apps/tauri-action@v0
       env:
@@ -71,13 +69,24 @@ jobs:
         releaseBody: 'See the assets to download this version and install.'
         releaseDraft: true
         prerelease: false
+        projectPath: './gui'
         args: ${{ matrix.args }}
+
+    - name: Build CLI (Windows only)
+      if: matrix.platform == 'windows-latest'
+      run: cargo build --release -p cli
+
+    - name: Upload CLI to release (Windows only)
+      if: matrix.platform == 'windows-latest'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release upload ${{ github.event.workflow_run.head_branch }} target/release/cli.exe --clobber
 
     - name: Save cache
       id: ci-cache-save
       uses: actions/cache/save@v4
       with:
         path: |
-          node_modules
-          dist
+          gui/node_modules
+          gui/dist
         key: ${{ steps.ci-cache-restore.outputs.cache-primary-key }}
