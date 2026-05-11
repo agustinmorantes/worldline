@@ -3,10 +3,10 @@ use crate::detection::{Command, CommandReceiver, CommandSender, Notification, No
 use crate::models::FullGame;
 use crate::persistence::{GameRepository, VersionRepository};
 use notify_debouncer_full::notify::{RecursiveMode, Watcher};
-use notify_debouncer_full::{new_debouncer, DebounceEventResult};
+use notify_debouncer_full::{DebounceEventResult, new_debouncer};
 use std::path::Path;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 pub struct WatcherContext<'a> {
@@ -26,12 +26,14 @@ pub fn watch(mut ctx: WatcherContext) {
     let mut debouncer = new_debouncer(
         Duration::from_secs_f32(ctx.new_version_seconds),
         None,
-        fs_tx
-    ).expect("couldn't create watcher");
+        fs_tx,
+    )
+    .expect("couldn't create watcher");
 
     for game in &ctx.games {
         for dir in &game.tracked_dirs {
-            let res = debouncer.watcher()
+            let res = debouncer
+                .watcher()
                 .watch(Path::new(&dir.path), RecursiveMode::Recursive)
                 .map_err(|err| print!("Error watching '{}': {}", dir.path, err));
 
@@ -89,7 +91,8 @@ pub fn watch(mut ctx: WatcherContext) {
                 Command::ReregisterGames(new_dirs) => {
                     for game in &ctx.games {
                         for dir in &game.tracked_dirs {
-                            debouncer.watcher()
+                            debouncer
+                                .watcher()
                                 .unwatch(Path::new(&dir.path))
                                 .map_err(|err| println!("Error unwatching '{}': {}", dir.path, err))
                                 .ok();
@@ -100,7 +103,8 @@ pub fn watch(mut ctx: WatcherContext) {
 
                     for game in &ctx.games {
                         for dir in &game.tracked_dirs {
-                            let res = debouncer.watcher()
+                            let res = debouncer
+                                .watcher()
                                 .watch(Path::new(&dir.path), RecursiveMode::Recursive)
                                 .map_err(|err| println!("Error watching '{}': {}", dir.path, err));
 
@@ -116,12 +120,19 @@ pub fn watch(mut ctx: WatcherContext) {
                     if paused {
                         continue;
                     }
-                    
-                    match fs_event_handler.run(event, ctx.notification_tx.clone(), &ctx.games, ctx.working_base) {
+
+                    match fs_event_handler.run(
+                        event,
+                        ctx.notification_tx.clone(),
+                        &ctx.games,
+                        ctx.working_base,
+                    ) {
                         Ok(_) => {}
                         Err(err) => {
-                            match ctx.notification_tx
-                                .send(Notification::Error(format!("FS event handler error: {}", err))) {
+                            match ctx.notification_tx.send(Notification::Error(format!(
+                                "FS event handler error: {}",
+                                err
+                            ))) {
                                 Ok(_) => {}
                                 Err(_) => break,
                             }
@@ -129,8 +140,10 @@ pub fn watch(mut ctx: WatcherContext) {
                     }
                 }
                 Err(err) => {
-                    match ctx.notification_tx
-                        .send(Notification::Error(format!("Watcher error: {:?}", err))) {
+                    match ctx
+                        .notification_tx
+                        .send(Notification::Error(format!("Watcher error: {:?}", err)))
+                    {
                         Ok(_) => {}
                         Err(_) => break,
                     }

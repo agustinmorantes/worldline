@@ -14,7 +14,20 @@ notify-debouncer-full = "0.3"
 serde = { version = "1", features = ["derive"] }
 shellexpand = "3"
 libsqlite3-sys = { version = "0.35", features = ["bundled"] }
+ureq = { version = "2.9", features = ["tls"] }
+serde_yaml_ng = "0.9"
+serde_json = "1.0"
+dirs = "5.0"
+keyvalues-parser = "0.2"
+glob = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[build-dependencies]
+ureq = { version = "2.9", features = ["tls"] }
 
 [dev-dependencies]
 mockall = "0.13"
 tempfile = "3"
+

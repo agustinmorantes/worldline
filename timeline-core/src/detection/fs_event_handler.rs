@@ -1,11 +1,11 @@
+use crate::detection::{Notification, NotificationSender};
+use crate::models::{FullGame, FullVersion, TrackedDir};
+use crate::persistence::{GameRepository, VersionRepository};
+use anyhow::{Context, Result};
+use notify_debouncer_full::DebouncedEvent;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::detection::{Notification, NotificationSender};
-use anyhow::{Context, Result};
-use notify_debouncer_full::DebouncedEvent;
-use crate::models::{FullGame, FullVersion, TrackedDir};
-use crate::persistence::{GameRepository, VersionRepository};
 use std::sync::Arc;
 
 pub struct FsEventHandler {
@@ -20,7 +20,11 @@ impl FsEventHandler {
         games_repo: Arc<dyn GameRepository>,
         versions_repo: Arc<dyn VersionRepository>,
     ) -> Self {
-        Self { working_base, games_repo, versions_repo }
+        Self {
+            working_base,
+            games_repo,
+            versions_repo,
+        }
     }
 
     pub fn run(
@@ -30,12 +34,14 @@ impl FsEventHandler {
         games: &[FullGame],
         working_base: &Path,
     ) -> Result<()> {
-        let dirs = games.iter()
+        let dirs = games
+            .iter()
             .flat_map(|game| game.tracked_dirs.iter())
             .cloned()
             .collect::<Vec<TrackedDir>>();
 
-        let first_scan_dirs = games.iter()
+        let first_scan_dirs = games
+            .iter()
             .flat_map(|game| game.tracked_dirs.iter().map(move |dir| (game, dir)))
             .filter(|(game, dir)| {
                 let working_dir_path = &working_base
@@ -54,8 +60,6 @@ impl FsEventHandler {
         let mut modified_dirs: HashSet<i32> = HashSet::new();
         let mut modified_games: HashSet<i32> = HashSet::new();
 
-        let ignored_extensions = ["log", "tmp", "bak", "txt"];
-
         for ev in events {
             println!("event detected: {:?}", ev);
 
@@ -65,10 +69,10 @@ impl FsEventHandler {
 
             // Find which tracked directories were affected by this event
             for path in &ev.paths {
-                // Ignore files with specific extensions
-                if let Some(ext) = path.extension().and_then(|s| s.to_str())
-                    && ignored_extensions.contains(&ext.to_lowercase().as_str()) {
-                        continue;
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && crate::fs_utils::is_excluded_file(name)
+                {
+                    continue;
                 }
 
                 for dir in &dirs {
@@ -84,11 +88,13 @@ impl FsEventHandler {
         // This ensures that new changes go into the new version directory
         let mut new_versions: HashSet<i32> = HashSet::new();
         for game_id in &modified_games {
-            let game = games.iter()
+            let game = games
+                .iter()
                 .find(|g| g.game.id == *game_id)
                 .context("failed to find modified game")?;
 
-            if let Some(version) = self.handle_new_version(game)
+            if let Some(version) = self
+                .handle_new_version(game)
                 .context("failed to handle new version")?
             {
                 new_versions.insert(*game_id);
@@ -96,7 +102,7 @@ impl FsEventHandler {
                 // Send notification about new version
                 notif_tx.send(Notification::VersionCreated {
                     game_id: *game_id,
-                    version_number: version.version.version_number
+                    version_number: version.version.version_number,
                 })?;
             }
         }
@@ -109,7 +115,8 @@ impl FsEventHandler {
         };
 
         // Now copy all modified tracked directories into the correct version
-        let dirs_to_sync: Vec<&TrackedDir> = dirs.iter()
+        let dirs_to_sync: Vec<&TrackedDir> = dirs
+            .iter()
             .filter(|dir| modified_dirs.contains(&dir.id))
             .collect();
 
@@ -120,23 +127,20 @@ impl FsEventHandler {
 
         // Send change detected notifications
         for game_id in &modified_games {
-            notif_tx.send(Notification::ChangeDetected {
-                game_id: *game_id,
-            })?;
+            notif_tx.send(Notification::ChangeDetected { game_id: *game_id })?;
         }
 
         Ok(())
     }
 
     fn sync_tracked_dir(&self, dir: &TrackedDir, games: &[FullGame]) -> Result<()> {
-        let Some(game) = games.iter()
-            .find(|g| g.game.id == dir.game_id)
-        else {
+        let Some(game) = games.iter().find(|g| g.game.id == dir.game_id) else {
             return Ok(());
         };
 
         let source_path = Path::new(&dir.path);
-        let working_dir_path = &self.working_base
+        let working_dir_path = &self
+            .working_base
             .join(game.game.id.to_string())
             .join(game.game.active_version_id.unwrap_or(1).to_string())
             .join(dir.id.to_string());
@@ -148,58 +152,53 @@ impl FsEventHandler {
 
         // Ensure parent directory exists
         if let Some(parent) = working_dir_path.parent()
-            && !parent.exists() {
-                fs::create_dir_all(parent)?;
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent)?;
         }
 
-        // Copy the entire directory
-        let mut options = fs_extra::dir::CopyOptions::new();
-        options.copy_inside = true;
-        options.overwrite = true;
-        fs_extra::dir::copy(source_path, working_dir_path, &options)?;
+        crate::fs_utils::copy_dir_filtered(source_path, working_dir_path)?;
 
         Ok(())
     }
 
     fn handle_rescan(&self, dirs: &[TrackedDir], games: &[FullGame]) -> Result<()> {
         for dir in dirs {
-            let Some(game) = games.iter()
-                .find(|g| g.game.id == dir.game_id)
-            else {
+            let Some(game) = games.iter().find(|g| g.game.id == dir.game_id) else {
                 continue;
             };
 
             let path = Path::new(&dir.path);
-            let working_dir_path = &self.working_base
+            let working_dir_path = &self
+                .working_base
                 .join(game.game.id.to_string())
                 .join(game.game.active_version_id.unwrap_or(1).to_string())
                 .join(dir.id.to_string());
 
             if working_dir_path.exists() {
                 fs::remove_dir_all(working_dir_path)?;
-            }
-            else if !working_dir_path.parent().unwrap().exists() {
+            } else if !working_dir_path.parent().unwrap().exists() {
                 fs::create_dir_all(working_dir_path.parent().unwrap())?;
             }
 
-            let mut options = fs_extra::dir::CopyOptions::new();
-            options.copy_inside = true;
-            options.overwrite = true;
-            fs_extra::dir::copy(path, working_dir_path, &options)?;
+            crate::fs_utils::copy_dir_filtered(path, working_dir_path)?;
         }
 
         Ok(())
     }
 
     fn reload_games(&self, _old_games: &[FullGame]) -> Result<Vec<FullGame>> {
-        self.games_repo.get_games()
+        self.games_repo
+            .get_games()
             .context("failed to reload games from database")
     }
 
     fn handle_new_version(&self, game: &FullGame) -> Result<Option<FullVersion>> {
         println!("Creating new game version");
 
-        let version = self.versions_repo.create_version(game.game.id)
+        let version = self
+            .versions_repo
+            .create_version(game.game.id)
             .context("failed to create new version")?;
 
         println!("Created new version with id: {}", version.version.id);
@@ -214,36 +213,38 @@ mod tests {
     use crate::models::{Game, Version};
     use crate::persistence::{MockGameRepository, MockVersionRepository};
     use chrono::Utc;
-    use std::sync::mpsc;
     use notify_debouncer_full::notify::Event;
+    use std::sync::mpsc;
     use tempfile::tempdir;
-    
+
     #[test]
     fn test_handling_new_version_with_delay() {
         let mut games_repo = MockGameRepository::new();
         let mut versions_repo = MockVersionRepository::new();
 
-        versions_repo.expect_create_version()
+        versions_repo
+            .expect_create_version()
             .times(1)
-            .returning(|game_id| Ok(FullVersion {
-                version: Version {
-                    id: 1,
-                    game_id,
-                    version_number: 2,
-                    tag: None,
-                    created_at: Utc::now().naive_utc(),
-                    parent_id: Some(1),
-                },
-                game: Game {
-                    id: game_id,
-                    title: "Test Game".to_string(),
-                    active_version_id: Some(2),
-                    icon_path: None,
-                }
-            }));
-            
-        games_repo.expect_get_games()
-            .returning(|| Ok(vec![]));
+            .returning(|game_id| {
+                Ok(FullVersion {
+                    version: Version {
+                        id: 1,
+                        game_id,
+                        version_number: 2,
+                        tag: None,
+                        created_at: Utc::now().naive_utc(),
+                        parent_id: Some(1),
+                    },
+                    game: Game {
+                        id: game_id,
+                        title: "Test Game".to_string(),
+                        active_version_id: Some(2),
+                        icon_path: None,
+                    },
+                })
+            });
+
+        games_repo.expect_get_games().returning(|| Ok(vec![]));
 
         let working_base = tempdir().unwrap();
         let source_dir = tempdir().unwrap();
@@ -283,20 +284,25 @@ mod tests {
 
         let mut event = Event::new(notify_debouncer_full::notify::EventKind::Any);
         event = event.add_path(source_dir.path().join("save.dat"));
-        
+
         let events = vec![DebouncedEvent {
             event,
             time: std::time::Instant::now(),
         }];
 
-        handler.run(events, notif_tx, &[game], working_base.path()).unwrap();
+        handler
+            .run(events, notif_tx, &[game], working_base.path())
+            .unwrap();
 
         let mut received_version = false;
         let mut received_change = false;
 
         while let Ok(msg) = notif_rx.try_recv() {
             match msg {
-                Notification::VersionCreated { game_id, version_number } => {
+                Notification::VersionCreated {
+                    game_id,
+                    version_number,
+                } => {
                     assert_eq!(game_id, 1);
                     assert_eq!(version_number, 2);
                     received_version = true;
@@ -309,8 +315,14 @@ mod tests {
             }
         }
 
-        assert!(received_version, "Did not receive VersionCreated notification");
-        assert!(received_change, "Did not receive ChangeDetected notification");
+        assert!(
+            received_version,
+            "Did not receive VersionCreated notification"
+        );
+        assert!(
+            received_change,
+            "Did not receive ChangeDetected notification"
+        );
     }
 
     #[test]
@@ -320,27 +332,29 @@ mod tests {
         let mut games_repo = MockGameRepository::new();
         let mut versions_repo = MockVersionRepository::new();
 
-        versions_repo.expect_create_version()
+        versions_repo
+            .expect_create_version()
             .times(1)
-            .returning(|game_id| Ok(FullVersion {
-                version: Version {
-                    id: 2,
-                    game_id,
-                    version_number: 2,
-                    tag: None,
-                    created_at: Utc::now().naive_utc(),
-                    parent_id: Some(1),
-                },
-                game: Game {
-                    id: game_id,
-                    title: "Test Game".to_string(),
-                    active_version_id: Some(2),
-                    icon_path: None,
-                }
-            }));
+            .returning(|game_id| {
+                Ok(FullVersion {
+                    version: Version {
+                        id: 2,
+                        game_id,
+                        version_number: 2,
+                        tag: None,
+                        created_at: Utc::now().naive_utc(),
+                        parent_id: Some(1),
+                    },
+                    game: Game {
+                        id: game_id,
+                        title: "Test Game".to_string(),
+                        active_version_id: Some(2),
+                        icon_path: None,
+                    },
+                })
+            });
 
-        games_repo.expect_get_games()
-            .returning(|| Ok(vec![]));
+        games_repo.expect_get_games().returning(|| Ok(vec![]));
 
         let working_base = tempdir().unwrap();
         let source_dir = tempdir().unwrap();
@@ -385,14 +399,19 @@ mod tests {
             time: std::time::Instant::now(),
         }];
 
-        handler.run(events, notif_tx, &[game], working_base.path()).unwrap();
+        handler
+            .run(events, notif_tx, &[game], working_base.path())
+            .unwrap();
 
         let mut received_version = false;
         let mut received_change = false;
 
         while let Ok(msg) = notif_rx.try_recv() {
             match msg {
-                Notification::VersionCreated { game_id, version_number } => {
+                Notification::VersionCreated {
+                    game_id,
+                    version_number,
+                } => {
                     assert_eq!(game_id, 1);
                     assert_eq!(version_number, 2);
                     received_version = true;
@@ -405,8 +424,14 @@ mod tests {
             }
         }
 
-        assert!(received_version, "Did not receive VersionCreated notification");
-        assert!(received_change, "Did not receive ChangeDetected notification");
+        assert!(
+            received_version,
+            "Did not receive VersionCreated notification"
+        );
+        assert!(
+            received_change,
+            "Did not receive ChangeDetected notification"
+        );
     }
 
     #[test]
@@ -415,27 +440,29 @@ mod tests {
         let mut games_repo = MockGameRepository::new();
         let mut versions_repo = MockVersionRepository::new();
 
-        versions_repo.expect_create_version()
+        versions_repo
+            .expect_create_version()
             .times(1)
-            .returning(|game_id| Ok(FullVersion {
-                version: Version {
-                    id: 2,
-                    game_id,
-                    version_number: 2,
-                    tag: None,
-                    created_at: Utc::now().naive_utc(),
-                    parent_id: Some(1),
-                },
-                game: Game {
-                    id: game_id,
-                    title: "Test Game".to_string(),
-                    active_version_id: Some(2),
-                    icon_path: None,
-                }
-            }));
+            .returning(|game_id| {
+                Ok(FullVersion {
+                    version: Version {
+                        id: 2,
+                        game_id,
+                        version_number: 2,
+                        tag: None,
+                        created_at: Utc::now().naive_utc(),
+                        parent_id: Some(1),
+                    },
+                    game: Game {
+                        id: game_id,
+                        title: "Test Game".to_string(),
+                        active_version_id: Some(2),
+                        icon_path: None,
+                    },
+                })
+            });
 
-        games_repo.expect_get_games()
-            .returning(|| Ok(vec![]));
+        games_repo.expect_get_games().returning(|| Ok(vec![]));
 
         let working_base = tempdir().unwrap();
         let source_dir = tempdir().unwrap();
@@ -468,7 +495,10 @@ mod tests {
         let make_event = |filename: &str| {
             let mut e = Event::new(notify_debouncer_full::notify::EventKind::Any);
             e = e.add_path(source_dir.path().join(filename));
-            DebouncedEvent { event: e, time: std::time::Instant::now() }
+            DebouncedEvent {
+                event: e,
+                time: std::time::Instant::now(),
+            }
         };
 
         let events = vec![
@@ -477,7 +507,9 @@ mod tests {
             make_event("save3.dat"),
         ];
 
-        handler.run(events, notif_tx, &[game], working_base.path()).unwrap();
+        handler
+            .run(events, notif_tx, &[game], working_base.path())
+            .unwrap();
 
         let mut version_count = 0;
         let mut received_change = false;
@@ -490,7 +522,10 @@ mod tests {
             }
         }
 
-        assert_eq!(version_count, 1, "Expected exactly 1 version for a batch of events");
+        assert_eq!(
+            version_count, 1,
+            "Expected exactly 1 version for a batch of events"
+        );
         assert!(received_change);
     }
 }

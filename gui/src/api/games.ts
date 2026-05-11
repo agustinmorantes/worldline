@@ -1,6 +1,7 @@
 import {Game, FullGame} from "@/models/game.ts";
 import {invoke} from "@tauri-apps/api/core";
 import {InstallScannerItem, InstallScannerItemSchema} from "@/models/install_scanner_item.ts";
+import {z} from "zod";
 
 export async function getGames(): Promise<FullGame[]> {
   const response = await invoke("get_games");
@@ -39,4 +40,17 @@ export async function scanInstalled(): Promise<InstallScannerItem[]> {
   const res = await invoke("scan_installed");
   if(!Array.isArray(res)) throw new Error("Invalid response")
   return res.map(e => InstallScannerItemSchema.parse(e))
+}
+
+export async function getScanRoots(): Promise<string[]> {
+  const res = await invoke("get_scan_roots");
+  return z.array(z.string()).parse(res);
+}
+
+export async function addScanRoot(path: string): Promise<void> {
+  await invoke("add_scan_root", { path });
+}
+
+export async function removeScanRoot(path: string): Promise<void> {
+  await invoke("remove_scan_root", { path });
 }

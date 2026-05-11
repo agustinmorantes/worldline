@@ -17,3 +17,10 @@ pub trait VersionRepository: Send + Sync {
     fn tag_version(&self, id: i32, tag: String) -> Result<Version>;
     fn get_version(&self, id: i32) -> Result<crate::models::FullVersion>;
 }
+
+#[cfg_attr(test, mockall::automock)]
+pub trait ScanRootsRepository: Send + Sync {
+    fn get_scan_roots(&self) -> Result<Vec<String>>;
+    fn add_scan_root(&self, path: &str) -> Result<()>;
+    fn remove_scan_root(&self, path: &str) -> Result<()>;
+}

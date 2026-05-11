@@ -1,16 +1,14 @@
+use super::SqliteGameRepository;
 use crate::models::*;
+use crate::persistence::GameRepository;
 use anyhow::{Context, Result};
 use diesel::prelude::*;
-use super::SqliteGameRepository;
-use crate::persistence::GameRepository;
 
 impl GameRepository for SqliteGameRepository {
     fn get_games(&self) -> Result<Vec<FullGame>> {
         use crate::schema::games::dsl::*;
 
-        let conn = &mut self.pool
-            .get()
-            .context("Error getting db connection")?;
+        let conn = &mut self.pool.get().context("Error getting db connection")?;
 
         let all_games = games
             .select(Game::as_select())
@@ -48,9 +46,7 @@ impl GameRepository for SqliteGameRepository {
         use crate::schema::games;
         use crate::schema::versions;
 
-        let conn = &mut self.pool
-            .get()
-            .context("Error getting db connection")?;
+        let conn = &mut self.pool.get().context("Error getting db connection")?;
 
         let game: Game = games::dsl::games
             .filter(games::dsl::id.eq(id))
@@ -83,9 +79,7 @@ impl GameRepository for SqliteGameRepository {
         use crate::schema::tracked_dirs;
         use crate::schema::tracked_dirs::dsl;
 
-        let conn = &mut self.pool
-            .get()
-            .context("Error getting db connection")?;
+        let conn = &mut self.pool.get().context("Error getting db connection")?;
 
         let res = diesel::insert_into(games::table)
             .values(&form)
@@ -104,8 +98,8 @@ impl GameRepository for SqliteGameRepository {
                         .and(tracked_dirs::path.ne_all(&dirs)),
                 ),
             )
-                .execute(conn)
-                .context("Error deleting old tracked dirs")?;
+            .execute(conn)
+            .context("Error deleting old tracked dirs")?;
 
             let new_dirs: Vec<TrackedDirForm> = dirs
                 .iter()
@@ -133,9 +127,7 @@ impl GameRepository for SqliteGameRepository {
     fn delete_game(&self, target_id: i32) -> Result<()> {
         use crate::schema::games::dsl;
 
-        let conn = &mut self.pool
-            .get()
-            .context("Error getting db connection")?;
+        let conn = &mut self.pool.get().context("Error getting db connection")?;
 
         diesel::delete(dsl::games.filter(dsl::id.eq(target_id)))
             .execute(conn)

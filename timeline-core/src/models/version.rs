@@ -1,7 +1,7 @@
-﻿use chrono::NaiveDateTime;
+use crate::models::Game;
+use chrono::NaiveDateTime;
 use diesel::{AsChangeset, Associations, Identifiable, Insertable, Queryable, Selectable};
 use serde::{Deserialize, Serialize};
-use crate::models::Game;
 
 #[derive(Queryable, Selectable, Identifiable, Associations, Serialize, Clone, PartialEq, Debug)]
 #[diesel(belongs_to(Game))]

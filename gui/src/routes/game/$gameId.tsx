@@ -25,6 +25,7 @@ import {
 import { deleteGame, saveGame, setGameIcon } from '@/api/games';
 import { queryClient } from '@/lib/query-client';
 import { confirm, open } from '@tauri-apps/plugin-dialog';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 export const Route = createFileRoute('/game/$gameId')({
   component: GameDetail,
@@ -166,9 +167,9 @@ function GameDetail(): ReactElement {
       <header className="p-8 pb-4 flex items-center gap-6">
         <motion.div
           key={game.id}
-          initial={{ scale: 0.44, opacity: 0 }}
+          initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
-          transition={{ type: 'spring', damping: 30, stiffness: 350 }}
+          transition={{ duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
         >
           <GameIcon title={game.title} size={64} iconPath={game.icon_path} />
         </motion.div>
@@ -222,7 +223,8 @@ function GameDetail(): ReactElement {
           </TabsList>
         </div>
 
-        <div className="flex-1 overflow-auto scrollbar-hide">
+        <ScrollArea className="flex-1 min-h-0">
+        <div>
           <TabsContent value="timeline" className="m-0 p-8 pt-6">
             <div className="flex items-center justify-between mb-8">
               <SlotSelector />
@@ -271,6 +273,7 @@ function GameDetail(): ReactElement {
             </div>
           </TabsContent>
         </div>
+        </ScrollArea>
       </Tabs>
 
       <RestoreModal

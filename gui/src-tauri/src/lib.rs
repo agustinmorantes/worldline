@@ -1,15 +1,16 @@
 use crate::commands::add_handlers;
 use anyhow::Context;
-use savegame_timeline_core::persistence::sqlite::{SqliteGameRepository, SqliteVersionRepository};
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::SqliteConnection;
+use diesel_migrations::MigrationHarness;
+use savegame_timeline_core::detection;
+use savegame_timeline_core::persistence::sqlite::{
+    SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
+};
+use savegame_timeline_core::TimelineCore;
+use savegame_timeline_core::MIGRATIONS;
 use std::sync::Arc;
 use tauri::{App, Emitter, Manager};
-use savegame_timeline_core::TimelineCore;
-use savegame_timeline_core::install_scanner::scan_installed;
-use savegame_timeline_core::detection;
-use savegame_timeline_core::MIGRATIONS;
-use diesel_migrations::MigrationHarness;
 
 pub mod commands;
 
@@ -45,15 +46,23 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let pool = Pool::builder()
         .build(manager)
         .context("Failed to create pool.")?;
-        
+
     let mut conn = pool.get()?;
     conn.run_pending_migrations(MIGRATIONS)
         .expect("Error running migrations");
 
     let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
     let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
 
-    let (core, notif_rx) = TimelineCore::new(games_repo, versions_repo, working_base, icons_dir, None)?;
+    let (core, notif_rx) = TimelineCore::new(
+        games_repo,
+        versions_repo,
+        scan_roots_repo,
+        working_base,
+        icons_dir,
+        None,
+    )?;
     app.manage(Arc::new(core));
 
     let notif_app = app.handle().clone();
@@ -63,8 +72,13 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 detection::Notification::ChangeDetected { game_id } => {
                     notif_app.emit("change-detected", game_id).ok();
                 }
-                detection::Notification::VersionCreated { game_id, version_number } => {
-                    notif_app.emit("version-created", (game_id, version_number)).ok();
+                detection::Notification::VersionCreated {
+                    game_id,
+                    version_number,
+                } => {
+                    notif_app
+                        .emit("version-created", (game_id, version_number))
+                        .ok();
                 }
                 detection::Notification::Error(err) => {
                     notif_app.emit("detection-error", err).ok();
@@ -72,8 +86,6 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-
-    scan_installed();
 
     Ok(())
 }

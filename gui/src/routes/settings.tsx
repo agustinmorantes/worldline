@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import { Bell, Database, Clock, HardDrive } from 'lucide-react';
 import { appLocalDataDir } from '@tauri-apps/api/path';
 import { toast } from 'sonner';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 export const Route = createFileRoute('/settings')({
   component: SettingsView,
@@ -56,7 +57,8 @@ function SettingsView(): ReactElement {
         <p className="text-sm text-muted-foreground mt-1">Configure how Timeline monitors and manages your save files.</p>
       </header>
 
-      <div className="flex-1 overflow-auto p-8 pt-4 space-y-6 scrollbar-hide">
+      <ScrollArea className="flex-1 min-h-0" viewportClassName="p-8 pt-4">
+      <div className="space-y-6">
         <section className="space-y-4">
           <div className="flex items-center gap-2 px-1">
             <Clock size={16} className="text-primary" />
@@ -140,6 +142,7 @@ function SettingsView(): ReactElement {
           <Button className="font-bold px-8" onClick={handleSave}>Save Settings</Button>
         </div>
       </div>
+      </ScrollArea>
     </div>
   );
 }

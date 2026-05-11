@@ -10,6 +10,7 @@ import { saveGame } from "@/api/games";
 import { queryClient } from "@/lib/query-client";
 import { toast } from "sonner";
 import { useRouter } from "@tanstack/react-router";
+import { ScrollArea } from "./ui/scroll-area";
 
 interface AddGameModalProps {
   isOpen: boolean;
@@ -108,9 +109,10 @@ export function AddGameModal({ isOpen, onClose }: AddGameModalProps): ReactEleme
               </button>
             </Label>
             
-            <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1 scrollbar-hide">
+            <ScrollArea className="max-h-[200px]" viewportClassName="pr-3">
+            <div className="space-y-2">
               {paths.map((path, index) => (
-                <div key={index.toString()} className="flex gap-2">
+                <div key={`${path}-${index.toString()}`} className="flex gap-2">
                   <div className="relative flex-1">
                     <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
                     <Input
@@ -136,6 +138,7 @@ export function AddGameModal({ isOpen, onClose }: AddGameModalProps): ReactEleme
                 </div>
               ))}
             </div>
+            </ScrollArea>
           </div>
         </div>
 

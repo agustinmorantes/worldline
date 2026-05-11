@@ -28,7 +28,14 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    scan_roots (id) {
+        id -> Integer,
+        path -> Text,
+    }
+}
+
 diesel::joinable!(tracked_dirs -> games (game_id));
 diesel::joinable!(versions -> games (game_id));
 
-diesel::allow_tables_to_appear_in_same_query!(games, tracked_dirs, versions,);
+diesel::allow_tables_to_appear_in_same_query!(games, scan_roots, tracked_dirs, versions,);

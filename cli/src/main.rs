@@ -3,13 +3,15 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::SqliteConnection;
+use diesel::r2d2::{ConnectionManager, Pool};
 use diesel_migrations::MigrationHarness;
 use savegame_timeline_core::detection::{Notification, NotificationReceiver};
 use savegame_timeline_core::models::game::GameForm;
-use savegame_timeline_core::persistence::sqlite::{SqliteGameRepository, SqliteVersionRepository};
-use savegame_timeline_core::{TimelineCore, MIGRATIONS};
+use savegame_timeline_core::persistence::sqlite::{
+    SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
+};
+use savegame_timeline_core::{MIGRATIONS, TimelineCore};
 
 #[derive(Parser)]
 #[command(name = "savegame-cli")]
@@ -64,20 +66,32 @@ enum VersionsAction {
     Restore { version_id: i32 },
 }
 
-fn init_core_with_debounce(data_dir: &Path, debounce_secs: Option<f32>) -> Result<(TimelineCore, NotificationReceiver)> {
+fn init_core_with_debounce(
+    data_dir: &Path,
+    debounce_secs: Option<f32>,
+) -> Result<(TimelineCore, NotificationReceiver)> {
     std::fs::create_dir_all(data_dir)?;
     let db_path = data_dir.join("database.db");
     let database_url = format!("file:{}?foreign_keys=on", db_path.display());
     let manager = ConnectionManager::<SqliteConnection>::new(&database_url);
     let pool = Pool::builder().build(manager)?;
-    pool.get()?.run_pending_migrations(MIGRATIONS).expect("migrations failed");
+    pool.get()?
+        .run_pending_migrations(MIGRATIONS)
+        .expect("migrations failed");
     let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
     let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
     let working_base = data_dir.join("repository");
     let icons_dir = data_dir.join("icons");
-    TimelineCore::new(games_repo, versions_repo, working_base, icons_dir, debounce_secs)
+    TimelineCore::new(
+        games_repo,
+        versions_repo,
+        scan_roots_repo,
+        working_base,
+        icons_dir,
+        debounce_secs,
+    )
 }
-
 
 fn default_data_dir() -> Result<PathBuf> {
     // Same path Tauri resolves for app_local_data_dir on each platform
@@ -114,7 +128,12 @@ fn main() -> Result<()> {
             }
             GamesAction::Edit { id, title } => {
                 let game = core.save_game(
-                    GameForm { id: Some(id), title: &title, active_version_id: None, icon_path: None },
+                    GameForm {
+                        id: Some(id),
+                        title: &title,
+                        active_version_id: None,
+                        icon_path: None,
+                    },
                     None,
                 )?;
                 println!("Updated game [{}] {}", game.id, game.title);
@@ -122,8 +141,17 @@ fn main() -> Result<()> {
             GamesAction::Add { title, dirs } => {
                 let dir_refs: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
                 let game = core.save_game(
-                    GameForm { id: None, title: &title, active_version_id: None, icon_path: None },
-                    if dir_refs.is_empty() { None } else { Some(dir_refs) },
+                    GameForm {
+                        id: None,
+                        title: &title,
+                        active_version_id: None,
+                        icon_path: None,
+                    },
+                    if dir_refs.is_empty() {
+                        None
+                    } else {
+                        Some(dir_refs)
+                    },
                 )?;
                 println!("Added game [{}] {}", game.id, game.title);
             }
@@ -137,7 +165,10 @@ fn main() -> Result<()> {
                 println!("  Versions ({}):", g.versions.len());
                 for v in &g.versions {
                     let tag = v.tag.as_deref().unwrap_or("-");
-                    println!("    [{}] #{} at {} tag={}", v.id, v.version_number, v.created_at, tag);
+                    println!(
+                        "    [{}] #{} at {} tag={}",
+                        v.id, v.version_number, v.created_at, tag
+                    );
                 }
             }
             GamesAction::Delete { id } => {
@@ -162,7 +193,10 @@ fn main() -> Result<()> {
                     Notification::ChangeDetected { game_id } => {
                         println!("Change detected for game {game_id}");
                     }
-                    Notification::VersionCreated { game_id, version_number } => {
+                    Notification::VersionCreated {
+                        game_id,
+                        version_number,
+                    } => {
                         println!("Version {version_number} created for game {game_id}");
                     }
                     Notification::Error(err) => {
@@ -175,4 +209,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-

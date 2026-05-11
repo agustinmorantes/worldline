@@ -1,14 +1,26 @@
 import { createRootRoute, Outlet, useLocation } from '@tanstack/react-router'
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
-import { ReactElement } from "react"
+import { ReactElement, useEffect } from "react"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "sonner"
 import { Sidebar } from "@/components/Sidebar"
 import { TitleBar } from "@/components/TitleBar"
-import { motion, AnimatePresence } from "framer-motion"
+import { motion, useAnimationControls } from "framer-motion"
 
 const RootLayout = (): ReactElement => {
   const location = useLocation()
+  const panelControls = useAnimationControls()
+
+  useEffect(() => {
+    panelControls.set({ y: 5 })
+    void panelControls.start({
+      y: 0,
+      transition: {
+        duration: 0.36,
+        ease: [0.2, 0.8, 0.2, 1],
+      },
+    })
+  }, [location.pathname])
 
   return (
     <ThemeProvider defaultTheme="dark" storageKey="ui-theme">
@@ -17,18 +29,13 @@ const RootLayout = (): ReactElement => {
         <div className="flex flex-1 overflow-hidden">
         <Sidebar />
         <main className="flex-1 flex flex-col relative overflow-hidden isolate z-10">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={location.pathname}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              className="flex-1 overflow-auto"
-            >
-              <Outlet />
-            </motion.div>
-          </AnimatePresence>
+          <motion.div
+            animate={panelControls}
+            initial={false}
+            className="flex-1 min-h-0 overflow-hidden"
+          >
+            <Outlet />
+          </motion.div>
           <Toaster theme="dark" position="top-right" expand={false} richColors />
         </main>
         </div>

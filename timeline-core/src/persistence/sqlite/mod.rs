@@ -1,8 +1,9 @@
 pub mod games;
+pub mod scan_roots;
 pub mod versions;
 
-use diesel::sqlite::SqliteConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::sqlite::SqliteConnection;
 
 pub type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 
@@ -21,6 +22,16 @@ pub struct SqliteVersionRepository {
 }
 
 impl SqliteVersionRepository {
+    pub fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+}
+
+pub struct SqliteScanRootsRepository {
+    pub pool: DbPool,
+}
+
+impl SqliteScanRootsRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }

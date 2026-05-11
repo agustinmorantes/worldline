@@ -1,5 +1,5 @@
-use assert_cmd::cargo::cargo_bin;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use std::time::Duration;
@@ -254,8 +254,9 @@ fn parse_first_version_id(text: &str) -> Option<i32> {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix('[')
             && let Some(id_str) = rest.split(']').next()
-            && let Ok(id) = id_str.parse::<i32>() {
-                return Some(id);
+            && let Ok(id) = id_str.parse::<i32>()
+        {
+            return Some(id);
         }
     }
     None

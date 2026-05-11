@@ -1,6 +1,6 @@
-﻿use diesel::prelude::*;
-use serde::{Deserialize, Serialize};
 use crate::models::Game;
+use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Queryable, Selectable, Identifiable, Associations, Serialize, Clone, PartialEq, Debug)]
 #[diesel(belongs_to(Game))]

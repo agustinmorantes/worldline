@@ -7,6 +7,7 @@ import { Plus, Download, Settings, Library } from "lucide-react"
 import { Skeleton } from "./ui/skeleton"
 import { AddGameModal } from "./AddGameModal"
 import { FullGame } from "@/models/game"
+import { ScrollArea } from "./ui/scroll-area"
 
 export function Sidebar({ className }: { className?: string }): ReactElement {
   const { data: games, isLoading, error } = useGames()
@@ -21,7 +22,8 @@ export function Sidebar({ className }: { className?: string }): ReactElement {
 
   return (
     <aside className={cn("w-[222px] bg-sidebar border-r border-border/40 flex flex-col h-full overflow-x-hidden", className)}>
-      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-2 scrollbar-hide">
+      <ScrollArea className="flex-1 min-h-0" viewportClassName="px-3 py-2">
+      <nav>
         <div className="space-y-4">
           <div>
             <div className="px-3 mb-2 flex items-center justify-between">
@@ -33,7 +35,7 @@ export function Sidebar({ className }: { className?: string }): ReactElement {
             <div className="space-y-0.5">
               {isLoading ? (
                 Array.from({ length: skeletonCount }).map((_, i) => (
-                  <div key={i.toString()} className="flex items-center gap-3 px-3 py-2">
+                  <div key={`sidebar-skeleton-${i.toString()}`} className="flex items-center gap-3 px-3 py-2">
                     <Skeleton className="w-7 h-7 rounded-md" />
                     <div className="space-y-1.5">
                       <Skeleton className="h-3 w-24" />
@@ -65,6 +67,7 @@ export function Sidebar({ className }: { className?: string }): ReactElement {
           </div>
         </div>
       </nav>
+      </ScrollArea>
 
       <AddGameModal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); }} />
 
