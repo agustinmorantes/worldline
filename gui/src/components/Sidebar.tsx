@@ -1,9 +1,9 @@
-import { ReactElement, useState, useEffect } from "react"
+import { ReactElement, useState, useEffect, useMemo } from "react"
 import { cn } from "@/lib/utils"
 import { useGames } from "@/api/queries"
 import { GameIcon } from "./GameIcon"
 import { Link } from "@tanstack/react-router"
-import { Plus, Download, Settings, Library } from "lucide-react"
+import { Plus, Download, Settings, Library, HelpCircle } from "lucide-react"
 import { Skeleton } from "./ui/skeleton"
 import { AddGameModal } from "./AddGameModal"
 import { FullGame } from "@/models/game"
@@ -18,6 +18,22 @@ export function Sidebar({ className }: { className?: string }): ReactElement {
     if (games !== undefined) {
       localStorage.setItem('games-count', games.length.toString());
     }
+  }, [games])
+
+  const sortedGames = useMemo(() => {
+    if (!games) return games;
+    return [...games].sort((a, b) => {
+      const aTime = a.versions.length > 0
+        ? Math.max(...a.versions.map(v => v.created_at?.getTime() ?? 0))
+        : null;
+      const bTime = b.versions.length > 0
+        ? Math.max(...b.versions.map(v => v.created_at?.getTime() ?? 0))
+        : null;
+      if (aTime === null && bTime === null) return a.title.localeCompare(b.title);
+      if (aTime === null) return 1;
+      if (bTime === null) return -1;
+      return bTime - aTime;
+    });
   }, [games])
 
   return (
@@ -48,12 +64,13 @@ export function Sidebar({ className }: { className?: string }): ReactElement {
                   Error loading games
                 </div>
               ) : (
-                games?.map(game => (
+                sortedGames?.map(game => (
                   <SidebarGameItem key={game.id} game={game} />
                 ))
               )}
               
               <button 
+                id="tour-add-game"
                 type="button"
                 onClick={() => { setIsAddModalOpen(true); }}
                 className="w-full flex items-center gap-3 px-3 py-2 rounded-md border border-dashed border-border/60 hover:border-primary/40 hover:bg-primary/5 text-muted-foreground hover:text-primary transition-all group mt-2"
@@ -72,12 +89,22 @@ export function Sidebar({ className }: { className?: string }): ReactElement {
       <AddGameModal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); }} />
 
       <div className="p-3 border-t border-border/40 space-y-1">
-        <SidebarNavItem to="/import" icon={<Download size={14} />}>
+        <SidebarNavItem id="tour-import-games" to="/import" icon={<Download size={14} />}>
           Import Games
         </SidebarNavItem>
         <SidebarNavItem to="/settings" icon={<Settings size={14} />}>
           Settings
         </SidebarNavItem>
+        <button
+          type="button"
+          onClick={() => { window.dispatchEvent(new CustomEvent("open-onboarding")); }}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all text-xs font-medium tracking-tight"
+        >
+          <div className="text-muted-foreground/60">
+            <HelpCircle size={14} />
+          </div>
+          Help &amp; Tour
+        </button>
       </div>
     </aside>
   )
@@ -91,17 +118,25 @@ function SidebarGameItem({ game }: { game: FullGame }): ReactElement {
       className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all group [&.active]:bg-primary/10 [&.active]:text-foreground [&.active]:border-primary/20 border border-transparent"
     >
       <GameIcon title={game.title} size={28} iconPath={game.icon_path} />
-      <div className="flex flex-col min-w-0">
-        <span className="text-xs font-semibold truncate tracking-tight">{game.title}</span>
-        <span className="text-[10px] text-muted-foreground/70 font-medium">1 slot</span>
-      </div>
+      <span className="min-w-0 truncate text-xs font-semibold tracking-tight">{game.title}</span>
     </Link>
   )
 }
 
-function SidebarNavItem({ to, icon, children }: { to: string, icon: React.ReactNode, children: React.ReactNode }): ReactElement {
+function SidebarNavItem({
+  id,
+  to,
+  icon,
+  children,
+}: {
+  id?: string
+  to: string
+  icon: React.ReactNode
+  children: React.ReactNode
+}): ReactElement {
   return (
     <Link
+      id={id}
       to={to}
       className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all text-xs font-medium tracking-tight [&.active]:bg-accent [&.active]:text-foreground"
     >

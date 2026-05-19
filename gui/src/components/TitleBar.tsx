@@ -4,9 +4,9 @@ import { Save, Minus, Square, X } from 'lucide-react';
 
 export function TitleBar(): ReactElement {
   return (
-    <div className="flex h-12 shrink-0 select-none">
+    <div className="relative z-[120] flex h-12 shrink-0 select-none">
       {/* Sidebar-aligned branding — same visual space as the sidebar panel */}
-      <div className="w-[222px] bg-sidebar flex items-center gap-3 px-6">
+      <div className="w-[222px] bg-sidebar flex items-center gap-3 px-2">
         <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-primary-foreground shadow-lg shadow-primary/20">
           <Save size={18} />
         </div>

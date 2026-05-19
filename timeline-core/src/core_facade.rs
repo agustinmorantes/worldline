@@ -3,6 +3,7 @@ use crate::install_scanner::InstallScannerItem;
 use crate::models::*;
 use crate::persistence::{GameRepository, ScanRootsRepository, VersionRepository};
 use anyhow::{Context, Result};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ pub struct TimelineCore {
     cmd_tx: CommandSender,
     pub working_base: PathBuf,
     pub icons_dir: PathBuf,
+    monitoring_settings_path: PathBuf,
 }
 
 impl TimelineCore {
@@ -24,11 +26,20 @@ impl TimelineCore {
         icons_dir: PathBuf,
         new_version_seconds: Option<f32>,
     ) -> Result<(Self, NotificationReceiver)> {
+        let monitoring_settings_path = working_base
+            .parent()
+            .unwrap_or(&working_base)
+            .join("monitoring_settings.json");
+        let mut monitoring_settings = load_monitoring_settings(&monitoring_settings_path)?;
+        if let Some(seconds) = new_version_seconds {
+            monitoring_settings.snapshot_debounce_seconds = seconds;
+        }
+
         let (cmd_tx, notif_rx) = detection::init(
             games_repo.clone(),
             versions_repo.clone(),
             working_base.clone(),
-            new_version_seconds.unwrap_or(30.0),
+            monitoring_settings,
         )?;
 
         Ok((
@@ -39,6 +50,7 @@ impl TimelineCore {
                 cmd_tx,
                 working_base,
                 icons_dir,
+                monitoring_settings_path,
             },
             notif_rx,
         ))
@@ -109,7 +121,7 @@ impl TimelineCore {
             let from = self
                 .working_base
                 .join(game.game.id.to_string())
-                .join(version.version.version_number.to_string())
+                .join(version.version.id.to_string())
                 .join(dir.id.to_string());
 
             let to = std::path::PathBuf::from(&dir.path);
@@ -182,6 +194,21 @@ impl TimelineCore {
         self.scan_roots_repo.remove_scan_root(path)
     }
 
+    pub fn get_monitoring_settings(&self) -> Result<MonitoringSettings> {
+        load_monitoring_settings(&self.monitoring_settings_path)
+    }
+
+    pub fn update_monitoring_settings(
+        &self,
+        monitoring_settings: MonitoringSettings,
+    ) -> Result<MonitoringSettings> {
+        save_monitoring_settings(&self.monitoring_settings_path, monitoring_settings)?;
+        self.cmd_tx
+            .send(Command::UpdateMonitoringSettings(monitoring_settings))
+            .context("Failed to update monitoring settings in watcher")?;
+        Ok(monitoring_settings)
+    }
+
     pub fn scan_installed(&self) -> Result<Vec<InstallScannerItem>> {
         let cache_dir = self
             .working_base
@@ -189,8 +216,82 @@ impl TimelineCore {
             .unwrap_or(&self.working_base)
             .join("cache");
         let custom_roots = self.scan_roots_repo.get_scan_roots()?;
-        crate::install_scanner::scan_installed(&cache_dir, &custom_roots)
+        let mut items = crate::install_scanner::scan_installed(&cache_dir, &custom_roots)?;
+
+        let icon_cache_dir = cache_dir.join("icon_cache");
+        let _ = std::fs::create_dir_all(&icon_cache_dir);
+
+        for item in &mut items {
+            let Some(source_path) = &item.icon_path else {
+                continue;
+            };
+
+            let safe_title: String = item
+                .title
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+                .collect();
+            let cache_png = icon_cache_dir.join(format!("{safe_title}.png"));
+
+            if cache_png.exists() {
+                item.icon_path = Some(cache_png.to_string_lossy().into_owned());
+                continue;
+            }
+
+            let source = std::path::Path::new(source_path);
+            let ext = source
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            let extracted = if ext == "exe" {
+                #[cfg(target_os = "windows")]
+                {
+                    extract_exe_icon(source, &cache_png).is_ok()
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    false
+                }
+            } else {
+                image::open(source)
+                    .and_then(|img| img.save(&cache_png))
+                    .is_ok()
+            };
+
+            item.icon_path = if extracted {
+                Some(cache_png.to_string_lossy().into_owned())
+            } else {
+                None
+            };
+        }
+
+        Ok(items)
     }
+}
+
+fn load_monitoring_settings(path: &std::path::Path) -> Result<MonitoringSettings> {
+    if !path.exists() {
+        let settings = MonitoringSettings::default();
+        save_monitoring_settings(path, settings)?;
+        return Ok(settings);
+    }
+
+    let contents = fs::read_to_string(path).context("Failed to read monitoring settings")?;
+    let settings = serde_json::from_str(&contents).context("Failed to parse monitoring settings")?;
+    Ok(settings)
+}
+
+fn save_monitoring_settings(path: &std::path::Path, monitoring_settings: MonitoringSettings) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("Failed to create monitoring settings directory")?;
+    }
+
+    let contents = serde_json::to_string_pretty(&monitoring_settings)
+        .context("Failed to serialize monitoring settings")?;
+    fs::write(path, contents).context("Failed to write monitoring settings")?;
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -198,15 +299,13 @@ fn extract_exe_icon(
     exe_path: &std::path::Path,
     output_path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let exe = exe_path.to_string_lossy();
-    let out = output_path.to_string_lossy();
-    let script = format!(
-        "Add-Type -AssemblyName System.Drawing; \
-         $icon = [System.Drawing.Icon]::ExtractAssociatedIcon('{exe}'); \
-         $icon.ToBitmap().Save('{out}')"
-    );
+    let script = "Add-Type -AssemblyName System.Drawing; \
+                  $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:EXE_PATH); \
+                  $icon.ToBitmap().Save($env:OUT_PATH)";
     let status = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("EXE_PATH", exe_path)
+        .env("OUT_PATH", output_path)
         .status()
         .context("Failed to run PowerShell")?;
     anyhow::ensure!(status.success(), "PowerShell icon extraction failed");

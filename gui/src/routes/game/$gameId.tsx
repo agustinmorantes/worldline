@@ -7,11 +7,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { BranchingTimeline } from '@/components/BranchingTimeline';
+import { EmptyTimelineState } from '@/components/EmptyTimelineState';
 import { RestoreModal } from '@/components/RestoreModal';
-import { SlotSelector } from '@/components/SlotSelector';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image } from 'lucide-react';
+import { Trash2, Plus, ListTree, MapPin, Pencil, Image, EllipsisVertical } from 'lucide-react';
 import { Version } from '@/models/version';
 import { Game } from '@/models/game';
 import { toast } from 'sonner';
@@ -179,8 +179,8 @@ function GameDetail(): ReactElement {
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 px-3 text-[10px] font-bold uppercase tracking-wider">
-                  Options
+                <Button variant="outline" size="icon" className="h-8 w-8 rounded-full border-border/50 text-muted-foreground hover:text-foreground">
+                  <EllipsisVertical size={15} />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
@@ -200,7 +200,7 @@ function GameDetail(): ReactElement {
 
           <div className="flex items-center gap-3">
             <StatChip label={`${versions.length.toString()} total saves`} />
-            <StatChip label="1 slot" />
+            {/* <StatChip label="1 slot" /> */}
           </div>
         </div>
       </header>
@@ -226,7 +226,7 @@ function GameDetail(): ReactElement {
         <ScrollArea className="flex-1 min-h-0">
         <div>
           <TabsContent value="timeline" className="m-0 p-8 pt-6">
-            <div className="flex items-center justify-between mb-8">
+            {/* <div className="flex items-center justify-between mb-8">
               <SlotSelector />
               <div className="flex items-center gap-1 p-1 bg-el rounded-lg">
                 <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md bg-sf shadow-sm text-primary">
@@ -236,14 +236,21 @@ function GameDetail(): ReactElement {
                   <LayoutGrid size={14} />
                 </Button>
               </div>
-            </div>
+            </div> */}
 
-            <BranchingTimeline
-              versions={versions}
-              activeVersionId={game.active_version_id ?? undefined}
-              onRestore={(v) => { setRestoreTarget(v); }}
-              onTag={(v, tag) => { void handleTag(v, tag); }}
-            />
+            {versions.length === 0 ? (
+              <EmptyTimelineState
+                gameTitle={game.title}
+                trackedDirCount={tracked_dirs.length}
+              />
+            ) : (
+              <BranchingTimeline
+                versions={versions}
+                activeVersionId={game.active_version_id ?? undefined}
+                onRestore={(v) => { setRestoreTarget(v); }}
+                onTag={(v, tag) => { void handleTag(v, tag); }}
+              />
+            )}
           </TabsContent>
 
           <TabsContent value="dirs" className="m-0 p-8 pt-6">

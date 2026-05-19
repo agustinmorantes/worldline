@@ -16,6 +16,8 @@
         "title": "savegame-timeline",
         "width": 800,
         "height": 600,
+        "minWidth": 960,
+        "minHeight": 720,
         "decorations": false
       }
     ],

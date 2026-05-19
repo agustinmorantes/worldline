@@ -9,23 +9,32 @@ interface BranchingTimelineProps {
   versions: Version[];
   activeVersionId?: number;
   accentHue?: number;
+  showActions?: boolean;
+  compact?: boolean;
   onRestore?: (version: Version) => void;
   onTag?: (version: Version, tag: string) => void;
 }
-
-const ROW_HEIGHT = 70;
-const LANE_WIDTH = 34;
-const NODE_RADIUS = 7;
-const LEFT_PAD = 24;
 
 export function BranchingTimeline({
   versions,
   activeVersionId,
   accentHue = 255,
+  showActions = true,
+  compact = false,
   onRestore,
   onTag,
 }: BranchingTimelineProps): ReactElement {
   const [editingId, setEditingId] = useState<number | null>(null);
+  const canEditTags = showActions;
+  const metrics = useMemo(() => ({
+    rowHeight: compact ? 56 : 70,
+    laneWidth: compact ? 28 : 34,
+    nodeRadius: compact ? 6 : 7,
+    leftPad: compact ? 18 : 24,
+    svgPad: compact ? 14 : 20,
+    topPad: compact ? 6 : 10,
+    bottomPad: compact ? 8 : 10,
+  }), [compact]);
 
   // 1. Build the tree and assign lanes
   const { processedVersions, lanesCount } = useMemo(() => {
@@ -61,10 +70,12 @@ export function BranchingTimeline({
     const laneMap = new Map<number, number>();
     let nextLane = 1;
 
-    // Sort versions by date desc for layout (newest top)
-    const sortedVersions = [...versions].sort((a, b) =>
-      (b.created_at?.getTime() ?? 0) - (a.created_at?.getTime() ?? 0)
-    );
+    // Sort versions by date descending (newest at top).
+    // Active version is NOT forced to top — it appears at its correct temporal position,
+    // which keeps parent→child edges always pointing downward in the layout.
+    const sortedVersions = [...versions].sort((a, b) => {
+      return (b.created_at?.getTime() ?? 0) - (a.created_at?.getTime() ?? 0);
+    });
 
     // 1. Assign Lane 0 to the main path (ancestors of the active version)
     sortedVersions.forEach(v => {
@@ -98,7 +109,7 @@ export function BranchingTimeline({
         // A version is only inactive when there IS an active version and this version is not on its path
         isInactive: activeVersionId !== undefined && !ancestors.has(vid) && vid !== activeVersionId,
         isActive: vid === activeVersionId,
-        y: 10 + index * ROW_HEIGHT + ROW_HEIGHT / 2,
+        y: metrics.topPad + index * metrics.rowHeight + metrics.rowHeight / 2,
       };
     });
 
@@ -106,7 +117,7 @@ export function BranchingTimeline({
       processedVersions: processed, 
       lanesCount: Math.max(0, ...Array.from(laneMap.values())) + 1 
     };
-  }, [versions, activeVersionId]);
+  }, [versions, activeVersionId, metrics.rowHeight, metrics.topPad]);
 
   const BRANCH_COLORS = useMemo(() => [
     `oklch(64% 0.22 ${accentHue.toString()}deg)`,
@@ -115,15 +126,17 @@ export function BranchingTimeline({
     `oklch(64% 0.22 ${((accentHue + 215) % 360).toString()}deg)`,
   ], [accentHue]);
 
-  const getX = (lane: number): number => LEFT_PAD + lane * LANE_WIDTH;
+  const getX = (lane: number): number => metrics.leftPad + lane * metrics.laneWidth;
+  const totalHeight = metrics.topPad + processedVersions.length * metrics.rowHeight + metrics.bottomPad;
+  const totalWidth = metrics.leftPad + lanesCount * metrics.laneWidth + metrics.svgPad;
 
   return (
     <div className="relative flex">
       {/* SVG Background for connections */}
       <svg 
         className="absolute top-0 left-0 pointer-events-none" 
-        width={LEFT_PAD + lanesCount * LANE_WIDTH + 20} 
-        height={processedVersions.length * ROW_HEIGHT + 20}
+        width={totalWidth}
+        height={totalHeight}
       >
         {processedVersions.map((pv) => {
           const parentId = pv.version.parent_id;
@@ -176,14 +189,17 @@ export function BranchingTimeline({
           <div 
             key={pv.version.id} 
             className="flex items-center group relative" 
-            style={{ height: ROW_HEIGHT }}
+            style={{ height: metrics.rowHeight }}
           >
             {/* Node Area */}
-            <div style={{ width: LEFT_PAD + lanesCount * LANE_WIDTH + 20 }} className="flex-shrink-0 relative h-full">
+            <div
+              style={{ width: totalWidth }}
+              className="relative h-full flex-shrink-0"
+            >
               <div 
                 className="absolute" 
                 style={{ 
-                  left: getX(pv.lane) - NODE_RADIUS, 
+                  left: getX(pv.lane) - metrics.nodeRadius,
                   top: '50%', 
                   transform: 'translateY(-50%)' 
                 }}
@@ -199,7 +215,7 @@ export function BranchingTimeline({
                 {/* Main Node */}
                 <div 
                   className={cn(
-                    "w-3.5 h-3.5 rounded-full border-2 relative z-10 bg-sf",
+                    compact ? "relative z-10 h-3 w-3 rounded-full border-2 bg-sf" : "relative z-10 h-3.5 w-3.5 rounded-full border-2 bg-sf",
                     pv.isActive ? "bg-white" : ""
                   )}
                   style={{ 
@@ -216,11 +232,11 @@ export function BranchingTimeline({
             </div>
 
             {/* Content Area */}
-            <div className="flex-1 flex items-center justify-between pr-6 min-w-0">
+            <div className={cn("flex min-w-0 flex-1 items-center justify-between", compact ? "pr-3" : "pr-6")}>
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-2">
                   <span 
-                    className="font-mono text-xs font-bold"
+                    className={cn("font-mono font-bold", compact ? "text-[11px]" : "text-xs")}
                     style={{ color: BRANCH_COLORS[pv.lane % BRANCH_COLORS.length] ?? BRANCH_COLORS[0] }}
                   >
                     v{pv.version.version_number.toString().padStart(3, '0')}
@@ -245,9 +261,13 @@ export function BranchingTimeline({
                     />
                   ) : pv.version.tag !== undefined && pv.version.tag !== '' ? (
                     <span 
-                      className="text-sm text-foreground font-medium truncate cursor-pointer hover:text-primary transition-colors"
+                      className={cn(
+                        "truncate font-medium text-foreground transition-colors",
+                        compact ? "text-[13px]" : "text-sm",
+                        canEditTags ? "cursor-pointer hover:text-primary" : ""
+                      )}
                       onClick={() => {
-                        if (pv.version.id !== undefined) {
+                        if (canEditTags && pv.version.id !== undefined) {
                           setEditingId(pv.version.id);
                         }
                       }}
@@ -256,9 +276,13 @@ export function BranchingTimeline({
                     </span>
                   ) : (
                     <span
-                      className="text-sm text-muted-foreground/40 italic cursor-pointer hover:text-muted-foreground/60 transition-colors"
+                      className={cn(
+                        "italic text-muted-foreground/40 transition-colors",
+                        compact ? "text-[13px]" : "text-sm",
+                        canEditTags ? "cursor-pointer hover:text-muted-foreground/60" : ""
+                      )}
                       onClick={() => {
-                        if (pv.version.id !== undefined) {
+                        if (canEditTags && pv.version.id !== undefined) {
                           setEditingId(pv.version.id);
                         }
                       }}
@@ -268,18 +292,22 @@ export function BranchingTimeline({
                   )}
 
                   {pv.isActive && (
-                    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-[10px] font-bold text-primary border border-primary/20">
+                    <span className={cn(
+                      "flex items-center gap-1 rounded border border-primary/20 bg-primary/10 font-bold text-primary",
+                      compact ? "px-1.5 py-0.5 text-[9px]" : "px-1.5 py-0.5 text-[10px]"
+                    )}>
                       <CheckCircle2 size={10} /> CURRENT
                     </span>
                   )}
                 </div>
                 
-                <span className="text-[10px] text-muted-foreground font-medium mt-0.5">
+                <span className={cn("mt-0.5 font-medium text-muted-foreground", compact ? "text-[9px]" : "text-[10px]")}>
                   {pv.version.created_at ? formatDistanceToNow(pv.version.created_at, { addSuffix: true }) : 'unknown time'}
                 </span>
               </div>
 
               {/* Actions */}
+              {showActions && (
               <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <Button 
                   variant="ghost" 
@@ -299,6 +327,7 @@ export function BranchingTimeline({
                   <RotateCcw size={12} /> Restore
                 </Button>
               </div>
+              )}
             </div>
           </div>
         ))}

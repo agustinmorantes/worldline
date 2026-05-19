@@ -36,4 +36,8 @@ vi.mock('framer-motion', () => ({
         React.createElement(tag, props, children),
   }),
   AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
+  useAnimationControls: () => ({
+    set: vi.fn(),
+    start: vi.fn().mockResolvedValue(undefined),
+  }),
 }));

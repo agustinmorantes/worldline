@@ -1,7 +1,7 @@
 mod fs_event_handler;
 mod watcher;
 
-use crate::models::FullGame;
+use crate::models::{FullGame, MonitoringSettings};
 use crate::persistence::{GameRepository, VersionRepository};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ pub fn init(
     games_repo: Arc<dyn GameRepository>,
     versions_repo: Arc<dyn VersionRepository>,
     working_base: PathBuf,
-    new_version_seconds: f32,
+    monitoring_settings: MonitoringSettings,
 ) -> Result<(CommandSender, NotificationReceiver)> {
     let (command_tx, command_rx): (CommandSender, CommandReceiver) = mpsc::channel();
     let (notification_tx, notification_rx): (NotificationSender, NotificationReceiver) =
@@ -31,7 +31,7 @@ pub fn init(
             working_base: &working_base,
             games_repo,
             versions_repo,
-            new_version_seconds,
+            monitoring_settings,
         });
     });
 
@@ -48,6 +48,7 @@ pub enum Command {
     Pause,
     Resume,
     ReregisterGames(Vec<FullGame>),
+    UpdateMonitoringSettings(MonitoringSettings),
     Shutdown,
 }
 

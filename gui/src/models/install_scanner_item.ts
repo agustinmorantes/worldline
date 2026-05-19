@@ -7,6 +7,7 @@ export const InstallScannerItemSchema = z.object({
   dirs: z.array(z.string()),
   install_path: z.string().nullable().optional(),
   icon_path: z.string().nullable().optional(),
+  last_modified_at: z.number().nullable().optional(),
   source: GameSourceSchema,
 });
 
