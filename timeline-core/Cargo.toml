@@ -20,6 +20,7 @@ serde_json = "1.0"
 dirs = "5.0"
 keyvalues-parser = "0.2"
 glob = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

@@ -5,6 +5,8 @@ use savegame_timeline_core::MIGRATIONS;
 use savegame_timeline_core::models::*;
 use savegame_timeline_core::persistence::sqlite::{SqliteGameRepository, SqliteVersionRepository};
 use savegame_timeline_core::persistence::{GameRepository, VersionRepository};
+use savegame_timeline_core::repository;
+use tempfile::tempdir;
 
 fn init_db() -> Pool<ConnectionManager<SqliteConnection>> {
     let manager = ConnectionManager::<SqliteConnection>::new(":memory:");
@@ -23,8 +25,12 @@ fn test_game_crud() {
     // Create
     let form = GameForm {
         id: None,
+        uuid: None,
         title: "Integration Test Game",
+        title_normalized: None,
+        folder_slug: None,
         active_version_id: None,
+        active_slot_id: None,
         icon_path: None,
     };
 
@@ -32,17 +38,43 @@ fn test_game_crud() {
         .save_game(form, Some(vec!["/test/path"]))
         .unwrap();
     assert_eq!(game.title, "Integration Test Game");
+    assert!(game.uuid.as_deref().is_some_and(|value| !value.is_empty()));
+    assert_eq!(
+        game.title_normalized.as_deref(),
+        Some("integration test game")
+    );
+    assert!(
+        game.folder_slug
+            .as_deref()
+            .is_some_and(|value| value.starts_with("integration-test-game__g_"))
+    );
 
     // Read
     let full_game = games_repo.get_game(game.id).unwrap();
     assert_eq!(full_game.tracked_dirs.len(), 1);
     assert_eq!(full_game.tracked_dirs[0].path, "/test/path");
+    assert!(
+        full_game.tracked_dirs[0]
+            .uuid
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        full_game.tracked_dirs[0]
+            .folder_slug
+            .as_deref()
+            .is_some_and(|value| value.contains("__d_"))
+    );
 
     // Update
     let update_form = GameForm {
         id: Some(game.id),
+        uuid: None,
         title: "Updated Game",
+        title_normalized: None,
+        folder_slug: None,
         active_version_id: None,
+        active_slot_id: None,
         icon_path: None,
     };
     let updated = games_repo
@@ -76,8 +108,12 @@ fn test_version_operations() {
     // Setup game
     let form = GameForm {
         id: None,
+        uuid: None,
         title: "Game",
+        title_normalized: None,
+        folder_slug: None,
         active_version_id: None,
+        active_slot_id: None,
         icon_path: None,
     };
     let game = games_repo.save_game(form, None).unwrap();
@@ -85,6 +121,20 @@ fn test_version_operations() {
     // Create version
     let version = versions_repo.create_version(game.id).unwrap();
     assert_eq!(version.version.version_number, 1);
+    assert!(
+        version
+            .version
+            .uuid
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        version
+            .version
+            .folder_slug
+            .as_deref()
+            .is_some_and(|value| value.starts_with("v001__v_"))
+    );
 
     // Check if game was updated with activeversion
     let g = games_repo.get_game(game.id).unwrap();
@@ -116,4 +166,108 @@ fn test_negative_paths() {
         delete_res.is_ok(),
         "Deleting a non-existent game should safely return Ok"
     );
+}
+
+#[test]
+fn test_repository_metadata_is_written_for_game_and_version() {
+    let pool = init_db();
+    let repository_root = tempdir().unwrap();
+    let games_repo = SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let versions_repo = SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+
+    let game = games_repo
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Metadata Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_version_id: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            Some(vec!["/tmp/saves"]),
+        )
+        .unwrap();
+
+    let full_game = games_repo.get_game(game.id).unwrap();
+    let game_dir = repository::game_dir(
+        repository_root.path(),
+        full_game.game.folder_slug.as_deref().unwrap(),
+    );
+    let game_metadata: repository::GameMetadata =
+        repository::read_metadata_json(&game_dir).unwrap();
+    assert_eq!(game_metadata.title, "Metadata Test");
+
+    let tracked_dir = &full_game.tracked_dirs[0];
+    let tracked_dir_dir =
+        repository::tracked_dir_dir(&game_dir, tracked_dir.folder_slug.as_deref().unwrap());
+    let tracked_metadata: repository::TrackedDirMetadata =
+        repository::read_metadata_json(&tracked_dir_dir).unwrap();
+    assert_eq!(tracked_metadata.game_uuid, game_metadata.uuid);
+
+    let slot = full_game.active_slot.as_ref().unwrap();
+    let slot_dir = repository::slot_dir(&game_dir, &slot.folder_slug);
+    let slot_metadata: repository::SlotMetadata =
+        repository::read_metadata_json(&slot_dir).unwrap();
+    assert_eq!(slot_metadata.game_uuid, game_metadata.uuid);
+
+    let version = versions_repo.create_version(game.id).unwrap();
+    let version_dir =
+        repository::version_dir(&slot_dir, version.version.folder_slug.as_deref().unwrap());
+    let version_metadata: repository::VersionMetadata =
+        repository::read_metadata_json(&version_dir).unwrap();
+    assert_eq!(version_metadata.version_number, 1);
+    assert_eq!(version_metadata.game_uuid, game_metadata.uuid);
+}
+
+#[test]
+fn test_slot_repository_operations() {
+    let pool = init_db();
+    let games_repo = SqliteGameRepository::new(pool.clone());
+
+    let game = games_repo
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Slot Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_version_id: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            None,
+        )
+        .unwrap();
+
+    let initial_slots = games_repo.list_slots(game.id).unwrap();
+    assert_eq!(initial_slots.len(), 1);
+    assert_eq!(initial_slots[0].slot.name, "Default Slot");
+
+    let second_slot = games_repo.create_slot(game.id, "Second Slot").unwrap();
+    assert_eq!(second_slot.slot.name, "Second Slot");
+
+    let slots = games_repo.list_slots(game.id).unwrap();
+    assert_eq!(slots.len(), 2);
+
+    let active_slot = games_repo
+        .set_active_slot(game.id, second_slot.slot.id)
+        .unwrap();
+    assert_eq!(active_slot.id, second_slot.slot.id);
+
+    let full_game = games_repo.get_game(game.id).unwrap();
+    assert_eq!(
+        full_game.active_slot.as_ref().unwrap().id,
+        second_slot.slot.id
+    );
+    assert!(full_game.last_version.is_none());
 }

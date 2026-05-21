@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image } from 'lucide-react';
 import { Version } from '@/models/version';
 import { Game } from '@/models/game';
+import { Slot } from '@/models/slot.ts';
 import { toast } from 'sonner';
 import {
   DropdownMenu,
@@ -22,7 +23,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu';
-import { deleteGame, saveGame, setGameIcon } from '@/api/games';
+import { createSlot, deleteGame, saveGame, setGameIcon, switchSlot } from '@/api/games';
 import { queryClient } from '@/lib/query-client';
 import { confirm, open } from '@tauri-apps/plugin-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -53,7 +54,7 @@ function GameDetail(): ReactElement {
   }
 
   const game = fullGame;
-  const { versions, tracked_dirs } = fullGame;
+  const { versions, tracked_dirs, slots } = fullGame;
 
   async function handleDelete(): Promise<void> {
     const confirmed = await confirm(
@@ -133,6 +134,7 @@ function GameDetail(): ReactElement {
       const updated = new Game(newTitle);
       updated.id = game.id;
       updated.active_version_id = game.active_version_id;
+      updated.active_slot_id = game.active_slot_id;
       updated.tracked_dirs = tracked_dirs;
       await saveGame(updated);
       void queryClient.invalidateQueries({ queryKey: ['game', id] });
@@ -152,6 +154,7 @@ function GameDetail(): ReactElement {
       const updated = new Game(game.title);
       updated.id = game.id;
       updated.active_version_id = game.active_version_id;
+      updated.active_slot_id = game.active_slot_id;
       updated.tracked_dirs = [...tracked_dirs, { path: selected }];
       await saveGame(updated);
       void queryClient.invalidateQueries({ queryKey: ['game', id] });
@@ -159,6 +162,36 @@ function GameDetail(): ReactElement {
     } catch (err) {
       console.error(err);
       toast.error('Failed to add directory');
+    }
+  }
+
+  async function handleCreateSlot(name: string): Promise<void> {
+    try {
+      await createSlot(game.id, name);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['game', id] }),
+        queryClient.invalidateQueries({ queryKey: ['games'] }),
+      ]);
+      toast.success(`Created slot ${name}`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to create slot');
+      throw err;
+    }
+  }
+
+  async function handleSwitchSlot(slot: Slot): Promise<void> {
+    try {
+      await switchSlot(game.id, slot.id);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['game', id] }),
+        queryClient.invalidateQueries({ queryKey: ['games'] }),
+      ]);
+      toast.success(`Switched to ${slot.name}`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to switch slot');
+      throw err;
     }
   }
 
@@ -200,7 +233,7 @@ function GameDetail(): ReactElement {
 
           <div className="flex items-center gap-3">
             <StatChip label={`${versions.length.toString()} total saves`} />
-            <StatChip label="1 slot" />
+            <StatChip label={`${slots.length.toString()} ${slots.length === 1 ? 'slot' : 'slots'}`} />
           </div>
         </div>
       </header>
@@ -227,7 +260,12 @@ function GameDetail(): ReactElement {
         <div>
           <TabsContent value="timeline" className="m-0 p-8 pt-6">
             <div className="flex items-center justify-between mb-8">
-              <SlotSelector />
+              <SlotSelector
+                slots={slots}
+                activeSlotId={game.active_slot?.id}
+                onSwitch={handleSwitchSlot}
+                onCreate={handleCreateSlot}
+              />
               <div className="flex items-center gap-1 p-1 bg-el rounded-lg">
                 <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md bg-sf shadow-sm text-primary">
                   <ListTree size={14} />

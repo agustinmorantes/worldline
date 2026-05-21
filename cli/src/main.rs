@@ -78,8 +78,14 @@ fn init_core_with_debounce(
     pool.get()?
         .run_pending_migrations(MIGRATIONS)
         .expect("migrations failed");
-    let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
-    let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.clone(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.clone(),
+    ));
     let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
     let working_base = data_dir.join("repository");
     let icons_dir = data_dir.join("icons");
@@ -130,7 +136,10 @@ fn main() -> Result<()> {
                 let game = core.save_game(
                     GameForm {
                         id: Some(id),
+                        uuid: None,
                         title: &title,
+                        title_normalized: None,
+                        folder_slug: None,
                         active_version_id: None,
                         icon_path: None,
                     },
@@ -143,7 +152,10 @@ fn main() -> Result<()> {
                 let game = core.save_game(
                     GameForm {
                         id: None,
+                        uuid: None,
                         title: &title,
+                        title_normalized: None,
+                        folder_slug: None,
                         active_version_id: None,
                         icon_path: None,
                     },

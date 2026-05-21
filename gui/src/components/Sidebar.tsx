@@ -93,7 +93,9 @@ function SidebarGameItem({ game }: { game: FullGame }): ReactElement {
       <GameIcon title={game.title} size={28} iconPath={game.icon_path} />
       <div className="flex flex-col min-w-0">
         <span className="text-xs font-semibold truncate tracking-tight">{game.title}</span>
-        <span className="text-[10px] text-muted-foreground/70 font-medium">1 slot</span>
+        <span className="text-[10px] text-muted-foreground/70 font-medium">
+          {`${game.slots.length.toString()} ${game.slots.length === 1 ? 'slot' : 'slots'}`}
+        </span>
       </div>
     </Link>
   )

@@ -188,60 +188,11 @@ pub fn resolve_placeholders(
     store_user_id: Option<&str>,
     store_game_id: Option<&str>,
 ) -> String {
-    let mut path = template.to_string();
+    let mut path = crate::path_placeholders::expand_path_placeholders(template);
 
-    if path.contains("<home>") {
-        if let Some(home) = dirs::home_dir() {
-            path = path.replace("<home>", &home.to_string_lossy());
-        }
-    }
-    if path.contains("<osUserName>") {
-        let username = std::env::var("USERNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_default();
-        path = path.replace("<osUserName>", &username);
-    }
-    if path.contains("<winAppData>") {
-        let appdata = std::env::var("APPDATA").unwrap_or_default();
-        path = path.replace("<winAppData>", &appdata);
-    }
-    if path.contains("<winLocalAppData>") {
-        let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        path = path.replace("<winLocalAppData>", &localappdata);
-    }
-    if path.contains("<winLocalAppDataLow>") {
-        if let Some(home) = dirs::home_dir() {
-            let locallow = home.join("AppData").join("LocalLow");
-            path = path.replace("<winLocalAppDataLow>", &locallow.to_string_lossy());
-        }
-    }
-    if path.contains("<winDocuments>") {
-        if let Some(docs) = dirs::document_dir() {
-            path = path.replace("<winDocuments>", &docs.to_string_lossy());
-        }
-    }
-    if path.contains("<winPublic>") {
-        let public = std::env::var("PUBLIC").unwrap_or_else(|_| "C:\\Users\\Public".to_string());
-        path = path.replace("<winPublic>", &public);
-    }
-    if path.contains("<winProgramData>") {
-        let progdata =
-            std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData".to_string());
-        path = path.replace("<winProgramData>", &progdata);
-    }
     if path.contains("<winDir>") {
         let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
         path = path.replace("<winDir>", &windir);
-    }
-    if path.contains("<xdgData>") {
-        if let Some(data) = dirs::data_dir() {
-            path = path.replace("<xdgData>", &data.to_string_lossy());
-        }
-    }
-    if path.contains("<xdgConfig>") {
-        if let Some(config) = dirs::config_dir() {
-            path = path.replace("<xdgConfig>", &config.to_string_lossy());
-        }
     }
 
     if let Some(r) = root {

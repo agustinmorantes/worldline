@@ -23,11 +23,16 @@ fn init_db() -> Pool<ConnectionManager<SqliteConnection>> {
 #[test]
 fn test_full_e2e_flow() {
     let pool = init_db();
-    let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
-    let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));
-    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
-
     let working_base = tempdir().unwrap();
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
     let source_dir = tempdir().unwrap();
 
     let save_file = source_dir.path().join("save.dat");
@@ -46,8 +51,12 @@ fn test_full_e2e_flow() {
 
     let form = GameForm {
         id: None,
+        uuid: None,
         title: "E2E Test",
+        title_normalized: None,
+        folder_slug: None,
         active_version_id: None,
+        active_slot_id: None,
         icon_path: None,
     };
     let path_str = source_dir.path().to_str().unwrap();
@@ -84,18 +93,14 @@ fn test_full_e2e_flow() {
     assert!(change_detected, "Change was not detected automatically");
 
     let full_game = core.get_game(game.id).unwrap();
-    let version_folder = working_base
-        .path()
-        .join(game.id.to_string())
-        .join(
-            full_game
-                .versions
-                .last()
-                .unwrap()
-                .version_number
-                .to_string(),
-        )
-        .join(full_game.tracked_dirs[0].id.to_string());
+    let version_folder = savegame_timeline_core::repository::game_snapshot_dir(
+        working_base.path(),
+        &full_game.game,
+        full_game.active_slot.as_ref().unwrap(),
+        full_game.versions.last().unwrap(),
+        &full_game.tracked_dirs[0],
+    )
+    .unwrap();
 
     let copied_file = version_folder.join("save.dat");
     assert!(copied_file.exists());
@@ -124,11 +129,16 @@ fn test_full_e2e_flow() {
 #[test]
 fn test_negative_facade_paths() {
     let pool = init_db();
-    let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
-    let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));
-    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
-
     let working_base = tempdir().unwrap();
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
     let icons_dir = tempdir().unwrap();
 
     let (core, _notif_rx) = TimelineCore::new(
@@ -147,4 +157,81 @@ fn test_negative_facade_paths() {
         res.is_err(),
         "Expected error when restoring non-existent version"
     );
+}
+
+#[test]
+fn test_slot_creation_and_switching_preserve_independent_histories() {
+    let pool = init_db();
+    let working_base = tempdir().unwrap();
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
+    let source_dir = tempdir().unwrap();
+    let icons_dir = tempdir().unwrap();
+
+    let save_file = source_dir.path().join("save.dat");
+    fs::write(&save_file, "slot-one-state").unwrap();
+
+    let (core, _notif_rx) = TimelineCore::new(
+        games_repo.clone(),
+        versions_repo.clone(),
+        scan_roots_repo,
+        working_base.path().to_path_buf(),
+        icons_dir.path().to_path_buf(),
+        Some(0.1),
+    )
+    .unwrap();
+
+    let game = core
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Slot Switch Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_version_id: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            Some(vec![source_dir.path().to_str().unwrap()]),
+        )
+        .unwrap();
+
+    let game_with_new_slot = core.create_slot(game.id, "Second Slot").unwrap();
+    assert_eq!(
+        game_with_new_slot.active_slot.as_ref().unwrap().name,
+        "Second Slot"
+    );
+    assert_eq!(fs::read_dir(source_dir.path()).unwrap().count(), 0);
+
+    fs::write(&save_file, "slot-two-state").unwrap();
+
+    let default_slot_id = game_with_new_slot
+        .slots
+        .iter()
+        .find(|slot| slot.name == "Default Slot")
+        .unwrap()
+        .id;
+    let second_slot_id = game_with_new_slot.active_slot.as_ref().unwrap().id;
+
+    let default_game = core.switch_slot(game.id, default_slot_id).unwrap();
+    assert_eq!(
+        default_game.active_slot.as_ref().unwrap().name,
+        "Default Slot"
+    );
+    assert_eq!(fs::read_to_string(&save_file).unwrap(), "slot-one-state");
+
+    let second_game = core.switch_slot(game.id, second_slot_id).unwrap();
+    assert_eq!(
+        second_game.active_slot.as_ref().unwrap().name,
+        "Second Slot"
+    );
+    assert_eq!(fs::read_to_string(&save_file).unwrap(), "slot-two-state");
 }

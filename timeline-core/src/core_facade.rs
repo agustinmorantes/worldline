@@ -3,6 +3,7 @@ use crate::install_scanner::InstallScannerItem;
 use crate::models::*;
 use crate::persistence::{GameRepository, ScanRootsRepository, VersionRepository};
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,6 +25,9 @@ impl TimelineCore {
         icons_dir: PathBuf,
         new_version_seconds: Option<f32>,
     ) -> Result<(Self, NotificationReceiver)> {
+        crate::repository::ensure_repository_root(&working_base)
+            .context("Failed to initialize repository root")?;
+
         let (cmd_tx, notif_rx) = detection::init(
             games_repo.clone(),
             versions_repo.clone(),
@@ -52,6 +56,10 @@ impl TimelineCore {
         self.games_repo.get_game(id)
     }
 
+    pub fn get_slots(&self, game_id: i32) -> Result<Vec<FullSlot>> {
+        self.games_repo.list_slots(game_id)
+    }
+
     pub fn save_game(&self, form: GameForm, dirs: Option<Vec<&str>>) -> Result<Game> {
         let game = self.games_repo.save_game(form, dirs)?;
         let all_games = self.games_repo.get_games()?;
@@ -70,65 +78,118 @@ impl TimelineCore {
         self.versions_repo.tag_version(id, tag)
     }
 
+    pub fn create_slot(&self, game_id: i32, name: &str) -> Result<FullGame> {
+        self.run_with_paused_watcher(|| {
+            let current_game = self
+                .games_repo
+                .get_game(game_id)
+                .context("Failed to load game before slot creation")?;
+
+            self.checkpoint_current_state(&current_game)
+                .context("Failed to checkpoint current slot before creating a new slot")?;
+
+            let slot = self
+                .games_repo
+                .create_slot(game_id, name)
+                .context("Failed to create slot")?;
+
+            self.games_repo
+                .set_active_slot(game_id, slot.slot.id)
+                .context("Failed to activate new slot")?;
+
+            let active_game = self
+                .games_repo
+                .get_game(game_id)
+                .context("Failed to reload game after activating new slot")?;
+
+            self.clear_tracked_dirs(&active_game)
+                .context("Failed to clear tracked directories for new slot")?;
+
+            let baseline = self
+                .versions_repo
+                .create_version(game_id)
+                .context("Failed to create empty baseline for new slot")?;
+
+            self.ensure_empty_snapshot_dirs(&active_game, &baseline)
+                .context("Failed to initialize empty snapshot for new slot")?;
+
+            self.resync_game_metadata(game_id)
+                .context("Failed to sync metadata after creating slot")?;
+
+            self.games_repo
+                .get_game(game_id)
+                .context("Failed to reload game after creating slot")
+        })
+    }
+
+    pub fn switch_slot(&self, game_id: i32, slot_id: i32) -> Result<FullGame> {
+        self.run_with_paused_watcher(|| {
+            let current_game = self
+                .games_repo
+                .get_game(game_id)
+                .context("Failed to load game before slot switch")?;
+
+            if current_game
+                .active_slot
+                .as_ref()
+                .is_some_and(|slot| slot.id == slot_id)
+            {
+                return Ok(current_game);
+            }
+
+            self.checkpoint_current_state(&current_game)
+                .context("Failed to checkpoint current slot before switching")?;
+
+            self.games_repo
+                .set_active_slot(game_id, slot_id)
+                .context("Failed to activate target slot")?;
+
+            let target_game = self
+                .games_repo
+                .get_game(game_id)
+                .context("Failed to reload game after switching slots")?;
+
+            if let Some(version) = target_game.last_version.as_ref() {
+                let full_version = self
+                    .versions_repo
+                    .get_version(version.id)
+                    .context("Failed to load active version for target slot")?;
+                self.restore_version_files(&target_game, &full_version)
+                    .context("Failed to restore target slot snapshot")?;
+            } else {
+                self.clear_tracked_dirs(&target_game)
+                    .context("Failed to clear tracked directories for empty slot")?;
+            }
+
+            self.resync_game_metadata(game_id)
+                .context("Failed to sync metadata after switching slots")?;
+
+            self.games_repo
+                .get_game(game_id)
+                .context("Failed to reload game after switching slots")
+        })
+    }
+
     pub fn restore_version(&self, version_id: i32) -> Result<()> {
-        self.cmd_tx
-            .send(Command::Pause)
-            .context("Failed to send pause command")?;
+        self.run_with_paused_watcher(|| {
+            let version = self
+                .versions_repo
+                .set_active_version(version_id)
+                .context("Failed to activate version for restoration")?;
+            let game = self
+                .games_repo
+                .get_game(version.game.id)
+                .context("Failed to reload game for restoration")?;
 
-        let version = self
-            .versions_repo
-            .get_version(version_id)
-            .context("Failed to get version")?;
-        let game = self
-            .games_repo
-            .get_game(version.game.id)
-            .context("Failed to get game")?;
-        let dirs = &game.tracked_dirs;
+            self.restore_version_files(&game, &version)
+                .context("Failed to restore version files")?;
+            self.resync_game_metadata(game.game.id)
+                .context("Failed to sync metadata after restoration")?;
 
-        // Update active_version_id to the restored version ID
-        // This effectively sets the "parent" for the next auto-save
-        self.games_repo
-            .save_game(
-                GameForm {
-                    id: Some(game.game.id),
-                    title: &game.game.title,
-                    active_version_id: Some(version_id),
-                    icon_path: None,
-                },
-                None,
-            )
-            .context("Failed to update active_version_id for restoration")?;
+            println!("Restored version {} for game {}", version_id, game.game.id);
 
-        let paths: Vec<_> = dirs.iter().map(|dir| dir.path.as_str()).collect();
-
-        for path in &paths {
-            let _ = fs_extra::remove_items(&[*path]);
-        }
-
-        for dir in dirs {
-            let from = self
-                .working_base
-                .join(game.game.id.to_string())
-                .join(version.version.version_number.to_string())
-                .join(dir.id.to_string());
-
-            let to = std::path::PathBuf::from(&dir.path);
-
-            crate::fs_utils::copy_dir_filtered(&from, &to).context("Failed to copy directory")?;
-        }
-
-        let all_games = self.games_repo.get_games()?;
-        self.cmd_tx
-            .send(Command::ReregisterGames(all_games))
-            .context("Failed to reregister games")?;
-
-        self.cmd_tx
-            .send(Command::Resume)
-            .context("Failed to send resume command")?;
-
-        println!("Restored version {} for game {}", version_id, game.game.id);
-
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
@@ -160,8 +221,12 @@ impl TimelineCore {
         self.games_repo.save_game(
             GameForm {
                 id: Some(game_id),
+                uuid: game.game.uuid.clone(),
                 title: &game.game.title,
+                title_normalized: game.game.title_normalized.clone(),
+                folder_slug: game.game.folder_slug.clone(),
                 active_version_id: game.game.active_version_id,
+                active_slot_id: game.game.active_slot_id,
                 icon_path: Some(icon_path.clone()),
             },
             None,
@@ -190,6 +255,196 @@ impl TimelineCore {
             .join("cache");
         let custom_roots = self.scan_roots_repo.get_scan_roots()?;
         crate::install_scanner::scan_installed(&cache_dir, &custom_roots)
+    }
+
+    fn run_with_paused_watcher<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.cmd_tx
+            .send(Command::Pause)
+            .context("Failed to send pause command")?;
+
+        let result = operation();
+
+        let reregister_result = self
+            .games_repo
+            .get_games()
+            .context("Failed to reload games after mutation")
+            .and_then(|all_games| {
+                self.cmd_tx
+                    .send(Command::ReregisterGames(all_games))
+                    .context("Failed to reregister games")
+            });
+        let resume_result = self
+            .cmd_tx
+            .send(Command::Resume)
+            .context("Failed to send resume command");
+
+        match result {
+            Ok(value) => {
+                reregister_result?;
+                resume_result?;
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = reregister_result;
+                let _ = resume_result;
+                Err(err)
+            }
+        }
+    }
+
+    fn checkpoint_current_state(&self, game: &FullGame) -> Result<Option<FullVersion>> {
+        if game.tracked_dirs.is_empty() {
+            return Ok(None);
+        }
+
+        let version = self
+            .versions_repo
+            .create_version(game.game.id)
+            .context("Failed to create checkpoint version")?;
+
+        for dir in &game.tracked_dirs {
+            let source_path = Path::new(&dir.path);
+            let snapshot_dir = crate::repository::game_snapshot_dir(
+                &self.working_base,
+                &version.game,
+                &version.slot,
+                &version.version,
+                dir,
+            )
+            .context("Failed to resolve checkpoint snapshot path")?;
+
+            if snapshot_dir.exists() {
+                std::fs::remove_dir_all(&snapshot_dir).with_context(|| {
+                    format!("Failed to clear snapshot dir {}", snapshot_dir.display())
+                })?;
+            }
+
+            if let Some(parent) = snapshot_dir.parent() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create snapshot parent dir {}", parent.display())
+                })?;
+            }
+
+            if source_path.exists() {
+                crate::fs_utils::copy_dir_filtered(source_path, &snapshot_dir)
+                    .context("Failed to copy tracked dir into checkpoint snapshot")?;
+            } else {
+                std::fs::create_dir_all(&snapshot_dir).with_context(|| {
+                    format!(
+                        "Failed to create empty snapshot dir {}",
+                        snapshot_dir.display()
+                    )
+                })?;
+            }
+        }
+
+        self.resync_game_metadata(game.game.id)
+            .context("Failed to sync metadata after checkpoint")?;
+
+        Ok(Some(version))
+    }
+
+    fn clear_tracked_dirs(&self, game: &FullGame) -> Result<()> {
+        for dir in &game.tracked_dirs {
+            let live_dir = Path::new(&dir.path);
+            if live_dir.exists() {
+                std::fs::remove_dir_all(live_dir).with_context(|| {
+                    format!("Failed to clear tracked dir {}", live_dir.display())
+                })?;
+            }
+
+            std::fs::create_dir_all(live_dir).with_context(|| {
+                format!("Failed to recreate tracked dir {}", live_dir.display())
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn restore_version_files(&self, game: &FullGame, version: &FullVersion) -> Result<()> {
+        for dir in &game.tracked_dirs {
+            let live_dir = PathBuf::from(&dir.path);
+            if live_dir.exists() {
+                std::fs::remove_dir_all(&live_dir).with_context(|| {
+                    format!("Failed to clear live tracked dir {}", live_dir.display())
+                })?;
+            }
+
+            let snapshot_dir = crate::repository::game_snapshot_dir(
+                &self.working_base,
+                &game.game,
+                &version.slot,
+                &version.version,
+                dir,
+            )
+            .context("Failed to resolve version snapshot path")?;
+
+            if snapshot_dir.exists() {
+                crate::fs_utils::copy_dir_filtered(&snapshot_dir, &live_dir)
+                    .context("Failed to copy directory")?;
+            } else {
+                std::fs::create_dir_all(&live_dir).with_context(|| {
+                    format!(
+                        "Failed to recreate empty tracked dir {}",
+                        live_dir.display()
+                    )
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ensure_empty_snapshot_dirs(&self, game: &FullGame, version: &FullVersion) -> Result<()> {
+        for dir in &game.tracked_dirs {
+            let snapshot_dir = crate::repository::game_snapshot_dir(
+                &self.working_base,
+                &version.game,
+                &version.slot,
+                &version.version,
+                dir,
+            )
+            .context("Failed to resolve empty slot snapshot path")?;
+
+            if snapshot_dir.exists() {
+                std::fs::remove_dir_all(&snapshot_dir).with_context(|| {
+                    format!("Failed to clear snapshot dir {}", snapshot_dir.display())
+                })?;
+            }
+
+            std::fs::create_dir_all(&snapshot_dir).with_context(|| {
+                format!(
+                    "Failed to create empty snapshot dir {}",
+                    snapshot_dir.display()
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn resync_game_metadata(&self, game_id: i32) -> Result<()> {
+        let game = self
+            .games_repo
+            .get_game(game_id)
+            .context("Failed to load game for metadata sync")?;
+        self.games_repo
+            .save_game(
+                GameForm {
+                    id: Some(game.game.id),
+                    uuid: game.game.uuid.clone(),
+                    title: &game.game.title,
+                    title_normalized: game.game.title_normalized.clone(),
+                    folder_slug: game.game.folder_slug.clone(),
+                    active_version_id: game.game.active_version_id,
+                    active_slot_id: game.game.active_slot_id,
+                    icon_path: game.game.icon_path.clone(),
+                },
+                None,
+            )
+            .context("Failed to persist metadata sync")?;
+
+        Ok(())
     }
 }
 
