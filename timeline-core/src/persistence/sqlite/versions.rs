@@ -44,8 +44,7 @@ impl VersionRepository for SqliteVersionRepository {
             id: None,
             uuid: Some(Uuid::new_v4().to_string()),
             folder_slug: None,
-            game_id: game_id_param,
-            slot_id: Some(active_slot_id),
+            slot_id: active_slot_id,
             version_number: new_version_number,
             tag: None,
             created_at: None,
@@ -76,16 +75,15 @@ impl VersionRepository for SqliteVersionRepository {
                 .get_result(conn)
                 .context("Error updating slot active version")?;
 
-        let updated_game: Game =
-            diesel::update(games::dsl::games.filter(games::dsl::id.eq(game_id_param)))
-                .set(games::dsl::active_version_id.eq(version.id))
-                .returning(Game::as_returning())
-                .get_result(conn)
-                .context("Error updating game active version mirror")?;
+        let game: Game = games::dsl::games
+            .filter(games::dsl::id.eq(updated_slot.game_id))
+            .select(Game::as_select())
+            .first(conn)
+            .context("Error loading game for version")?;
 
         let full_version = FullVersion {
             version,
-            game: updated_game,
+            game,
             slot: updated_slot,
         };
 
@@ -114,23 +112,18 @@ impl VersionRepository for SqliteVersionRepository {
             .first(conn)
             .context("Error loading version to activate")?;
 
-        let slot_id = version.slot_id.context("Version is missing a slot_id")?;
-
-        let slot: Slot = diesel::update(slots::dsl::slots.filter(slots::dsl::id.eq(slot_id)))
-            .set(slots::dsl::active_version_id.eq(version.id))
-            .returning(Slot::as_returning())
-            .get_result(conn)
-            .context("Error updating slot active version")?;
-
-        let game: Game =
-            diesel::update(games::dsl::games.filter(games::dsl::id.eq(version.game_id)))
-                .set((
-                    games::dsl::active_slot_id.eq(slot.id),
-                    games::dsl::active_version_id.eq(version.id),
-                ))
-                .returning(Game::as_returning())
+        let slot: Slot =
+            diesel::update(slots::dsl::slots.filter(slots::dsl::id.eq(version.slot_id)))
+                .set(slots::dsl::active_version_id.eq(version.id))
+                .returning(Slot::as_returning())
                 .get_result(conn)
-                .context("Error updating game active version")?;
+                .context("Error updating slot active version")?;
+
+        let game: Game = diesel::update(games::dsl::games.filter(games::dsl::id.eq(slot.game_id)))
+            .set(games::dsl::active_slot_id.eq(slot.id))
+            .returning(Game::as_returning())
+            .get_result(conn)
+            .context("Error updating game active version")?;
 
         let full_version = FullVersion {
             version,
@@ -178,17 +171,17 @@ impl VersionRepository for SqliteVersionRepository {
             .first(conn)
             .context("Error fetching version")?;
 
-        let game: Game = games_dsl::games
-            .filter(games_dsl::id.eq(version.game_id))
-            .select(Game::as_select())
-            .first(conn)
-            .context("Error fetching game for version")?;
-        let slot_id = version.slot_id.context("Version is missing a slot_id")?;
         let slot: Slot = slots_dsl::slots
-            .filter(slots_dsl::id.eq(slot_id))
+            .filter(slots_dsl::id.eq(version.slot_id))
             .select(Slot::as_select())
             .first(conn)
             .context("Error fetching slot for version")?;
+
+        let game: Game = games_dsl::games
+            .filter(games_dsl::id.eq(slot.game_id))
+            .select(Game::as_select())
+            .first(conn)
+            .context("Error fetching game for version")?;
 
         Ok(FullVersion {
             version,
@@ -217,7 +210,7 @@ fn load_full_game(conn: &mut diesel::SqliteConnection, id: i32) -> Result<crate:
         .order_by(crate::schema::slots::dsl::created_at.asc())
         .load(conn)?;
 
-    let loaded_versions: Vec<Version> = Version::belonging_to(&game)
+    let loaded_versions: Vec<Version> = Version::belonging_to(&slots_for_game)
         .select(Version::as_select())
         .order_by(versions::dsl::created_at.desc())
         .load(conn)?;
@@ -229,7 +222,7 @@ fn load_full_game(conn: &mut diesel::SqliteConnection, id: i32) -> Result<crate:
     let active_slot_versions = if let Some(slot) = active_slot.as_ref() {
         loaded_versions
             .iter()
-            .filter(|version| version.slot_id == Some(slot.id))
+            .filter(|version| version.slot_id == slot.id)
             .cloned()
             .collect()
     } else {

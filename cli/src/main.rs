@@ -78,6 +78,7 @@ fn init_core_with_debounce(
     pool.get()?
         .run_pending_migrations(MIGRATIONS)
         .expect("migrations failed");
+    let working_base = data_dir.join("repository");
     let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
         pool.clone(),
         working_base.clone(),
@@ -87,7 +88,6 @@ fn init_core_with_debounce(
         working_base.clone(),
     ));
     let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
-    let working_base = data_dir.join("repository");
     let icons_dir = data_dir.join("icons");
     TimelineCore::new(
         games_repo,
@@ -140,7 +140,7 @@ fn main() -> Result<()> {
                         title: &title,
                         title_normalized: None,
                         folder_slug: None,
-                        active_version_id: None,
+                        active_slot_id: None,
                         icon_path: None,
                     },
                     None,
@@ -156,7 +156,7 @@ fn main() -> Result<()> {
                         title: &title,
                         title_normalized: None,
                         folder_slug: None,
-                        active_version_id: None,
+                        active_slot_id: None,
                         icon_path: None,
                     },
                     if dir_refs.is_empty() {

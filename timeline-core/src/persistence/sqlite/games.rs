@@ -16,7 +16,6 @@ struct PersistedGameForm {
     title: String,
     title_normalized: Option<String>,
     folder_slug: Option<String>,
-    active_version_id: Option<i32>,
     active_slot_id: Option<i32>,
     icon_path: Option<String>,
 }
@@ -40,31 +39,31 @@ impl GameRepository for SqliteGameRepository {
             .select(Slot::as_select())
             .load(conn)?;
 
-        let loaded_versions = Version::belonging_to(&all_games)
+        let loaded_versions = Version::belonging_to(&all_slots)
             .select(Version::as_select())
             .load(conn)?;
+
+        let versions_by_slot: std::collections::HashMap<i32, Vec<Version>> = all_slots
+            .iter()
+            .zip(loaded_versions.grouped_by(&all_slots))
+            .map(|(slot, versions)| (slot.id, versions))
+            .collect();
 
         let res = dirs
             .grouped_by(&all_games)
             .into_iter()
             .zip(all_slots.grouped_by(&all_games))
-            .into_iter()
-            .zip(loaded_versions.grouped_by(&all_games))
             .zip(all_games)
-            .map(|(((dirs, slots), versions), game)| {
+            .map(|((dirs, slots), game)| {
                 let active_slot = slots
                     .iter()
                     .find(|slot| Some(slot.id) == game.active_slot_id)
                     .cloned();
-                let active_slot_versions = if let Some(slot) = active_slot.as_ref() {
-                    versions
-                        .iter()
-                        .filter(|version| version.slot_id == Some(slot.id))
-                        .cloned()
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let active_slot_versions = active_slot
+                    .as_ref()
+                    .and_then(|slot| versions_by_slot.get(&slot.id))
+                    .cloned()
+                    .unwrap_or_default();
                 let last_version = if let Some(slot) = active_slot.as_ref() {
                     active_slot_versions
                         .iter()
@@ -175,10 +174,7 @@ impl GameRepository for SqliteGameRepository {
                 .context("Error loading slot to activate")?;
 
             diesel::update(games_dsl::games.filter(games_dsl::id.eq(game_id)))
-                .set((
-                    games_dsl::active_slot_id.eq(slot.id),
-                    games_dsl::active_version_id.eq(slot.active_version_id),
-                ))
+                .set(games_dsl::active_slot_id.eq(slot.id))
                 .execute(conn)
                 .context("Error updating active slot")?;
 
@@ -295,7 +291,7 @@ fn load_full_game(conn: &mut diesel::SqliteConnection, id: i32) -> Result<FullGa
         .order_by(crate::schema::slots::dsl::created_at.asc())
         .load(conn)?;
 
-    let loaded_versions: Vec<Version> = Version::belonging_to(&game)
+    let loaded_versions: Vec<Version> = Version::belonging_to(&slots)
         .select(Version::as_select())
         .order_by(versions::dsl::created_at.desc())
         .load(conn)?;
@@ -307,7 +303,7 @@ fn load_full_game(conn: &mut diesel::SqliteConnection, id: i32) -> Result<FullGa
     let active_slot_versions = if let Some(slot) = active_slot.as_ref() {
         loaded_versions
             .iter()
-            .filter(|version| version.slot_id == Some(slot.id))
+            .filter(|version| version.slot_id == slot.id)
             .cloned()
             .collect()
     } else {
@@ -431,7 +427,6 @@ fn enrich_game_form(
         title,
         title_normalized: Some(title_normalized),
         folder_slug: Some(folder_slug),
-        active_version_id: form.active_version_id,
         active_slot_id: form
             .active_slot_id
             .or(existing.as_ref().and_then(|game| game.active_slot_id)),
@@ -458,7 +453,7 @@ fn ensure_default_slot(conn: &mut diesel::SqliteConnection, game: &Game) -> Resu
             "Default Slot",
             slot_uuid,
         ),
-        active_version_id: game.active_version_id,
+        active_version_id: None,
         created_at: Some(Utc::now().naive_utc()),
         updated_at: Some(Utc::now().naive_utc()),
     };

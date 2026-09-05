@@ -55,7 +55,6 @@ fn test_full_e2e_flow() {
         title: "E2E Test",
         title_normalized: None,
         folder_slug: None,
-        active_version_id: None,
         active_slot_id: None,
         icon_path: None,
     };
@@ -196,7 +195,6 @@ fn test_slot_creation_and_switching_preserve_independent_histories() {
                 title: "Slot Switch Test",
                 title_normalized: None,
                 folder_slug: None,
-                active_version_id: None,
                 active_slot_id: None,
                 icon_path: None,
             },
@@ -234,4 +232,77 @@ fn test_slot_creation_and_switching_preserve_independent_histories() {
         "Second Slot"
     );
     assert_eq!(fs::read_to_string(&save_file).unwrap(), "slot-two-state");
+}
+
+/// Everything a facade test needs. Fields are kept alive by the struct:
+/// dropping a `TempDir` deletes it, so these must outlive the test body.
+#[allow(dead_code)]
+struct Harness {
+    core: TimelineCore,
+    pool: Pool<ConnectionManager<SqliteConnection>>,
+    working_base: tempfile::TempDir,
+    source_dir: tempfile::TempDir,
+    _icons_dir: tempfile::TempDir,
+    save_file: std::path::PathBuf,
+}
+
+#[allow(dead_code)]
+fn harness(initial_contents: &str) -> Harness {
+    let pool = init_db();
+    let working_base = tempdir().unwrap();
+    let source_dir = tempdir().unwrap();
+    let icons_dir = tempdir().unwrap();
+
+    let save_file = source_dir.path().join("save.dat");
+    fs::write(&save_file, initial_contents).unwrap();
+
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
+
+    let (core, _rx) = TimelineCore::new(
+        games_repo,
+        versions_repo,
+        scan_roots_repo,
+        working_base.path().to_path_buf(),
+        icons_dir.path().to_path_buf(),
+        Some(0.1),
+    )
+    .unwrap();
+
+    Harness {
+        core,
+        pool,
+        working_base,
+        source_dir,
+        _icons_dir: icons_dir,
+        save_file,
+    }
+}
+
+#[allow(dead_code)]
+impl Harness {
+    /// Creates a game tracking `source_dir`, returning the created game.
+    fn create_game(&self, title: &str) -> Game {
+        self.core
+            .save_game(
+                GameForm {
+                    id: None,
+                    uuid: None,
+                    title,
+                    title_normalized: None,
+                    folder_slug: None,
+                    active_slot_id: None,
+                    icon_path: None,
+                },
+                Some(vec![self.source_dir.path().to_str().unwrap()]),
+            )
+            .unwrap()
+    }
 }

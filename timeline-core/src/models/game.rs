@@ -14,7 +14,6 @@ pub struct Game {
     pub title: String,
     pub title_normalized: Option<String>,
     pub folder_slug: Option<String>,
-    pub active_version_id: Option<i32>,
     pub active_slot_id: Option<i32>,
     pub icon_path: Option<String>,
 }
@@ -29,7 +28,6 @@ pub struct GameForm<'a> {
     pub title: &'a str,
     pub title_normalized: Option<String>,
     pub folder_slug: Option<String>,
-    pub active_version_id: Option<i32>,
     pub active_slot_id: Option<i32>,
     pub icon_path: Option<String>,
 }

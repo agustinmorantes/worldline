@@ -29,7 +29,6 @@ fn test_game_crud() {
         title: "Integration Test Game",
         title_normalized: None,
         folder_slug: None,
-        active_version_id: None,
         active_slot_id: None,
         icon_path: None,
     };
@@ -73,7 +72,6 @@ fn test_game_crud() {
         title: "Updated Game",
         title_normalized: None,
         folder_slug: None,
-        active_version_id: None,
         active_slot_id: None,
         icon_path: None,
     };
@@ -112,7 +110,6 @@ fn test_version_operations() {
         title: "Game",
         title_normalized: None,
         folder_slug: None,
-        active_version_id: None,
         active_slot_id: None,
         icon_path: None,
     };
@@ -136,9 +133,14 @@ fn test_version_operations() {
             .is_some_and(|value| value.starts_with("v001__v_"))
     );
 
-    // Check if game was updated with activeversion
+    // Check if the active slot was updated with the active version
+    // (the game-level mirror was removed by the fix_schema migration; the
+    // slot's active_version_id is now the only active-version pointer).
     let g = games_repo.get_game(game.id).unwrap();
-    assert_eq!(g.game.active_version_id, Some(version.version.id));
+    assert_eq!(
+        g.active_slot.as_ref().unwrap().active_version_id,
+        Some(version.version.id)
+    );
 
     // Tag version
     let tagged = versions_repo
@@ -189,7 +191,6 @@ fn test_repository_metadata_is_written_for_game_and_version() {
                 title: "Metadata Test",
                 title_normalized: None,
                 folder_slug: None,
-                active_version_id: None,
                 active_slot_id: None,
                 icon_path: None,
             },
@@ -241,7 +242,6 @@ fn test_slot_repository_operations() {
                 title: "Slot Test",
                 title_normalized: None,
                 folder_slug: None,
-                active_version_id: None,
                 active_slot_id: None,
                 icon_path: None,
             },

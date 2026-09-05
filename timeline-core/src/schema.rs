@@ -7,9 +7,10 @@ diesel::table! {
         title -> Text,
         title_normalized -> Nullable<Text>,
         folder_slug -> Nullable<Text>,
-        active_version_id -> Nullable<Integer>,
         active_slot_id -> Nullable<Integer>,
         icon_path -> Nullable<Text>,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
     }
 }
 
@@ -34,6 +35,11 @@ diesel::table! {
         folder_slug -> Nullable<Text>,
         path -> Text,
         game_id -> Integer,
+        label -> Nullable<Text>,
+        exclusions -> Text,
+        retired_at -> Nullable<Timestamp>,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
     }
 }
 
@@ -43,9 +49,10 @@ diesel::table! {
         uuid -> Nullable<Text>,
         folder_slug -> Nullable<Text>,
         version_number -> Integer,
-        game_id -> Integer,
-        slot_id -> Nullable<Integer>,
+        slot_id -> Integer,
         tag -> Nullable<Text>,
+        reason -> Text,
+        content_hash -> Nullable<Text>,
         created_at -> Timestamp,
         parent_id -> Nullable<Integer>,
     }
@@ -60,7 +67,6 @@ diesel::table! {
 
 diesel::joinable!(tracked_dirs -> games (game_id));
 diesel::joinable!(slots -> games (game_id));
-diesel::joinable!(versions -> games (game_id));
 diesel::joinable!(versions -> slots (slot_id));
 
 diesel::allow_tables_to_appear_in_same_query!(games, scan_roots, slots, tracked_dirs, versions,);
