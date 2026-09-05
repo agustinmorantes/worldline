@@ -62,6 +62,14 @@ pub fn clear_dir_except(dir: &Path, exclusions: &[Pattern]) -> Result<()> {
 }
 
 /// Returns whether anything was kept inside `dir`.
+///
+/// Deliberately checks ONLY the user exclusions, unlike its visual sibling
+/// `copy_dir_inner`, which also consults the global `is_excluded_file` list. Do not
+/// "fix" this for symmetry: globally excluded files (`.log`, `.tmp`, ...) are never
+/// captured into a snapshot, so preserving them here would mean they are never
+/// refreshed either — they would pile up in the live directory forever, across every
+/// slot switch and restore, with no way for the user to clear them. Anything a user
+/// actually wants preserved is expressible as a per-directory user exclusion.
 fn clear_dir_inner(dir: &Path, exclusions: &[Pattern], relative: &Path) -> Result<bool> {
     let mut kept_anything = false;
     for entry in std::fs::read_dir(dir)? {

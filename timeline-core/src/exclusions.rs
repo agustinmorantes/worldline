@@ -22,7 +22,9 @@ pub fn parse(raw: &str) -> Vec<Pattern> {
 }
 
 /// True if `relative_path` (relative to the tracked dir root) matches any pattern,
-/// either as a whole path or by file name alone, so `*.cfg` excludes nested files too.
+/// as a whole path or by file name alone. The file-name fallback is what makes a
+/// literal, wildcard-free pattern such as `quicksave.dat` match at any depth; patterns
+/// containing `*` already span separators, because `require_literal_separator` is off.
 pub fn is_excluded(patterns: &[Pattern], relative_path: &Path) -> bool {
     if patterns.is_empty() {
         return false;
