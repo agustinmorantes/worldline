@@ -230,9 +230,10 @@ impl FsEventHandler {
         game: &FullGame,
         monitoring_settings: MonitoringSettings,
     ) -> Result<Option<FullVersion>> {
-        let cooldown_cutoff =
-            Utc::now().naive_utc() - Duration::minutes(i64::from(monitoring_settings.version_cooldown_minutes));
-        let latest_version_created_at = game.versions.iter().map(|version| version.created_at).max();
+        let cooldown_cutoff = Utc::now().naive_utc()
+            - Duration::minutes(i64::from(monitoring_settings.version_cooldown_minutes));
+        let latest_version_created_at =
+            game.versions.iter().map(|version| version.created_at).max();
 
         if latest_version_created_at.is_some_and(|created_at| created_at > cooldown_cutoff) {
             return Ok(None);

@@ -293,7 +293,13 @@ impl TimelineCore {
             let safe_title: String = item
                 .title
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             let cache_png = icon_cache_dir.join(format!("{safe_title}.png"));
 
@@ -532,11 +538,15 @@ fn load_monitoring_settings(path: &std::path::Path) -> Result<MonitoringSettings
     }
 
     let contents = fs::read_to_string(path).context("Failed to read monitoring settings")?;
-    let settings = serde_json::from_str(&contents).context("Failed to parse monitoring settings")?;
+    let settings =
+        serde_json::from_str(&contents).context("Failed to parse monitoring settings")?;
     Ok(settings)
 }
 
-fn save_monitoring_settings(path: &std::path::Path, monitoring_settings: MonitoringSettings) -> Result<()> {
+fn save_monitoring_settings(
+    path: &std::path::Path,
+    monitoring_settings: MonitoringSettings,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("Failed to create monitoring settings directory")?;
     }

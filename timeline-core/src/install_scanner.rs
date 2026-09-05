@@ -396,16 +396,16 @@ fn find_largest_exe(dir: &Path) -> Option<String> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let is_exe = path
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.eq_ignore_ascii_case("exe"))
                 .unwrap_or(false);
-            if is_exe && !is_non_game_exe(filename) && let Ok(meta) = entry.metadata() {
+            if is_exe
+                && !is_non_game_exe(filename)
+                && let Ok(meta) = entry.metadata()
+            {
                 let size = meta.len();
                 if best.as_ref().is_none_or(|(s, _)| size > *s) {
                     best = Some((size, path));
@@ -1124,7 +1124,8 @@ fn custom_roots_scan(
                             }
 
                             if !verified_dirs.is_empty() {
-                                let icon_path = find_ico_file(&path).or_else(|| find_largest_exe(&path));
+                                let icon_path =
+                                    find_ico_file(&path).or_else(|| find_largest_exe(&path));
                                 let last_modified_at = max_mtime_in_dirs(&verified_dirs);
                                 results.insert(
                                     title.to_string(),

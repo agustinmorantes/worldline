@@ -35,13 +35,22 @@ fn delete_game(id: i32, core: State<Arc<TimelineCore>>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn create_slot(game_id: i32, name: String, core: State<Arc<TimelineCore>>) -> Result<FullGame, String> {
+fn create_slot(
+    game_id: i32,
+    name: String,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
     core.create_slot(game_id, &name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn switch_slot(game_id: i32, slot_id: i32, core: State<Arc<TimelineCore>>) -> Result<FullGame, String> {
-    core.switch_slot(game_id, slot_id).map_err(|e| e.to_string())
+fn switch_slot(
+    game_id: i32,
+    slot_id: i32,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    core.switch_slot(game_id, slot_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

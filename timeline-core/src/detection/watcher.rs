@@ -30,17 +30,17 @@ pub fn watch(mut ctx: WatcherContext) {
         (debouncer, fs_rx)
     };
 
-    let spawn_fs_listener =
-        |fs_rx: mpsc::Receiver<DebounceEventResult>, agg_tx: mpsc::Sender<AggregatedEvent>| {
-            std::thread::spawn(move || {
-                for event in fs_rx {
-                    match agg_tx.send(AggregatedEvent::FsEvent(event)) {
-                        Ok(_) => {}
-                        Err(_) => break,
-                    }
+    let spawn_fs_listener = |fs_rx: mpsc::Receiver<DebounceEventResult>,
+                             agg_tx: mpsc::Sender<AggregatedEvent>| {
+        std::thread::spawn(move || {
+            for event in fs_rx {
+                match agg_tx.send(AggregatedEvent::FsEvent(event)) {
+                    Ok(_) => {}
+                    Err(_) => break,
                 }
-            });
-        };
+            }
+        });
+    };
 
     let register_games = |debouncer: &mut RecommendedDebouncer, games: &[FullGame]| {
         for game in games {

@@ -108,7 +108,10 @@ fn test_restore_uses_version_id_not_version_number() {
         .expect("Game 2 should have at least one version");
 
     // Precondition: this is the exact mismatch the bug exploited.
-    assert_eq!(version.version_number, 1, "Game 2's first version_number should be 1");
+    assert_eq!(
+        version.version_number, 1,
+        "Game 2's first version_number should be 1"
+    );
     assert!(
         version.id > version.version_number,
         "Game 2's version id ({}) should be greater than its version_number ({}) \
