@@ -576,6 +576,94 @@ fn test_switch_slot_to_never_versioned_slot_clears_live_dir() {
     );
 }
 
+#[test]
+fn test_version_metadata_records_parent_uuid() {
+    // NOTE: the brief's version of this test drove `create_slot` once and
+    // then inspected `get_game(...).versions`, which only ever returns the
+    // *active* slot's versions. A freshly created scratch slot's baseline is
+    // parentless by construction, so that setup can never produce a version
+    // with a parent — it would panic on `.expect(...)` before ever reaching
+    // the metadata assertion. Instead, build a genuine two-version chain
+    // inside the SAME (default) slot: leaving a slot always checkpoints its
+    // current live state as a new version whose parent is that slot's
+    // previous active version, exactly as in
+    // `test_switch_slot_restores_slot_active_version_not_newest` above.
+    let h = harness("v1-state");
+    let game = h.create_game("Parent Uuid Test");
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+
+    fs::write(&h.save_file, "v2-state").unwrap();
+    let with_second = h.core.create_slot(game.id, "Scratch").unwrap();
+    let scratch_slot_id = with_second.active_slot.as_ref().unwrap().id;
+    // ^ leaving default just now checkpointed "v2-state" as default's first
+    // (root, parentless) version.
+
+    h.core.switch_slot(game.id, default_slot_id).unwrap();
+    fs::write(&h.save_file, "v3-state").unwrap();
+    h.core.switch_slot(game.id, scratch_slot_id).unwrap();
+    // ^ leaving default again checkpoints "v3-state" as a second version,
+    // genuinely descending from the first.
+
+    let default_slot = h
+        .core
+        .get_slots(game.id)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.slot.id == default_slot_id)
+        .unwrap();
+    assert_eq!(
+        default_slot.versions.len(),
+        2,
+        "default slot should hold both checkpointed versions"
+    );
+
+    let root = default_slot
+        .versions
+        .iter()
+        .find(|v| v.parent_id.is_none())
+        .expect("first checkpoint should have no parent");
+    let child = default_slot
+        .versions
+        .iter()
+        .find(|v| v.parent_id.is_some())
+        .expect("second checkpoint should have a parent");
+    assert_eq!(
+        child.parent_id.unwrap(),
+        root.id,
+        "second version must descend from the first"
+    );
+
+    let game_dir = savegame_timeline_core::repository::game_dir(
+        h.working_base.path(),
+        default_slot.game.folder_slug.as_deref().unwrap(),
+    );
+    let slot_dir =
+        savegame_timeline_core::repository::slot_dir(&game_dir, &default_slot.slot.folder_slug);
+
+    let child_dir = savegame_timeline_core::repository::version_dir(
+        &slot_dir,
+        child.folder_slug.as_deref().unwrap(),
+    );
+    let child_raw = fs::read_to_string(child_dir.join("metadata.json")).unwrap();
+    let child_parsed: serde_json::Value = serde_json::from_str(&child_raw).unwrap();
+    assert_eq!(
+        child_parsed["parent_version_uuid"].as_str().unwrap(),
+        root.uuid.as_deref().unwrap(),
+        "version metadata must record its real parent UUID"
+    );
+
+    let root_dir = savegame_timeline_core::repository::version_dir(
+        &slot_dir,
+        root.folder_slug.as_deref().unwrap(),
+    );
+    let root_raw = fs::read_to_string(root_dir.join("metadata.json")).unwrap();
+    let root_parsed: serde_json::Value = serde_json::from_str(&root_raw).unwrap();
+    assert!(
+        root_parsed["parent_version_uuid"].is_null(),
+        "a root version (no parent) must still write a null parent_version_uuid"
+    );
+}
+
 /// Everything a facade test needs. Fields are kept alive by the struct:
 /// dropping a `TempDir` deletes it, so these must outlive the test body.
 #[allow(dead_code)]

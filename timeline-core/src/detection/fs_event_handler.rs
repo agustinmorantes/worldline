@@ -308,6 +308,7 @@ mod tests {
                         icon_path: None,
                     },
                     slot: default_slot(game_id, Some(2)),
+                    parent_uuid: None,
                 })
             });
 
@@ -450,6 +451,7 @@ mod tests {
                         icon_path: None,
                     },
                     slot: default_slot(game_id, Some(2)),
+                    parent_uuid: None,
                 })
             });
 
@@ -591,6 +593,7 @@ mod tests {
                         icon_path: None,
                     },
                     slot: default_slot(game_id, Some(2)),
+                    parent_uuid: None,
                 })
             });
 

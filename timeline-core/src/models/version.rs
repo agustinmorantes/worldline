@@ -41,4 +41,5 @@ pub struct FullVersion {
     pub version: Version,
     pub game: Game,
     pub slot: Slot,
+    pub parent_uuid: Option<String>,
 }

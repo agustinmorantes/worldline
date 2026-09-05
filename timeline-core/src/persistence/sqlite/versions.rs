@@ -6,6 +6,30 @@ use anyhow::{Context, Result};
 use diesel::prelude::*;
 use uuid::Uuid;
 
+/// Resolves a version's parent's UUID from its local `parent_id`, so the
+/// durable identity written to disk is always the UUID, never the local
+/// integer key.
+fn resolve_parent_uuid(
+    conn: &mut diesel::SqliteConnection,
+    parent_id: Option<i32>,
+) -> Result<Option<String>> {
+    use crate::schema::versions;
+
+    let Some(parent_id) = parent_id else {
+        return Ok(None);
+    };
+
+    let uuid = versions::table
+        .filter(versions::id.eq(parent_id))
+        .select(versions::uuid)
+        .first::<Option<String>>(conn)
+        .optional()
+        .context("Error loading parent version uuid")?
+        .flatten();
+
+    Ok(uuid)
+}
+
 impl VersionRepository for SqliteVersionRepository {
     fn create_version(&self, game_id_param: i32, reason: VersionReason) -> Result<FullVersion> {
         use crate::schema::games;
@@ -83,10 +107,12 @@ impl VersionRepository for SqliteVersionRepository {
             .first(conn)
             .context("Error loading game for version")?;
 
+        let parent_uuid = resolve_parent_uuid(conn, version.parent_id)?;
         let full_version = FullVersion {
             version,
             game,
             slot: updated_slot,
+            parent_uuid,
         };
 
         if let Some(repository_root) = &self.repository_root {
@@ -127,10 +153,12 @@ impl VersionRepository for SqliteVersionRepository {
             .get_result(conn)
             .context("Error updating game active version")?;
 
+        let parent_uuid = resolve_parent_uuid(conn, version.parent_id)?;
         let full_version = FullVersion {
             version,
             game,
             slot,
+            parent_uuid,
         };
 
         if let Some(repository_root) = &self.repository_root {
@@ -185,10 +213,12 @@ impl VersionRepository for SqliteVersionRepository {
             .first(conn)
             .context("Error fetching game for version")?;
 
+        let parent_uuid = resolve_parent_uuid(conn, version.parent_id)?;
         Ok(FullVersion {
             version,
             game,
             slot,
+            parent_uuid,
         })
     }
 }

@@ -455,7 +455,11 @@ pub fn sync_version_metadata(
         version.version.folder_slug.as_deref(),
         "version.folder_slug",
     )?;
-    let parent_version_uuid = version.version.parent_id.map(|_| None).unwrap_or(None);
+    let parent_version_uuid = version
+        .parent_uuid
+        .as_deref()
+        .map(|value| Uuid::parse_str(value).context("failed to parse parent version uuid"))
+        .transpose()?;
 
     let metadata = VersionMetadata {
         entity: "version".to_string(),
