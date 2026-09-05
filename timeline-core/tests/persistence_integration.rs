@@ -116,7 +116,9 @@ fn test_version_operations() {
     };
     let game = games_repo.save_game(form, None).unwrap();
 
-    // Create version
+    // Create version (Manual is an arbitrary placeholder here — this test
+    // exercises the repository directly, not any facade operation with
+    // real reason semantics)
     let version = versions_repo
         .create_version(game.id, VersionReason::Manual)
         .unwrap();
@@ -223,6 +225,8 @@ fn test_repository_metadata_is_written_for_game_and_version() {
         repository::read_metadata_json(&slot_dir).unwrap();
     assert_eq!(slot_metadata.game_uuid, game_metadata.uuid);
 
+    // Manual is an arbitrary placeholder here too — no facade operation is
+    // involved, so the specific reason carries no meaning beyond round-tripping.
     let version = versions_repo
         .create_version(game.id, VersionReason::Manual)
         .unwrap();
@@ -232,6 +236,7 @@ fn test_repository_metadata_is_written_for_game_and_version() {
         repository::read_metadata_json(&version_dir).unwrap();
     assert_eq!(version_metadata.version_number, 1);
     assert_eq!(version_metadata.game_uuid, game_metadata.uuid);
+    assert_eq!(version_metadata.reason, VersionReason::Manual);
 }
 
 fn seed_game_with_slot(conn: &mut SqliteConnection, title: &str) -> (i32, i32) {
