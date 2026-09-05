@@ -1435,3 +1435,150 @@ fn test_rename_slot_keeps_identity_and_history_and_rejects_collisions() {
         "a rejected rename must leave the previous name in place"
     );
 }
+
+/// Drains any queued notifications, then blocks until a `ChangeDetected` for
+/// `game_id` arrives. That notification is sent at the very end of the watcher's
+/// event pass — after `sync_tracked_dir` has run — so receiving it proves the
+/// write reached the handler AND that the sync step is already finished. Without
+/// it the test could not distinguish "the watcher correctly wrote nothing" from
+/// "the watcher had not run yet".
+fn wait_for_change_detected(
+    rx: &savegame_timeline_core::detection::NotificationReceiver,
+    game_id: i32,
+    timeout: Duration,
+) -> bool {
+    use savegame_timeline_core::detection::Notification;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return false;
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(Notification::ChangeDetected { game_id: id }) if id == game_id => return true,
+            Ok(_) => continue,
+            Err(_) => return false,
+        }
+    }
+}
+
+#[test]
+fn test_cooldown_write_must_not_overwrite_an_existing_versions_snapshot() {
+    // Regression (Critical, pre-existing): on the cooldown path `handle_new_version`
+    // returns None and no version is created, but `run` still called
+    // `sync_tracked_dir` for every modified directory. That deletes
+    // `last_version`'s stored snapshot directory and refills it with current live
+    // state, silently rewriting the content of an already-created version.
+    //
+    // This test covers the severe half: `last_version` is the slot's ACTIVE
+    // version, while the cooldown compares against max(created_at). So after
+    // restoring an OLD version, a younger sibling keeps the cooldown closed and
+    // the restored version's historical snapshot gets overwritten with
+    // post-restore live state — history changes and no new entry appears.
+    let h = harness("v1-state");
+    let game = h.create_game("Cooldown Overwrite");
+    // save_game registers the tracked dir with the watcher asynchronously.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // No versions exist yet, so the cooldown is vacuously open: this write
+    // creates V1 and snapshots "v1-content" into it.
+    fs::write(&h.save_file, "v1-content").unwrap();
+    assert_eq!(
+        wait_for_version_count(&h.core, game.id, 1, Duration::from_secs(10)),
+        1,
+        "the first write must produce a version"
+    );
+    assert!(
+        wait_for_change_detected(&h._notif_rx, game.id, Duration::from_secs(10)),
+        "the watcher must finish its pass for the first write"
+    );
+
+    // Reopen the cooldown window so the next write genuinely versions too.
+    // Backdating alone is invisible to the watcher, which judges the cooldown
+    // against its own in-memory copy of the games; `restore_version` reloads
+    // that copy (ReregisterGames) before resuming. Restoring V1 onto itself is a
+    // no-op for the files and leaves the active version unchanged.
+    let v1_id = h.core.get_game(game.id).unwrap().versions[0].id;
+    h.backdate_versions();
+    h.core.restore_version(v1_id).unwrap();
+    // `Resume` rebuilds the debouncer; a write racing that rebuild is dropped.
+    std::thread::sleep(Duration::from_millis(500));
+
+    fs::write(&h.save_file, "v2-content").unwrap();
+    assert_eq!(
+        wait_for_version_count(&h.core, game.id, 2, Duration::from_secs(10)),
+        2,
+        "the second write must produce a second version"
+    );
+    assert!(
+        wait_for_change_detected(&h._notif_rx, game.id, Duration::from_secs(10)),
+        "the watcher must finish its pass for the second write"
+    );
+
+    // V2 is NOT backdated: it is seconds old, so it holds the cooldown closed
+    // for the rest of the test. V1 is an hour old.
+    let full = h.core.get_game(game.id).unwrap();
+    let v1 = full
+        .versions
+        .iter()
+        .min_by_key(|v| v.version_number)
+        .expect("two versions exist")
+        .clone();
+    let v2 = full
+        .versions
+        .iter()
+        .max_by_key(|v| v.version_number)
+        .expect("two versions exist")
+        .clone();
+    assert_ne!(v1.id, v2.id, "the two versions must be distinct");
+
+    let v1_snapshot = savegame_timeline_core::repository::game_snapshot_dir(
+        &h.repo_root(),
+        &full.game,
+        full.active_slot.as_ref().expect("game has an active slot"),
+        &v1,
+        &full.tracked_dirs[0],
+    )
+    .unwrap()
+    .join("save.dat");
+    assert_eq!(
+        fs::read_to_string(&v1_snapshot).unwrap(),
+        "v1-content",
+        "precondition: V1's snapshot holds the older content, distinct from V2's"
+    );
+
+    // Make V1 the ACTIVE version again. This diverges `last_version` (now V1)
+    // from the cooldown's max(created_at) (still V2).
+    h.core.restore_version(v1.id).unwrap();
+    assert_eq!(
+        fs::read_to_string(&h.save_file).unwrap(),
+        "v1-content",
+        "the restore must actually have rewritten the tracked directory"
+    );
+
+    // The restore suppresses its own file events, but let any stragglers settle
+    // and clear the queue, so the wait below can only be satisfied by the write
+    // that follows it.
+    std::thread::sleep(Duration::from_millis(500));
+    while h._notif_rx.try_recv().is_ok() {}
+
+    // Play after the restore. V2 is still young, so the cooldown suppresses any
+    // new version — and the buggy code would therefore dump this content on top
+    // of V1's stored snapshot.
+    fs::write(&h.save_file, "post-restore-live-state").unwrap();
+    assert!(
+        wait_for_change_detected(&h._notif_rx, game.id, Duration::from_secs(10)),
+        "the watcher must have seen and fully processed the post-restore write"
+    );
+
+    assert_eq!(
+        h.core.get_game(game.id).unwrap().versions.len(),
+        2,
+        "a write inside the cooldown window must not create a version"
+    );
+    assert_eq!(
+        fs::read_to_string(&v1_snapshot).unwrap(),
+        "v1-content",
+        "the cooldown write must leave the active version's stored snapshot byte-identical; \
+         versions are immutable"
+    );
+}

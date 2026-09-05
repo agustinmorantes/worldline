@@ -141,10 +141,18 @@ impl FsEventHandler {
             games
         };
 
-        // Now copy all modified tracked directories into the correct version
+        // Now copy all modified tracked directories into the correct version.
+        // Only games that actually got a version this pass may be synced. Versions
+        // are immutable: syncing without a fresh one would delete and refill the
+        // stored snapshot of `last_version`, replacing an existing version's content
+        // with current live state. That is worst on the cooldown path, because
+        // `last_version` is the slot's ACTIVE version while the cooldown compares
+        // against max(created_at) — so after restoring an older version, a younger
+        // sibling keeps the cooldown closed and the restored version's history gets
+        // overwritten with post-restore live state, with no new entry to show for it.
         let dirs_to_sync: Vec<&TrackedDir> = dirs
             .iter()
-            .filter(|dir| modified_dirs.contains(&dir.id))
+            .filter(|dir| modified_dirs.contains(&dir.id) && new_versions.contains(&dir.game_id))
             .collect();
 
         for dir in &dirs_to_sync {
