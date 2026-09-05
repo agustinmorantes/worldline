@@ -200,19 +200,33 @@ fn write_blob(source: &Path, destination: &Path, hash: &str, expected_size: u64)
         }
         output.sync_all()?;
         drop(output);
-        match fs::rename(&temp, destination) {
-            Ok(()) => Ok(()),
-            Err(error) if destination.exists() => {
-                let _ = fs::remove_file(&temp);
-                verify_existing_blob(destination, hash, expected_size).map_err(|_| error.into())
-            }
-            Err(error) => Err(error.into()),
-        }
+        publish_blob_no_replace(&temp, destination, hash, expected_size)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+fn publish_blob_no_replace(
+    temp: &Path,
+    destination: &Path,
+    hash: &str,
+    expected_size: u64,
+) -> Result<()> {
+    match fs::hard_link(temp, destination) {
+        Ok(()) => {
+            fs::remove_file(temp)
+                .with_context(|| format!("failed to remove blob temp file {}", temp.display()))?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let verification = verify_existing_blob(destination, hash, expected_size);
+            let _ = fs::remove_file(temp);
+            verification
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn verify_existing_blob(path: &Path, hash: &str, expected_size: u64) -> Result<()> {
@@ -310,8 +324,22 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.files.len(), 1);
-        assert!(first.files[0].sha256.starts_with("sha256:"));
+        let hash = &first.files[0].sha256;
+        let digest = hash.strip_prefix("sha256:").unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
         assert_eq!(count_regular_files(&repo.path().join("blobs")), 1);
+        assert_eq!(
+            blob_path(repo.path(), hash).unwrap(),
+            repo.path()
+                .join("blobs")
+                .join(&digest[..2])
+                .join(&digest[2..])
+        );
         assert!(
             blob_path(repo.path(), &first.files[0].sha256)
                 .unwrap()
@@ -329,5 +357,30 @@ mod tests {
         let _keep_alive = (a_dir, b_dir);
         assert_eq!(forward.content_hash, reverse.content_hash);
         assert_eq!(forward.files, reverse.files);
+    }
+
+    #[test]
+    fn concurrent_writers_never_replace_existing_blob() {
+        let repo = tempdir().unwrap();
+        let hash = format_hash(&Sha256::digest(b"new bytes"));
+        let destination = blob_path(repo.path(), &hash).unwrap();
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&destination, b"original bytes").unwrap();
+        let first_temp = destination.with_file_name(".first.tmp");
+        let second_temp = destination.with_file_name(".second.tmp");
+        fs::write(&first_temp, b"new bytes").unwrap();
+        fs::write(&second_temp, b"new bytes").unwrap();
+
+        let (first, second) = std::thread::scope(|scope| {
+            let first =
+                scope.spawn(|| publish_blob_no_replace(&first_temp, &destination, &hash, 9));
+            let second =
+                scope.spawn(|| publish_blob_no_replace(&second_temp, &destination, &hash, 9));
+            (first.join().unwrap(), second.join().unwrap())
+        });
+
+        assert!(first.is_err());
+        assert!(second.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"original bytes");
     }
 }
