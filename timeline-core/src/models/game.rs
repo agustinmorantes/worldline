@@ -1,6 +1,7 @@
-﻿use diesel::{AsChangeset, Identifiable, Insertable, Queryable, Selectable};
+use diesel::{AsChangeset, Identifiable, Insertable, Queryable, Selectable};
 use serde::{Deserialize, Serialize};
 
+use crate::models::Slot;
 use crate::models::TrackedDir;
 use crate::models::version::Version;
 
@@ -9,8 +10,11 @@ use crate::models::version::Version;
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Game {
     pub id: i32,
+    pub uuid: Option<String>,
     pub title: String,
-    pub active_version_id: Option<i32>,
+    pub title_normalized: Option<String>,
+    pub folder_slug: Option<String>,
+    pub active_slot_id: Option<i32>,
     pub icon_path: Option<String>,
 }
 
@@ -20,8 +24,11 @@ pub struct Game {
 #[diesel(table_name = crate::schema::games)]
 pub struct GameForm<'a> {
     pub id: Option<i32>,
+    pub uuid: Option<String>,
     pub title: &'a str,
-    pub active_version_id: Option<i32>,
+    pub title_normalized: Option<String>,
+    pub folder_slug: Option<String>,
+    pub active_slot_id: Option<i32>,
     pub icon_path: Option<String>,
 }
 
@@ -30,6 +37,8 @@ pub struct FullGame {
     #[serde(flatten)]
     pub game: Game,
     pub tracked_dirs: Vec<TrackedDir>,
+    pub slots: Vec<Slot>,
+    pub active_slot: Option<Slot>,
     pub versions: Vec<Version>,
     pub last_version: Option<Version>,
 }

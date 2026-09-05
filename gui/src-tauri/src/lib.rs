@@ -53,8 +53,14 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     conn.run_pending_migrations(MIGRATIONS)
         .expect("Error running migrations");
 
-    let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
-    let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.clone(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.clone(),
+    ));
     let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
 
     let (core, notif_rx) = TimelineCore::new(

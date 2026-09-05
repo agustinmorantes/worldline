@@ -70,8 +70,8 @@ describe('Sidebar', () => {
 
   it('renders game titles when loaded', () => {
     const games = [
-      { id: 1, title: 'Elden Ring', tracked_dirs: [], versions: [], active_version_id: null },
-      { id: 2, title: 'Dark Souls', tracked_dirs: [], versions: [], active_version_id: null },
+      { id: 1, title: 'Elden Ring', tracked_dirs: [], versions: [], slots: [] },
+      { id: 2, title: 'Dark Souls', tracked_dirs: [], versions: [], slots: [] },
     ] as unknown as FullGame[];
     mockQuery(games);
     render(<Sidebar />);

@@ -8,8 +8,12 @@ use serde::{Deserialize, Serialize};
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct TrackedDir {
     pub id: i32,
+    pub uuid: Option<String>,
+    pub folder_slug: Option<String>,
     pub game_id: i32,
     pub path: String,
+    /// JSON array of glob patterns the user does not want versioned.
+    pub exclusions: String,
 }
 
 #[derive(
@@ -18,6 +22,8 @@ pub struct TrackedDir {
 #[diesel(table_name = crate::schema::tracked_dirs)]
 pub struct TrackedDirForm<'a> {
     pub id: Option<i32>,
+    pub uuid: Option<String>,
+    pub folder_slug: Option<String>,
     pub game_id: i32,
     pub path: &'a str,
 }

@@ -16,6 +16,11 @@ fn get_game(id: i32, core: State<Arc<TimelineCore>>) -> Result<FullGame, String>
 }
 
 #[tauri::command]
+fn get_slots(game_id: i32, core: State<Arc<TimelineCore>>) -> Result<Vec<FullSlot>, String> {
+    core.get_slots(game_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn save_game(
     game: GameForm,
     dirs: Option<Vec<&str>>,
@@ -27,6 +32,44 @@ fn save_game(
 #[tauri::command]
 fn delete_game(id: i32, core: State<Arc<TimelineCore>>) -> Result<(), String> {
     core.delete_game(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_slot(
+    game_id: i32,
+    name: String,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    core.create_slot(game_id, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn switch_slot(
+    game_id: i32,
+    slot_id: i32,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    core.switch_slot(game_id, slot_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_slot(
+    slot_id: i32,
+    name: String,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    core.rename_slot(slot_id, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_slot(
+    slot_id: i32,
+    replacement_slot_id: Option<i32>,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    core.delete_slot(slot_id, replacement_slot_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -50,7 +93,9 @@ fn set_game_icon(
 }
 
 #[tauri::command]
-async fn scan_installed(core: State<'_, Arc<TimelineCore>>) -> Result<Vec<InstallScannerItem>, String> {
+async fn scan_installed(
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<Vec<InstallScannerItem>, String> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.scan_installed())
         .await
@@ -91,8 +136,13 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
     builder.invoke_handler(generate_handler![
         get_games,
         get_game,
+        get_slots,
         save_game,
         delete_game,
+        create_slot,
+        switch_slot,
+        rename_slot,
+        delete_slot,
         restore_version,
         tag_version,
         set_game_icon,

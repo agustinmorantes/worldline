@@ -1,9 +1,12 @@
 pub mod core_facade;
 pub mod detection;
+pub mod exclusions;
 pub mod fs_utils;
 pub mod install_scanner;
 pub mod models;
+pub mod path_placeholders;
 pub mod persistence;
+pub mod repository;
 pub mod schema;
 
 pub use core_facade::TimelineCore;

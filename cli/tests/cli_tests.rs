@@ -244,6 +244,179 @@ fn versions_restore_nonexistent_fails() {
         .failure();
 }
 
+// ── Slots ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn slots_list_shows_the_default_slot() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Slot CLI Game"])
+        .assert()
+        .success();
+
+    cli(dir.path())
+        .args(["slots", "list", "Slot CLI Game"])
+        .assert()
+        .success()
+        .stdout(contains("Default Slot"));
+}
+
+#[test]
+fn slots_create_adds_a_new_slot() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Create Slot Game"])
+        .assert()
+        .success();
+
+    cli(dir.path())
+        .args(["slots", "create", "Create Slot Game", "New Game Plus"])
+        .assert()
+        .success()
+        .stdout(contains("New Game Plus"));
+
+    cli(dir.path())
+        .args(["slots", "list", "Create Slot Game"])
+        .assert()
+        .success()
+        .stdout(contains("Default Slot"))
+        .stdout(contains("New Game Plus"));
+}
+
+#[test]
+fn slots_switch_changes_the_active_slot() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Switch Slot Game"])
+        .assert()
+        .success();
+    // create_slot activates the new slot, so slot 2 (New Game Plus) starts active.
+    cli(dir.path())
+        .args(["slots", "create", "1", "New Game Plus"])
+        .assert()
+        .success();
+
+    cli(dir.path())
+        .args(["slots", "switch", "Switch Slot Game", "Default Slot"])
+        .assert()
+        .success()
+        .stdout(contains("Default Slot"));
+
+    cli(dir.path())
+        .args(["slots", "list", "1"])
+        .assert()
+        .success()
+        .stdout(contains("* [1] Default Slot"));
+}
+
+#[test]
+fn slots_rename_changes_the_name() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Rename Slot Game"])
+        .assert()
+        .success();
+
+    cli(dir.path())
+        .args([
+            "slots",
+            "rename",
+            "Rename Slot Game",
+            "Default Slot",
+            "Renamed Slot",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Renamed Slot"));
+
+    cli(dir.path())
+        .args(["slots", "list", "1"])
+        .assert()
+        .success()
+        .stdout(contains("Renamed Slot"))
+        .stdout(contains("Default Slot").not());
+}
+
+#[test]
+fn slots_rename_to_duplicate_name_fails_with_message() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Dup Rename Game"])
+        .assert()
+        .success();
+    cli(dir.path())
+        .args(["slots", "create", "1", "Second Slot"])
+        .assert()
+        .success();
+
+    cli(dir.path())
+        .args(["slots", "rename", "1", "1", "Second Slot"])
+        .assert()
+        .failure()
+        .stderr(contains("already exists"));
+}
+
+#[test]
+fn slots_delete_last_slot_fails_with_message() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Last Slot Game"])
+        .assert()
+        .success();
+
+    cli(dir.path())
+        .args(["slots", "delete", "1", "1"])
+        .assert()
+        .failure()
+        .stderr(contains("must keep at least one slot"));
+}
+
+#[test]
+fn slots_delete_active_slot_without_replacement_fails_with_message() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Active Delete Game"])
+        .assert()
+        .success();
+    // create_slot activates slot 2, so it is now the active slot.
+    cli(dir.path())
+        .args(["slots", "create", "1", "Second Slot"])
+        .assert()
+        .success();
+
+    cli(dir.path())
+        .args(["slots", "delete", "1", "2"])
+        .assert()
+        .failure()
+        .stderr(contains("requires a replacement slot"));
+}
+
+#[test]
+fn slots_delete_with_replacement_succeeds() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["games", "add", "Delete With Replacement Game"])
+        .assert()
+        .success();
+    cli(dir.path())
+        .args(["slots", "create", "1", "Second Slot"])
+        .assert()
+        .success();
+
+    // Slot 2 is active; replace it with slot 1 before deleting it.
+    cli(dir.path())
+        .args(["slots", "delete", "1", "2", "--replacement", "1"])
+        .assert()
+        .success()
+        .stdout(contains("Deleted slot 2"));
+
+    cli(dir.path())
+        .args(["slots", "list", "1"])
+        .assert()
+        .success()
+        .stdout(contains("Second Slot").not());
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Parse the first version id from `games show` output.

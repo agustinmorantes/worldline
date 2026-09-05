@@ -8,12 +8,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { BranchingTimeline } from '@/components/BranchingTimeline';
 import { EmptyTimelineState } from '@/components/EmptyTimelineState';
+import { SlotSelector } from '@/components/SlotSelector';
 import { RestoreModal } from '@/components/RestoreModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Trash2, Plus, ListTree, MapPin, Pencil, Image, EllipsisVertical } from 'lucide-react';
+import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image, EllipsisVertical } from 'lucide-react';
 import { Version } from '@/models/version';
 import { Game } from '@/models/game';
+import { Slot } from '@/models/slot.ts';
 import { toast } from 'sonner';
 import {
   DropdownMenu,
@@ -22,7 +24,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu';
-import { deleteGame, saveGame, setGameIcon } from '@/api/games';
+import { createSlot, deleteGame, deleteSlot, renameSlot, saveGame, setGameIcon, switchSlot } from '@/api/games';
 import { queryClient } from '@/lib/query-client';
 import { confirm, open } from '@tauri-apps/plugin-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -31,7 +33,7 @@ export const Route = createFileRoute('/game/$gameId')({
   component: GameDetail,
 });
 
-function GameDetail(): ReactElement {
+export function GameDetail(): ReactElement {
   const router = useRouter();
   const { gameId } = Route.useParams();
   const id = parseInt(gameId);
@@ -40,6 +42,9 @@ function GameDetail(): ReactElement {
   const [restoreTarget, setRestoreTarget] = useState<Version | null>(null);
   const [editTitleOpen, setEditTitleOpen] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState('');
+  // Slot operations and restores both rewrite the live save directory, so one
+  // must not be startable while the other is running.
+  const [restoring, setRestoring] = useState(false);
 
   if (isLoading) return <GameDetailSkeleton />;
 
@@ -53,7 +58,13 @@ function GameDetail(): ReactElement {
   }
 
   const game = fullGame;
-  const { versions, tracked_dirs } = fullGame;
+  const { versions, tracked_dirs, slots } = fullGame;
+  // The timeline shows one slot's history. `get_game` already scopes `versions`
+  // to the active slot, and this keeps that guarantee where the timeline can
+  // see it rather than trusting a backend detail three layers away.
+  const activeSlotVersions = versions.filter((v) => v.slot_id === game.active_slot?.id);
+  // A game has no active version of its own — the pointer lives on the slot.
+  const activeVersionId = game.active_slot?.active_version_id;
 
   async function handleDelete(): Promise<void> {
     const confirmed = await confirm(
@@ -77,6 +88,7 @@ function GameDetail(): ReactElement {
     const v = restoreTarget;
     setRestoreTarget(null);
     try {
+      setRestoring(true);
       await v.restore();
       void queryClient.invalidateQueries({ queryKey: ['game', id] });
       void queryClient.invalidateQueries({ queryKey: ['games'] });
@@ -84,6 +96,8 @@ function GameDetail(): ReactElement {
     } catch (err) {
       console.error(err);
       toast.error('Failed to restore version');
+    } finally {
+      setRestoring(false);
     }
   }
 
@@ -132,7 +146,7 @@ function GameDetail(): ReactElement {
     try {
       const updated = new Game(newTitle);
       updated.id = game.id;
-      updated.active_version_id = game.active_version_id;
+      updated.active_slot_id = game.active_slot_id;
       updated.tracked_dirs = tracked_dirs;
       await saveGame(updated);
       void queryClient.invalidateQueries({ queryKey: ['game', id] });
@@ -151,7 +165,7 @@ function GameDetail(): ReactElement {
     try {
       const updated = new Game(game.title);
       updated.id = game.id;
-      updated.active_version_id = game.active_version_id;
+      updated.active_slot_id = game.active_slot_id;
       updated.tracked_dirs = [...tracked_dirs, { path: selected }];
       await saveGame(updated);
       void queryClient.invalidateQueries({ queryKey: ['game', id] });
@@ -159,6 +173,66 @@ function GameDetail(): ReactElement {
     } catch (err) {
       console.error(err);
       toast.error('Failed to add directory');
+    }
+  }
+
+  async function handleCreateSlot(name: string): Promise<void> {
+    try {
+      await createSlot(game.id, name);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['game', id] }),
+        queryClient.invalidateQueries({ queryKey: ['games'] }),
+      ]);
+      toast.success(`Created slot ${name}`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to create slot');
+      throw err;
+    }
+  }
+
+  async function handleSwitchSlot(slot: Slot): Promise<void> {
+    try {
+      await switchSlot(game.id, slot.id);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['game', id] }),
+        queryClient.invalidateQueries({ queryKey: ['games'] }),
+      ]);
+      toast.success(`Switched to ${slot.name}`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to switch slot');
+      throw err;
+    }
+  }
+
+  async function handleRenameSlot(slot: Slot, name: string): Promise<void> {
+    try {
+      await renameSlot(slot.id, name);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['game', id] }),
+        queryClient.invalidateQueries({ queryKey: ['games'] }),
+      ]);
+      toast.success(`Renamed slot to ${name}`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to rename slot');
+      throw err;
+    }
+  }
+
+  async function handleDeleteSlot(slot: Slot, replacementSlotId?: number): Promise<void> {
+    try {
+      await deleteSlot(slot.id, replacementSlotId);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['game', id] }),
+        queryClient.invalidateQueries({ queryKey: ['games'] }),
+      ]);
+      toast.success(`Deleted slot ${slot.name}`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to delete slot');
+      throw err;
     }
   }
 
@@ -200,7 +274,7 @@ function GameDetail(): ReactElement {
 
           <div className="flex items-center gap-3">
             <StatChip label={`${versions.length.toString()} total saves`} />
-            {/* <StatChip label="1 slot" /> */}
+            <StatChip label={`${slots.length.toString()} ${slots.length === 1 ? 'slot' : 'slots'}`} />
           </div>
         </div>
       </header>
@@ -226,8 +300,16 @@ function GameDetail(): ReactElement {
         <ScrollArea className="flex-1 min-h-0">
         <div>
           <TabsContent value="timeline" className="m-0 p-8 pt-6">
-            {/* <div className="flex items-center justify-between mb-8">
-              <SlotSelector />
+            <div className="flex items-center justify-between mb-8">
+              <SlotSelector
+                slots={slots}
+                activeSlotId={game.active_slot?.id}
+                disabled={restoring}
+                onSwitch={handleSwitchSlot}
+                onCreate={handleCreateSlot}
+                onRename={handleRenameSlot}
+                onDelete={handleDeleteSlot}
+              />
               <div className="flex items-center gap-1 p-1 bg-el rounded-lg">
                 <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md bg-sf shadow-sm text-primary">
                   <ListTree size={14} />
@@ -236,17 +318,17 @@ function GameDetail(): ReactElement {
                   <LayoutGrid size={14} />
                 </Button>
               </div>
-            </div> */}
+            </div>
 
-            {versions.length === 0 ? (
+            {activeSlotVersions.length === 0 ? (
               <EmptyTimelineState
                 gameTitle={game.title}
                 trackedDirCount={tracked_dirs.length}
               />
             ) : (
               <BranchingTimeline
-                versions={versions}
-                activeVersionId={game.active_version_id ?? undefined}
+                versions={activeSlotVersions}
+                activeVersionId={activeVersionId}
                 onRestore={(v) => { setRestoreTarget(v); }}
                 onTag={(v, tag) => { void handleTag(v, tag); }}
               />

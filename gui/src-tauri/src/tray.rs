@@ -19,7 +19,9 @@ pub fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
 
     let open_item = MenuItemBuilder::with_id("open", "Open").build(app)?;
     let exit_item = MenuItemBuilder::with_id("exit", "Exit").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&open_item, &exit_item]).build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&open_item, &exit_item])
+        .build()?;
 
     let icon = app
         .default_window_icon()

@@ -118,7 +118,12 @@ function SidebarGameItem({ game }: { game: FullGame }): ReactElement {
       className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all group [&.active]:bg-primary/10 [&.active]:text-foreground [&.active]:border-primary/20 border border-transparent"
     >
       <GameIcon title={game.title} size={28} iconPath={game.icon_path} />
-      <span className="min-w-0 truncate text-xs font-semibold tracking-tight">{game.title}</span>
+      <div className="flex flex-col min-w-0">
+        <span className="text-xs font-semibold truncate tracking-tight">{game.title}</span>
+        <span className="text-[10px] text-muted-foreground/70 font-medium">
+          {`${game.slots.length.toString()} ${game.slots.length === 1 ? 'slot' : 'slots'}`}
+        </span>
+      </div>
     </Link>
   )
 }

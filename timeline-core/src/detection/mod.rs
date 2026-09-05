@@ -45,7 +45,10 @@ pub type CommandSender = mpsc::Sender<Command>;
 pub type NotificationReceiver = mpsc::Receiver<Notification>;
 
 pub enum Command {
-    Pause,
+    /// Pause event processing. The watcher drains whatever is already queued and
+    /// then sends `()` on this channel, so the caller knows no pre-operation event
+    /// is left in flight before it starts writing to tracked directories.
+    Pause(mpsc::Sender<()>),
     Resume,
     ReregisterGames(Vec<FullGame>),
     UpdateMonitoringSettings(MonitoringSettings),

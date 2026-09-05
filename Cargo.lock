@@ -3900,6 +3900,7 @@ dependencies = [
  "shellexpand",
  "tempfile",
  "ureq",
+ "uuid",
  "winreg 0.52.0",
 ]
 
