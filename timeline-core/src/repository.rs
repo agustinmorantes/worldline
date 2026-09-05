@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 const RESERVED_WINDOWS_NAMES: &[&str] = &[
@@ -353,11 +353,11 @@ pub fn game_snapshot_dir(
     version: &crate::models::Version,
     tracked_dir: &crate::models::TrackedDir,
 ) -> Result<PathBuf> {
-    let game_folder_slug = required_string_field(game.folder_slug.as_deref(), "game.folder_slug")?;
-    let slot_folder_slug = slot.folder_slug.as_str();
+    let game_folder_slug = validate_folder_slug(game.folder_slug.as_deref(), "game.folder_slug")?;
+    let slot_folder_slug = validate_folder_slug(Some(&slot.folder_slug), "slot.folder_slug")?;
     let version_folder_slug =
-        required_string_field(version.folder_slug.as_deref(), "version.folder_slug")?;
-    let tracked_dir_folder_slug = required_string_field(
+        validate_folder_slug(version.folder_slug.as_deref(), "version.folder_slug")?;
+    let tracked_dir_folder_slug = validate_folder_slug(
         tracked_dir.folder_slug.as_deref(),
         "tracked_dir.folder_slug",
     )?;
@@ -372,7 +372,7 @@ pub fn game_snapshot_dir(
 
 pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame) -> Result<()> {
     let game_uuid = parse_uuid_field(game.game.uuid.as_deref(), "game.uuid")?;
-    let folder_slug = required_string_field(game.game.folder_slug.as_deref(), "game.folder_slug")?;
+    let folder_slug = validate_folder_slug(game.game.folder_slug.as_deref(), "game.folder_slug")?;
     let game_entity_dir = game_dir(repository_root, folder_slug);
     let existing_game_metadata = read_metadata_json::<GameMetadata>(&game_entity_dir).ok();
     let now = Utc::now();
@@ -397,7 +397,7 @@ pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame
 
     for tracked_dir in &game.tracked_dirs {
         let tracked_uuid = parse_uuid_field(tracked_dir.uuid.as_deref(), "tracked_dir.uuid")?;
-        let tracked_slug = required_string_field(
+        let tracked_slug = validate_folder_slug(
             tracked_dir.folder_slug.as_deref(),
             "tracked_dir.folder_slug",
         )?;
@@ -428,7 +428,8 @@ pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame
 
     for slot in &game.slots {
         let slot_uuid = Uuid::parse_str(&slot.uuid).context("failed to parse slot.uuid")?;
-        let slot_entity_dir = slot_dir(&game_entity_dir, &slot.folder_slug);
+        let slot_slug = validate_folder_slug(Some(&slot.folder_slug), "slot.folder_slug")?;
+        let slot_entity_dir = slot_dir(&game_entity_dir, slot_slug);
         let existing_metadata = read_metadata_json::<SlotMetadata>(&slot_entity_dir).ok();
         let active_version_uuid = if game
             .active_slot
@@ -471,49 +472,25 @@ pub fn sync_version_metadata(
     repository_root: &Path,
     version: &crate::models::FullVersion,
 ) -> Result<()> {
-    let version_uuid = parse_uuid_field(version.version.uuid.as_deref(), "version.uuid")?;
-    let game_uuid = parse_uuid_field(version.game.uuid.as_deref(), "game.uuid")?;
-    let folder_slug = required_string_field(
+    let folder_slug = validate_folder_slug(
         version.version.folder_slug.as_deref(),
         "version.folder_slug",
     )?;
-    let parent_version_uuid = version
-        .parent_uuid
-        .as_deref()
-        .map(|value| Uuid::parse_str(value).context("failed to parse parent version uuid"))
-        .transpose()?;
-
     let game_folder_slug =
-        required_string_field(version.game.folder_slug.as_deref(), "game.folder_slug")?;
+        validate_folder_slug(version.game.folder_slug.as_deref(), "game.folder_slug")?;
+    let slot_folder_slug =
+        validate_folder_slug(Some(&version.slot.folder_slug), "slot.folder_slug")?;
     let game_entity_dir = game_dir(repository_root, game_folder_slug);
-    let slot_entity_dir = slot_dir(&game_entity_dir, &version.slot.folder_slug);
+    let slot_entity_dir = slot_dir(&game_entity_dir, slot_folder_slug);
     let version_entity_dir = version_dir(&slot_entity_dir, folder_slug);
-
-    let existing = if version_entity_dir.exists() {
-        Some(read_metadata_json::<VersionMetadata>(&version_entity_dir)?)
-    } else {
-        None
-    };
-    let metadata = VersionMetadata {
-        entity: "version".to_string(),
-        uuid: version_uuid,
-        game_uuid,
-        slot_uuid: Some(Uuid::parse_str(&version.slot.uuid).context("failed to parse slot.uuid")?),
-        version_number: version.version.version_number,
-        folder_slug: folder_slug.to_string(),
-        parent_version_uuid,
-        tag: version.version.tag.clone(),
-        reason: VersionReason::from_str_or_watcher(&version.version.reason),
-        created_at: DateTime::<Utc>::from_naive_utc_and_offset(version.version.created_at, Utc),
-        content_hash: existing
-            .as_ref()
-            .map(|metadata| metadata.content_hash.clone())
-            .unwrap_or_default(),
-        files: existing
-            .as_ref()
-            .map(|metadata| metadata.files.clone())
-            .unwrap_or_default(),
-    };
+    let mut metadata: VersionMetadata =
+        read_metadata_json(&version_entity_dir).with_context(|| {
+            format!(
+                "failed to read existing version metadata at {}",
+                version_entity_dir.display()
+            )
+        })?;
+    metadata.tag = version.version.tag.clone();
     write_metadata_json(&version_entity_dir, &metadata)
 }
 
@@ -524,7 +501,7 @@ pub fn commit_version_metadata(
 ) -> Result<()> {
     let version_uuid = parse_uuid_field(version.version.uuid.as_deref(), "version.uuid")?;
     let game_uuid = parse_uuid_field(version.game.uuid.as_deref(), "game.uuid")?;
-    let folder_slug = required_string_field(
+    let folder_slug = validate_folder_slug(
         version.version.folder_slug.as_deref(),
         "version.folder_slug",
     )?;
@@ -535,7 +512,9 @@ pub fn commit_version_metadata(
         .transpose()?;
     let slot_uuid = Uuid::parse_str(&version.slot.uuid).context("failed to parse slot.uuid")?;
     let game_folder_slug =
-        required_string_field(version.game.folder_slug.as_deref(), "game.folder_slug")?;
+        validate_folder_slug(version.game.folder_slug.as_deref(), "game.folder_slug")?;
+    let slot_folder_slug =
+        validate_folder_slug(Some(&version.slot.folder_slug), "slot.folder_slug")?;
 
     let metadata = VersionMetadata {
         entity: "version".to_string(),
@@ -553,15 +532,10 @@ pub fn commit_version_metadata(
     };
 
     let game_entity_dir = game_dir(repository_root, game_folder_slug);
-    let slot_entity_dir = slot_dir(&game_entity_dir, &version.slot.folder_slug);
+    let slot_entity_dir = slot_dir(&game_entity_dir, slot_folder_slug);
     let versions_parent = versions_dir(&slot_entity_dir);
     let final_dir = version_dir(&slot_entity_dir, folder_slug);
-    if final_dir.exists() {
-        return Err(anyhow!(
-            "version metadata already exists at {}",
-            final_dir.display()
-        ));
-    }
+    ensure_repository_entry_absent(&final_dir)?;
 
     fs::create_dir_all(&versions_parent).with_context(|| {
         format!(
@@ -580,19 +554,24 @@ pub fn commit_version_metadata(
     let result = (|| -> Result<()> {
         write_metadata_json(&temp_dir, &metadata)?;
         sync_parent_dir(&temp_dir);
-        if final_dir.exists() {
-            return Err(anyhow!(
-                "version metadata already exists at {}",
-                final_dir.display()
-            ));
+        match crate::content_store::atomic_rename_no_replace(&temp_dir, &final_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(anyhow!(
+                    "version metadata already exists at {}",
+                    final_dir.display()
+                ));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to publish version metadata from {} to {}",
+                        temp_dir.display(),
+                        final_dir.display()
+                    )
+                });
+            }
         }
-        fs::rename(&temp_dir, &final_dir).with_context(|| {
-            format!(
-                "failed to publish version metadata from {} to {}",
-                temp_dir.display(),
-                final_dir.display()
-            )
-        })?;
         sync_parent_dir(&final_dir);
         Ok(())
     })();
@@ -615,6 +594,43 @@ fn metadata_tmp_path(path: &Path) -> PathBuf {
 fn parse_uuid_field(value: Option<&str>, field_name: &str) -> Result<Uuid> {
     let value = required_string_field(value, field_name)?;
     Uuid::parse_str(value).with_context(|| format!("failed to parse UUID for {field_name}"))
+}
+
+fn validate_folder_slug<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
+    let value = required_string_field(value, field_name)?;
+    let path = Path::new(value);
+    let mut components = path.components();
+    let is_single_normal_component =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if path.is_absolute()
+        || path.has_root()
+        || !is_single_normal_component
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+    {
+        return Err(anyhow!(
+            "invalid {field_name}: expected one normal path component"
+        ));
+    }
+    Ok(value)
+}
+
+fn ensure_repository_entry_absent(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(anyhow!(
+            "version metadata already exists at {}",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to inspect version metadata path at {}",
+                path.display()
+            )
+        }),
+    }
 }
 
 fn required_string_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
@@ -860,6 +876,82 @@ mod tests {
                         .to_string_lossy()
                         .contains(".tmp-")
                 })
+        );
+    }
+
+    #[test]
+    fn rejects_non_component_repository_slugs() {
+        let root = tempdir().unwrap();
+        for invalid_slug in ["", ".", "..", "nested/path", r"nested\path"] {
+            let mut version = full_version_fixture();
+            version.game.folder_slug = Some(invalid_slug.to_string());
+            let error = commit_version_metadata(
+                root.path(),
+                &version,
+                &CapturedSnapshot {
+                    content_hash:
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                            .to_string(),
+                    files: Vec::new(),
+                },
+            )
+            .expect_err("path-like game slug must be rejected");
+            assert!(error.to_string().contains("game.folder_slug"));
+        }
+        assert!(validate_folder_slug(Some("C:\\absolute"), "game.folder_slug").is_err());
+    }
+
+    #[test]
+    fn rejects_preexisting_final_version_entry_without_replacement() {
+        let root = tempdir().unwrap();
+        let version = full_version_fixture();
+        let final_dir = expected_version_dir(root.path(), &version);
+        fs::create_dir_all(&final_dir).unwrap();
+        fs::write(final_dir.join("sentinel"), b"keep me").unwrap();
+
+        let error = commit_version_metadata(
+            root.path(),
+            &version,
+            &CapturedSnapshot {
+                content_hash:
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                files: Vec::new(),
+            },
+        )
+        .expect_err("pre-existing final entries are immutable conflicts");
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(fs::read(final_dir.join("sentinel")).unwrap(), b"keep me");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_dangling_final_version_entry_without_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let version = full_version_fixture();
+        let final_dir = expected_version_dir(root.path(), &version);
+        fs::create_dir_all(final_dir.parent().unwrap()).unwrap();
+        symlink("missing-version-target", &final_dir).unwrap();
+
+        let error = commit_version_metadata(
+            root.path(),
+            &version,
+            &CapturedSnapshot {
+                content_hash:
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                files: Vec::new(),
+            },
+        )
+        .expect_err("dangling final entries are immutable conflicts");
+        assert!(error.to_string().contains("already exists"));
+        assert!(
+            fs::symlink_metadata(&final_dir)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 }

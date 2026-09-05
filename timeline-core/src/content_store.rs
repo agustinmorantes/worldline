@@ -226,14 +226,14 @@ fn publish_blob_no_replace(
 }
 
 #[cfg(target_os = "linux")]
-fn atomic_rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn atomic_rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
 
     renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE).map_err(Into::into)
 }
 
 #[cfg(windows)]
-fn atomic_rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn atomic_rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
@@ -263,7 +263,7 @@ fn atomic_rename_no_replace(source: &Path, destination: &Path) -> io::Result<()>
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn atomic_rename_no_replace(_: &Path, _: &Path) -> io::Result<()> {
+pub(crate) fn atomic_rename_no_replace(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic no-replace rename is only implemented for Linux and Windows",

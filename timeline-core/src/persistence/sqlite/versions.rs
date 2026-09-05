@@ -200,8 +200,6 @@ impl VersionRepository for SqliteVersionRepository {
         };
 
         if let Some(repository_root) = &self.repository_root {
-            crate::repository::sync_version_metadata(repository_root, &full_version)
-                .context("Error writing version metadata")?;
             let full_game = load_full_game(conn, full_version.game.id)
                 .context("Error loading full game for metadata sync")?;
             crate::repository::sync_game_metadata(repository_root, &full_game)
@@ -214,58 +212,61 @@ impl VersionRepository for SqliteVersionRepository {
     fn tag_version(&self, target_id: i32, tag_value: String) -> Result<Version> {
         use crate::schema::versions::dsl as versions_dsl;
 
-        let updated_version: Version = {
-            let conn = &mut self.pool.get().context("Error getting db connection")?;
-
+        let conn = &mut self.pool.get().context("Error getting db connection")?;
+        conn.transaction::<Version, anyhow::Error, _>(|conn| {
             diesel::update(versions_dsl::versions.filter(versions_dsl::id.eq(target_id)))
-                .set(versions_dsl::tag.eq(tag_value))
+                .set(versions_dsl::tag.eq(&tag_value))
                 .returning(Version::as_returning())
                 .get_result(conn)
-                .context("Error tagging version")?
-        };
-
-        if let Some(repository_root) = &self.repository_root {
-            let full_version = self.get_version(target_id)?;
-            crate::repository::sync_version_metadata(repository_root, &full_version)
-                .context("Error writing version metadata")?;
-        }
-
-        Ok(updated_version)
+                .context("Error tagging version")
+                .and_then(|updated_version| {
+                    if let Some(repository_root) = &self.repository_root {
+                        let full_version = load_full_version(conn, target_id)?;
+                        crate::repository::sync_version_metadata(repository_root, &full_version)
+                            .context("Error writing version metadata")?;
+                    }
+                    Ok(updated_version)
+                })
+        })
+        .context("Error tagging version transaction")
     }
 
     fn get_version(&self, version_id: i32) -> Result<FullVersion> {
-        use crate::schema::games::dsl as games_dsl;
-        use crate::schema::slots::dsl as slots_dsl;
-        use crate::schema::versions::dsl as versions_dsl;
-
         let conn = &mut self.pool.get().context("Error getting db connection")?;
-
-        let version: Version = versions_dsl::versions
-            .filter(versions_dsl::id.eq(version_id))
-            .select(Version::as_select())
-            .first(conn)
-            .context("Error fetching version")?;
-
-        let slot: Slot = slots_dsl::slots
-            .filter(slots_dsl::id.eq(version.slot_id))
-            .select(Slot::as_select())
-            .first(conn)
-            .context("Error fetching slot for version")?;
-
-        let game: Game = games_dsl::games
-            .filter(games_dsl::id.eq(slot.game_id))
-            .select(Game::as_select())
-            .first(conn)
-            .context("Error fetching game for version")?;
-
-        let parent_uuid = resolve_parent_uuid(conn, version.parent_id)?;
-        Ok(FullVersion {
-            version,
-            game,
-            slot,
-            parent_uuid,
-        })
+        load_full_version(conn, version_id)
     }
+}
+
+fn load_full_version(conn: &mut diesel::SqliteConnection, version_id: i32) -> Result<FullVersion> {
+    use crate::schema::games::dsl as games_dsl;
+    use crate::schema::slots::dsl as slots_dsl;
+    use crate::schema::versions::dsl as versions_dsl;
+
+    let version: Version = versions_dsl::versions
+        .filter(versions_dsl::id.eq(version_id))
+        .select(Version::as_select())
+        .first(conn)
+        .context("Error fetching version")?;
+
+    let slot: Slot = slots_dsl::slots
+        .filter(slots_dsl::id.eq(version.slot_id))
+        .select(Slot::as_select())
+        .first(conn)
+        .context("Error fetching slot for version")?;
+
+    let game: Game = games_dsl::games
+        .filter(games_dsl::id.eq(slot.game_id))
+        .select(Game::as_select())
+        .first(conn)
+        .context("Error fetching game for version")?;
+
+    let parent_uuid = resolve_parent_uuid(conn, version.parent_id)?;
+    Ok(FullVersion {
+        version,
+        game,
+        slot,
+        parent_uuid,
+    })
 }
 
 fn load_full_game(conn: &mut diesel::SqliteConnection, id: i32) -> Result<crate::models::FullGame> {

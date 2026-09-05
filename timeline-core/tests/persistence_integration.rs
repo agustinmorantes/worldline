@@ -431,6 +431,122 @@ fn snapshot_metadata_survives_tagging_and_activation() {
     assert_eq!(after_activation.tag.as_deref(), Some("checkpoint"));
 }
 
+#[test]
+fn tagging_missing_version_metadata_fails_without_fabricating_a_manifest() {
+    let pool = init_db();
+    let repository_root = tempdir().unwrap();
+    let games_repo = SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let versions_repo = SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let game = games_repo
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Missing Metadata Tag Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            None,
+        )
+        .unwrap();
+    let version = versions_repo
+        .create_version_from_snapshot(
+            game.id,
+            VersionReason::Manual,
+            CapturedSnapshot {
+                content_hash:
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                        .to_string(),
+                files: Vec::new(),
+            },
+        )
+        .unwrap();
+    let game_dir = repository::game_dir(
+        repository_root.path(),
+        version.game.folder_slug.as_deref().unwrap(),
+    );
+    let slot_dir = repository::slot_dir(&game_dir, &version.slot.folder_slug);
+    let version_dir =
+        repository::version_dir(&slot_dir, version.version.folder_slug.as_deref().unwrap());
+    std::fs::remove_dir_all(&version_dir).unwrap();
+
+    assert!(
+        versions_repo
+            .tag_version(version.version.id, "checkpoint".to_string())
+            .is_err()
+    );
+    assert!(!version_dir.exists());
+    assert_eq!(
+        versions_repo
+            .get_version(version.version.id)
+            .unwrap()
+            .version
+            .tag,
+        None
+    );
+}
+
+#[test]
+fn activation_does_not_recreate_missing_version_metadata() {
+    let pool = init_db();
+    let repository_root = tempdir().unwrap();
+    let games_repo = SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let versions_repo = SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let game = games_repo
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Missing Metadata Activation Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            None,
+        )
+        .unwrap();
+    let version = versions_repo
+        .create_version_from_snapshot(
+            game.id,
+            VersionReason::Manual,
+            CapturedSnapshot {
+                content_hash:
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                        .to_string(),
+                files: Vec::new(),
+            },
+        )
+        .unwrap();
+    let game_dir = repository::game_dir(
+        repository_root.path(),
+        version.game.folder_slug.as_deref().unwrap(),
+    );
+    let slot_dir = repository::slot_dir(&game_dir, &version.slot.folder_slug);
+    let version_dir =
+        repository::version_dir(&slot_dir, version.version.folder_slug.as_deref().unwrap());
+    std::fs::remove_dir_all(&version_dir).unwrap();
+
+    versions_repo
+        .set_active_version(version.version.id)
+        .unwrap();
+    assert!(!version_dir.exists());
+}
+
 fn seed_game_with_slot(conn: &mut SqliteConnection, title: &str) -> (i32, i32) {
     use diesel::prelude::*;
     use savegame_timeline_core::schema::{games, slots};
