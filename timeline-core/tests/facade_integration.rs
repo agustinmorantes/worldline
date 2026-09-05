@@ -16,11 +16,12 @@ use tempfile::tempdir;
 
 #[test]
 fn test_restore_uses_version_id_not_version_number() {
-    // Regression: restore_version must use version.id (the DB primary key) as the
-    // snapshot directory name, not version_number (the per-game sequential counter).
-    // For Game 2's first version, version.id=2 but version_number=1.
-    // The snapshot is stored under working_base/{game_id}/{version.id}/{dir_id},
-    // so using version_number instead would look in the wrong directory.
+    // Regression: restore_version must identify the version by version.id (the DB
+    // primary key), not by version_number (the per-slot sequential counter). For
+    // Game 2's first version, version.id=2 but version_number=1. The snapshot lives
+    // under a slug-based, slot-nested path derived from that version's own identity
+    // (see `repository::game_snapshot_dir`), so confusing the two resolves a
+    // different version and therefore reads the wrong directory.
     let pool = init_db();
     let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
     let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));

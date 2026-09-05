@@ -81,9 +81,20 @@ impl FsEventHandler {
         for ev in events {
             println!("event detected: {:?}", ev);
 
+            // `need_rescan` is notify's signal that events were dropped, so the
+            // event paths cannot be trusted and every tracked directory has to be
+            // treated as modified. Fall through to the normal flow to do that: it
+            // creates a version first and only then copies into it. This used to
+            // call `handle_rescan`, which deletes and refills the stored snapshot
+            // of `last_version` directly and then returned early — so a rescan
+            // both rewrote an existing version's content (versions are immutable)
+            // and never created a version to account for the change.
             if ev.need_rescan() {
-                self.handle_rescan(&dirs, &games)?;
-                return Ok(games);
+                for dir in &dirs {
+                    modified_dirs.insert(dir.id);
+                    modified_games.insert(dir.game_id);
+                }
+                continue;
             }
 
             // Find which tracked directories were affected by this event
@@ -208,6 +219,9 @@ impl FsEventHandler {
         Ok(())
     }
 
+    /// Fills the snapshot directories of `dirs` from their live state. Only the
+    /// first-scan caller may use this: it is destructive, and `first_scan_dirs` is
+    /// filtered to snapshots that do not exist yet.
     fn handle_rescan(&self, dirs: &[TrackedDir], games: &[FullGame]) -> Result<()> {
         for dir in dirs {
             let Some(game) = games.iter().find(|g| g.game.id == dir.game_id) else {
@@ -894,5 +908,211 @@ mod tests {
             "Should not create a version during the cooldown window"
         );
         assert!(received_change);
+    }
+
+    /// Builds a game whose single tracked dir lives at `source_path` and whose
+    /// active version is `version`, with slugs set so `game_snapshot_dir` resolves.
+    fn rescan_game(source_path: String, version: Version) -> FullGame {
+        FullGame {
+            game: Game {
+                id: 1,
+                uuid: None,
+                title: "Test Game".to_string(),
+                title_normalized: None,
+                folder_slug: Some("test-game__g_deadbeef".to_string()),
+                active_slot_id: Some(10),
+                icon_path: None,
+            },
+            slots: vec![default_slot(1, Some(version.id))],
+            active_slot: Some(default_slot(1, Some(version.id))),
+            last_version: Some(version.clone()),
+            tracked_dirs: vec![TrackedDir {
+                id: 1,
+                uuid: None,
+                folder_slug: Some("saves__d_12345678".to_string()),
+                game_id: 1,
+                path: source_path,
+                exclusions: "[]".to_string(),
+            }],
+            versions: vec![version],
+        }
+    }
+
+    fn aged_version(id: i32, number: i32, slug: &str, age_minutes: i64) -> Version {
+        Version {
+            id,
+            uuid: None,
+            folder_slug: Some(slug.to_string()),
+            slot_id: 10,
+            version_number: number,
+            tag: None,
+            reason: "watcher".to_string(),
+            created_at: (Utc::now() - Duration::minutes(age_minutes)).naive_utc(),
+            parent_id: None,
+        }
+    }
+
+    fn rescan_event() -> DebouncedEvent {
+        DebouncedEvent {
+            event: Event::new(notify_debouncer_full::notify::EventKind::Any)
+                .set_flag(notify_debouncer_full::notify::event::Flag::Rescan),
+            time: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn test_rescan_must_not_overwrite_an_existing_versions_snapshot() {
+        // Regression (Critical, pre-existing): on `need_rescan` the handler called
+        // `handle_rescan` for EVERY tracked dir and returned early. That deletes
+        // `last_version`'s stored snapshot and refills it from live state, so an
+        // already-created version silently acquires new content, with no new entry
+        // to account for it. Versions are immutable. A version-count assertion
+        // cannot see this, so this asserts on the snapshot's bytes.
+        let games_repo = MockGameRepository::new();
+        let mut versions_repo = MockVersionRepository::new();
+        // The cooldown is closed, so nothing may be created either.
+        versions_repo.expect_create_version().times(0);
+
+        let working_base = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        fs::write(source_dir.path().join("save.dat"), "live-state").unwrap();
+
+        let handler = FsEventHandler::new(
+            working_base.path().to_path_buf(),
+            Arc::new(games_repo),
+            Arc::new(versions_repo),
+        );
+
+        // V1 is seconds old, so the cooldown is closed.
+        let v1 = aged_version(1, 1, "v001__v_abcdef12", 0);
+        let game = rescan_game(source_dir.path().to_str().unwrap().to_string(), v1);
+
+        // V1 already has a snapshot, holding content distinct from live state.
+        let v1_snapshot = crate::repository::game_snapshot_dir(
+            working_base.path(),
+            &game.game,
+            game.active_slot.as_ref().unwrap(),
+            game.last_version.as_ref().unwrap(),
+            &game.tracked_dirs[0],
+        )
+        .unwrap();
+        fs::create_dir_all(&v1_snapshot).unwrap();
+        fs::write(v1_snapshot.join("save.dat"), "v1-content").unwrap();
+
+        let (notif_tx, notif_rx) = mpsc::channel();
+        handler
+            .run(
+                vec![rescan_event()],
+                notif_tx,
+                &[game],
+                working_base.path(),
+                MonitoringSettings::default(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(v1_snapshot.join("save.dat")).unwrap(),
+            "v1-content",
+            "a rescan must leave an existing version's stored snapshot byte-identical; \
+             versions are immutable"
+        );
+        assert!(
+            notif_rx
+                .try_iter()
+                .any(|n| matches!(n, Notification::ChangeDetected { game_id: 1 })),
+            "a rescan must still report that the game changed"
+        );
+    }
+
+    #[test]
+    fn test_rescan_captures_live_state_into_a_fresh_version() {
+        // The other half: a rescan exists to recover after notify dropped events,
+        // so when the cooldown allows, it must still create a version and capture
+        // the live state into THAT version — never into the previous one.
+        let mut games_repo = MockGameRepository::new();
+        let mut versions_repo = MockVersionRepository::new();
+
+        let working_base = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        fs::write(source_dir.path().join("save.dat"), "live-state").unwrap();
+        let source_path = source_dir.path().to_str().unwrap().to_string();
+
+        let v1 = aged_version(1, 1, "v001__v_abcdef12", 20);
+        let v2 = aged_version(2, 2, "v002__v_beefcafe", 0);
+
+        let v2_for_create = v2.clone();
+        versions_repo
+            .expect_create_version()
+            .times(1)
+            .returning(move |game_id, _reason| {
+                Ok(FullVersion {
+                    version: v2_for_create.clone(),
+                    game: Game {
+                        id: game_id,
+                        uuid: None,
+                        title: "Test Game".to_string(),
+                        title_normalized: None,
+                        folder_slug: Some("test-game__g_deadbeef".to_string()),
+                        active_slot_id: Some(10),
+                        icon_path: None,
+                    },
+                    slot: default_slot(game_id, Some(2)),
+                    parent_uuid: None,
+                })
+            });
+
+        // After creation the handler reloads its games: V2 is now the active version.
+        let reloaded_path = source_path.clone();
+        let reloaded_v2 = v2.clone();
+        games_repo.expect_get_games().returning(move || {
+            Ok(vec![rescan_game(
+                reloaded_path.clone(),
+                reloaded_v2.clone(),
+            )])
+        });
+
+        let handler = FsEventHandler::new(
+            working_base.path().to_path_buf(),
+            Arc::new(games_repo),
+            Arc::new(versions_repo),
+        );
+
+        let game = rescan_game(source_path, v1);
+        let snapshot_of = |v: &Version| {
+            crate::repository::game_snapshot_dir(
+                working_base.path(),
+                &game.game,
+                game.active_slot.as_ref().unwrap(),
+                v,
+                &game.tracked_dirs[0],
+            )
+            .unwrap()
+        };
+        let v1_snapshot = snapshot_of(game.last_version.as_ref().unwrap());
+        fs::create_dir_all(&v1_snapshot).unwrap();
+        fs::write(v1_snapshot.join("save.dat"), "v1-content").unwrap();
+        let v2_snapshot = snapshot_of(&v2);
+
+        let (notif_tx, _notif_rx) = mpsc::channel();
+        handler
+            .run(
+                vec![rescan_event()],
+                notif_tx,
+                &[game.clone()],
+                working_base.path(),
+                MonitoringSettings::default(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(v2_snapshot.join("save.dat")).unwrap(),
+            "live-state",
+            "the rescan must capture the live state into the version it just created"
+        );
+        assert_eq!(
+            fs::read_to_string(v1_snapshot.join("save.dat")).unwrap(),
+            "v1-content",
+            "the previous version's snapshot must be untouched"
+        );
     }
 }
