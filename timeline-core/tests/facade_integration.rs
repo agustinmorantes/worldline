@@ -82,25 +82,15 @@ fn test_restore_uses_version_id_not_version_number() {
     // Trigger a version for Game 1 — this consumes version id=1, so Game 2's
     // first version will get id=2 (while its version_number will be 1).
     fs::write(game1_dir.path().join("save.dat"), "game1 modified").unwrap();
-    loop {
-        std::thread::sleep(Duration::from_millis(300));
-        let g = core.get_game(game1.id).unwrap();
-        if !g.versions.is_empty() {
-            break;
-        }
-    }
+    // Bounded: an unbounded poll loop turns a missed event into a hung test
+    // binary rather than a failure.
+    wait_for_version_count(&core, game1.id, 1, Duration::from_secs(30));
     while notif_rx.try_recv().is_ok() {}
 
     // Now write the state we want to restore to. After this, the watcher will
     // create version id=2 (version_number=1) for Game 2, snapshotting this content.
     fs::write(game2_dir.path().join("save.dat"), "game2 good save").unwrap();
-    loop {
-        std::thread::sleep(Duration::from_millis(300));
-        let g = core.get_game(game2.id).unwrap();
-        if !g.versions.is_empty() {
-            break;
-        }
-    }
+    wait_for_version_count(&core, game2.id, 1, Duration::from_secs(30));
     while notif_rx.try_recv().is_ok() {}
 
     let full_game2 = core.get_game(game2.id).unwrap();
@@ -180,12 +170,9 @@ fn test_version_cooldown_prevents_rapid_second_version() {
 
     // Trigger first change and wait for version 1 to be created.
     fs::write(&save_file, "change 1").unwrap();
-    loop {
-        std::thread::sleep(Duration::from_millis(300));
-        if !core.get_game(game.id).unwrap().versions.is_empty() {
-            break;
-        }
-    }
+    // Bounded: an unbounded poll loop turns a missed event into a hung test
+    // binary rather than a failure.
+    wait_for_version_count(&core, game.id, 1, Duration::from_secs(30));
     while notif_rx.try_recv().is_ok() {}
 
     // Trigger a second change immediately — still well within the 15-minute cooldown.
@@ -717,6 +704,15 @@ fn harness(initial_contents: &str) -> Harness {
         _icons_dir: icons_dir,
         save_file,
         _notif_rx: notif_rx,
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Every harness leaves a watcher thread (and its debouncer) running for
+        // the whole test binary otherwise. Fourteen of those ticking at once
+        // steal exactly the timing headroom the poll loops in this file depend on.
+        self.core.shutdown();
     }
 }
 

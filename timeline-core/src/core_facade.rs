@@ -293,6 +293,14 @@ impl TimelineCore {
         self.scan_roots_repo.remove_scan_root(path)
     }
 
+    /// Stops the watcher thread and everything it owns (the debouncer and its
+    /// notification threads). Nothing else ever ends a watcher's life, so a
+    /// process that builds several cores accumulates live debouncers, each one
+    /// ticking and delivering events for directories nobody is looking at.
+    pub fn shutdown(&self) {
+        let _ = self.cmd_tx.send(Command::Shutdown);
+    }
+
     pub fn get_monitoring_settings(&self) -> Result<MonitoringSettings> {
         load_monitoring_settings(&self.monitoring_settings_path)
     }
@@ -394,12 +402,10 @@ impl TimelineCore {
         // Bounded: a watcher thread that died drops the ack sender and this returns
         // at once, and one that is wedged costs a bounded wait instead of hanging
         // the UI forever. Either way suppression degrades rather than deadlocks.
-        if ack_rx.recv_timeout(WATCHER_PAUSE_ACK_TIMEOUT).is_err() {
-            eprintln!(
-                "Watcher did not acknowledge pause within {:?}; continuing without \
-                 event suppression",
-                WATCHER_PAUSE_ACK_TIMEOUT
-            );
+        if let Err(err) = ack_rx.recv_timeout(WATCHER_PAUSE_ACK_TIMEOUT) {
+            // Distinguishes a wedged watcher (timed out) from a stopped one
+            // (sending half closed), which are very different things to debug.
+            eprintln!("Watcher did not acknowledge pause ({err}); continuing unsuppressed");
         }
 
         // `catch_unwind` so a panicking operation still reaches the resume below.
