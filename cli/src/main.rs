@@ -37,6 +37,10 @@ enum Commands {
         #[command(subcommand)]
         action: VersionsAction,
     },
+    Slots {
+        #[command(subcommand)]
+        action: SlotsAction,
+    },
     Watch,
 }
 
@@ -64,6 +68,30 @@ enum GamesAction {
 enum VersionsAction {
     Tag { version_id: i32, tag: String },
     Restore { version_id: i32 },
+}
+
+#[derive(Subcommand)]
+enum SlotsAction {
+    List {
+        game_id: i32,
+    },
+    Create {
+        game_id: i32,
+        name: String,
+    },
+    Switch {
+        game_id: i32,
+        slot_id: i32,
+    },
+    Rename {
+        slot_id: i32,
+        name: String,
+    },
+    Delete {
+        slot_id: i32,
+        #[arg(long)]
+        replacement: Option<i32>,
+    },
 }
 
 fn init_core_with_debounce(
@@ -196,6 +224,49 @@ fn main() -> Result<()> {
             VersionsAction::Restore { version_id } => {
                 core.restore_version(version_id)?;
                 println!("Restored version {version_id}");
+            }
+        },
+        Commands::Slots { action } => match action {
+            SlotsAction::List { game_id } => {
+                let full = core.get_game(game_id)?;
+                for slot in &full.slots {
+                    let marker = if full.active_slot.as_ref().is_some_and(|a| a.id == slot.id) {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!("{marker} [{}] {}", slot.id, slot.name);
+                }
+            }
+            SlotsAction::Create { game_id, name } => {
+                let full = core.create_slot(game_id, &name)?;
+                let slot = full
+                    .active_slot
+                    .ok_or_else(|| anyhow::anyhow!("No active slot after creation"))?;
+                println!("Created slot [{}] {}", slot.id, slot.name);
+            }
+            SlotsAction::Switch { game_id, slot_id } => {
+                let full = core.switch_slot(game_id, slot_id)?;
+                let slot = full
+                    .active_slot
+                    .ok_or_else(|| anyhow::anyhow!("No active slot after switch"))?;
+                println!("Switched to slot [{}] {}", slot.id, slot.name);
+            }
+            SlotsAction::Rename { slot_id, name } => {
+                let full = core.rename_slot(slot_id, &name)?;
+                let slot = full
+                    .slots
+                    .into_iter()
+                    .find(|s| s.id == slot_id)
+                    .ok_or_else(|| anyhow::anyhow!("Renamed slot not found"))?;
+                println!("Renamed slot [{}] to {}", slot.id, slot.name);
+            }
+            SlotsAction::Delete {
+                slot_id,
+                replacement,
+            } => {
+                core.delete_slot(slot_id, replacement)?;
+                println!("Deleted slot {slot_id}");
             }
         },
         Commands::Watch => {
