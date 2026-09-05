@@ -927,3 +927,114 @@ fn test_monitoring_settings_persist_through_facade() {
     let reloaded = core.get_monitoring_settings().unwrap();
     assert_eq!(reloaded, updated);
 }
+
+/// Recursively checks whether any file named `name` exists anywhere under `root`.
+/// Used to assert on what actually landed in the repository on disk, rather
+/// than trusting a database field or a return value.
+fn repo_contains_file(root: &std::path::Path, name: &str) -> bool {
+    fs::read_dir(root).is_ok_and(|entries| {
+        entries.filter_map(|e| e.ok()).any(|e| {
+            let path = e.path();
+            if path.is_dir() {
+                repo_contains_file(&path, name)
+            } else {
+                e.file_name().to_string_lossy() == name
+            }
+        })
+    })
+}
+
+#[test]
+fn test_exclusions_are_honoured_symmetrically_on_capture_and_restore() {
+    // NOTE: the brief's version of this test called `h.create_game(...)` and then
+    // immediately read `full.versions` — but in this codebase `save_game` only
+    // creates the default slot, never a version, so that list is empty and the
+    // `min_by_key(...).unwrap()` would panic. It also keyed the target version
+    // off `version_number`, which is a non-unique display hint. This version
+    // drives `create_slot` (the real checkpoint call site), selects the version
+    // by `reason`, and asserts on on-disk contents at every step.
+    let h = harness("v1-state");
+    let game = h.create_game("Exclusions Test");
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+
+    // Mark *.cfg as excluded for the game's tracked dir.
+    {
+        use diesel::prelude::*;
+        use savegame_timeline_core::schema::tracked_dirs;
+        let conn = &mut h.pool.get().unwrap();
+        diesel::update(tracked_dirs::table.filter(tracked_dirs::game_id.eq(game.id)))
+            .set(tracked_dirs::exclusions.eq(r#"["*.cfg"]"#))
+            .execute(conn)
+            .unwrap();
+    }
+
+    let cfg = h.source_dir.path().join("settings.cfg");
+    let ini = h.source_dir.path().join("config.ini");
+    fs::write(&cfg, "local-only").unwrap();
+    fs::write(&ini, "ini-save-data").unwrap();
+
+    // create_slot checkpoints the live state into the default slot, then clears
+    // the live dir so the new slot starts empty. Both halves must honour the
+    // exclusion.
+    h.core.create_slot(game.id, "Second").unwrap();
+
+    // 1. The excluded file must never have been captured into any snapshot.
+    assert!(
+        !repo_contains_file(h.working_base.path(), "settings.cfg"),
+        "an excluded file must not be copied into any snapshot in the repository"
+    );
+    // A .ini file is real save data for many games and must be captured
+    // (regression for the over-broad global exclusion list in fs_utils).
+    assert!(
+        repo_contains_file(h.working_base.path(), "config.ini"),
+        ".ini files are real save data and must be captured into the snapshot"
+    );
+
+    // 2. The excluded file must survive the wipe that clears the live dir.
+    assert_eq!(
+        fs::read_to_string(&cfg).unwrap(),
+        "local-only",
+        "an excluded file must survive clear_tracked_dirs"
+    );
+    assert!(
+        !h.save_file.exists(),
+        "non-excluded files are cleared for the new empty slot"
+    );
+    assert!(
+        !ini.exists(),
+        "non-excluded files are cleared for the new empty slot"
+    );
+
+    let slots = h.core.get_slots(game.id).unwrap();
+    let default_slot = slots.iter().find(|s| s.slot.id == default_slot_id).unwrap();
+    let target = default_slot
+        .versions
+        .iter()
+        .find(|v| v.reason == "pre_slot_create")
+        .expect("create_slot checkpoints the outgoing slot");
+
+    // Change the excluded file so a restore that clobbered it would be visible.
+    fs::write(&cfg, "changed-after-capture").unwrap();
+
+    h.core.restore_version(target.id).unwrap();
+
+    // 3. Non-excluded files are restored from the snapshot.
+    assert_eq!(
+        fs::read_to_string(&h.save_file).unwrap(),
+        "v1-state",
+        "non-excluded files must be restored"
+    );
+    assert_eq!(
+        fs::read_to_string(&ini).unwrap(),
+        "ini-save-data",
+        ".ini files must survive a capture-and-restore round trip"
+    );
+
+    // 4. The symmetry property: the excluded file is neither destroyed nor
+    //    overwritten by the restore.
+    assert_eq!(
+        fs::read_to_string(&cfg).unwrap(),
+        "changed-after-capture",
+        "an excluded file must survive a restore untouched"
+    );
+}

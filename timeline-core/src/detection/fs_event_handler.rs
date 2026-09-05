@@ -95,7 +95,15 @@ impl FsEventHandler {
                 }
 
                 for dir in &dirs {
-                    if path.starts_with(&dir.path) {
+                    if let Ok(relative) = path.strip_prefix(&dir.path) {
+                        // A user-excluded file is never captured, so a change to
+                        // it must not spawn a version either.
+                        if crate::exclusions::is_excluded(
+                            &crate::exclusions::parse(&dir.exclusions),
+                            relative,
+                        ) {
+                            continue;
+                        }
                         modified_dirs.insert(dir.id);
                         modified_games.insert(dir.game_id);
                     }
@@ -183,7 +191,11 @@ impl FsEventHandler {
             fs::create_dir_all(parent)?;
         }
 
-        crate::fs_utils::copy_dir_filtered(source_path, &working_dir_path)?;
+        crate::fs_utils::copy_dir_filtered(
+            source_path,
+            &working_dir_path,
+            &crate::exclusions::parse(&dir.exclusions),
+        )?;
 
         Ok(())
     }
@@ -214,7 +226,11 @@ impl FsEventHandler {
                 fs::create_dir_all(working_dir_path.parent().unwrap())?;
             }
 
-            crate::fs_utils::copy_dir_filtered(path, &working_dir_path)?;
+            crate::fs_utils::copy_dir_filtered(
+                path,
+                &working_dir_path,
+                &crate::exclusions::parse(&dir.exclusions),
+            )?;
         }
 
         Ok(())
@@ -356,6 +372,7 @@ mod tests {
                 folder_slug: None,
                 game_id: 1,
                 path: source_path.clone(),
+                exclusions: "[]".to_string(),
             }],
             versions: vec![Version {
                 id: 0,
@@ -498,6 +515,7 @@ mod tests {
                 folder_slug: None,
                 game_id: 1,
                 path: source_path.clone(),
+                exclusions: "[]".to_string(),
             }],
             versions: vec![Version {
                 id: 1,
@@ -630,6 +648,7 @@ mod tests {
                 folder_slug: None,
                 game_id: 1,
                 path: source_path.clone(),
+                exclusions: "[]".to_string(),
             }],
             versions: vec![],
         };
@@ -726,6 +745,7 @@ mod tests {
                 folder_slug: Some("saves__d_12345678".to_string()),
                 game_id: 1,
                 path: source_path,
+                exclusions: "[]".to_string(),
             }],
             versions: vec![],
         };
@@ -814,6 +834,7 @@ mod tests {
                 folder_slug: Some("saves__d_12345678".to_string()),
                 game_id: 1,
                 path: source_path.clone(),
+                exclusions: "[]".to_string(),
             }],
             versions: vec![Version {
                 id: 1,

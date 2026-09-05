@@ -434,8 +434,12 @@ impl TimelineCore {
             }
 
             if source_path.exists() {
-                crate::fs_utils::copy_dir_filtered(source_path, &snapshot_dir)
-                    .context("Failed to copy tracked dir into checkpoint snapshot")?;
+                crate::fs_utils::copy_dir_filtered(
+                    source_path,
+                    &snapshot_dir,
+                    &crate::exclusions::parse(&dir.exclusions),
+                )
+                .context("Failed to copy tracked dir into checkpoint snapshot")?;
             } else {
                 std::fs::create_dir_all(&snapshot_dir).with_context(|| {
                     format!(
@@ -456,9 +460,11 @@ impl TimelineCore {
         for dir in &game.tracked_dirs {
             let live_dir = Path::new(&dir.path);
             if live_dir.exists() {
-                std::fs::remove_dir_all(live_dir).with_context(|| {
-                    format!("Failed to clear tracked dir {}", live_dir.display())
-                })?;
+                crate::fs_utils::clear_dir_except(
+                    live_dir,
+                    &crate::exclusions::parse(&dir.exclusions),
+                )
+                .with_context(|| format!("Failed to clear tracked dir {}", live_dir.display()))?;
             }
 
             std::fs::create_dir_all(live_dir).with_context(|| {
@@ -472,8 +478,9 @@ impl TimelineCore {
     fn restore_version_files(&self, game: &FullGame, version: &FullVersion) -> Result<()> {
         for dir in &game.tracked_dirs {
             let live_dir = PathBuf::from(&dir.path);
+            let exclusions = crate::exclusions::parse(&dir.exclusions);
             if live_dir.exists() {
-                std::fs::remove_dir_all(&live_dir).with_context(|| {
+                crate::fs_utils::clear_dir_except(&live_dir, &exclusions).with_context(|| {
                     format!("Failed to clear live tracked dir {}", live_dir.display())
                 })?;
             }
@@ -488,7 +495,7 @@ impl TimelineCore {
             .context("Failed to resolve version snapshot path")?;
 
             if snapshot_dir.exists() {
-                crate::fs_utils::copy_dir_filtered(&snapshot_dir, &live_dir)
+                crate::fs_utils::copy_dir_filtered(&snapshot_dir, &live_dir, &exclusions)
                     .context("Failed to copy directory")?;
             } else {
                 std::fs::create_dir_all(&live_dir).with_context(|| {

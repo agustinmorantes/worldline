@@ -12,6 +12,8 @@ pub struct TrackedDir {
     pub folder_slug: Option<String>,
     pub game_id: i32,
     pub path: String,
+    /// JSON array of glob patterns the user does not want versioned.
+    pub exclusions: String,
 }
 
 #[derive(
