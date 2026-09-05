@@ -1,5 +1,6 @@
 pub mod sqlite;
 
+use crate::content_store::CapturedSnapshot;
 use crate::models::{FullGame, FullSlot, FullVersion, Game, GameForm, Slot, Version};
 use crate::repository::VersionReason;
 use anyhow::Result;
@@ -24,6 +25,12 @@ pub trait GameRepository: Send + Sync {
 #[cfg_attr(test, mockall::automock)]
 pub trait VersionRepository: Send + Sync {
     fn create_version(&self, game_id: i32, reason: VersionReason) -> Result<FullVersion>;
+    fn create_version_from_snapshot(
+        &self,
+        game_id: i32,
+        reason: VersionReason,
+        snapshot: CapturedSnapshot,
+    ) -> Result<FullVersion>;
     fn set_active_version(&self, version_id: i32) -> Result<FullVersion>;
     fn tag_version(&self, id: i32, tag: String) -> Result<Version>;
     fn get_version(&self, id: i32) -> Result<FullVersion>;

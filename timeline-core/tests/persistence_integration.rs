@@ -2,6 +2,7 @@ use diesel::SqliteConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel_migrations::MigrationHarness;
 use savegame_timeline_core::MIGRATIONS;
+use savegame_timeline_core::content_store::CapturedSnapshot;
 use savegame_timeline_core::models::*;
 use savegame_timeline_core::persistence::sqlite::{SqliteGameRepository, SqliteVersionRepository};
 use savegame_timeline_core::persistence::{GameRepository, VersionRepository};
@@ -296,6 +297,138 @@ fn test_repository_metadata_is_written_for_game_and_version() {
     assert_eq!(version_metadata.version_number, 1);
     assert_eq!(version_metadata.game_uuid, game_metadata.uuid);
     assert_eq!(version_metadata.reason, VersionReason::Manual);
+}
+
+#[test]
+fn snapshot_metadata_failure_rolls_back_version_row_and_slot_pointer() {
+    let pool = init_db();
+    let repository_root = tempdir().unwrap();
+    let games_repo = SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let versions_repo = SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+
+    let game = games_repo
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Rollback Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            None,
+        )
+        .unwrap();
+    let full_game = games_repo.get_game(game.id).unwrap();
+    let slot = full_game.active_slot.as_ref().unwrap();
+    let game_dir = repository::game_dir(
+        repository_root.path(),
+        full_game.game.folder_slug.as_deref().unwrap(),
+    );
+    let slot_dir = repository::slot_dir(&game_dir, &slot.folder_slug);
+    let versions_path = repository::versions_dir(&slot_dir);
+    std::fs::write(&versions_path, b"not a directory").unwrap();
+
+    let result = versions_repo.create_version_from_snapshot(
+        game.id,
+        VersionReason::Manual,
+        CapturedSnapshot {
+            content_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            files: Vec::new(),
+        },
+    );
+
+    assert!(result.is_err());
+    let unchanged = games_repo.get_game(game.id).unwrap();
+    assert!(unchanged.versions.is_empty());
+    assert_eq!(
+        unchanged
+            .active_slot
+            .as_ref()
+            .and_then(|active_slot| active_slot.active_version_id),
+        None
+    );
+}
+
+#[test]
+fn snapshot_metadata_survives_tagging_and_activation() {
+    let pool = init_db();
+    let repository_root = tempdir().unwrap();
+    let games_repo = SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let versions_repo = SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let game = games_repo
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Preservation Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            None,
+        )
+        .unwrap();
+    let tracked_dir_uuid = uuid::Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
+    let snapshot = CapturedSnapshot {
+        content_hash: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            .to_string(),
+        files: vec![repository::VersionFileMetadata {
+            tracked_dir_uuid,
+            relative_path: "save.dat".to_string(),
+            size: 9,
+            sha256: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                .to_string(),
+        }],
+    };
+
+    let version = versions_repo
+        .create_version_from_snapshot(game.id, VersionReason::Manual, snapshot.clone())
+        .unwrap();
+    let game_dir = repository::game_dir(
+        repository_root.path(),
+        version.game.folder_slug.as_deref().unwrap(),
+    );
+    let slot_dir = repository::slot_dir(&game_dir, &version.slot.folder_slug);
+    let version_dir =
+        repository::version_dir(&slot_dir, version.version.folder_slug.as_deref().unwrap());
+    let before: repository::VersionMetadata = repository::read_metadata_json(&version_dir).unwrap();
+    assert_eq!(before.content_hash, snapshot.content_hash);
+    assert_eq!(before.files, snapshot.files);
+
+    let tagged = versions_repo
+        .tag_version(version.version.id, "checkpoint".to_string())
+        .unwrap();
+    assert_eq!(tagged.tag.as_deref(), Some("checkpoint"));
+    let after_tag: repository::VersionMetadata =
+        repository::read_metadata_json(&version_dir).unwrap();
+    assert_eq!(after_tag.content_hash, before.content_hash);
+    assert_eq!(after_tag.files, before.files);
+    assert_eq!(after_tag.tag.as_deref(), Some("checkpoint"));
+
+    versions_repo
+        .set_active_version(version.version.id)
+        .unwrap();
+    let after_activation: repository::VersionMetadata =
+        repository::read_metadata_json(&version_dir).unwrap();
+    assert_eq!(after_activation.content_hash, before.content_hash);
+    assert_eq!(after_activation.files, before.files);
+    assert_eq!(after_activation.tag.as_deref(), Some("checkpoint"));
 }
 
 fn seed_game_with_slot(conn: &mut SqliteConnection, title: &str) -> (i32, i32) {

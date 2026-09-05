@@ -225,6 +225,7 @@ pub fn version_dir(slot_dir: &Path, folder_slug: &str) -> PathBuf {
     versions_dir(slot_dir).join(folder_slug)
 }
 
+// Task 3 removes these legacy snapshot-tree helpers after facade and watcher callers migrate.
 pub fn version_snapshot_dirs_dir(version_dir: &Path) -> PathBuf {
     version_dir.join("dirs")
 }
@@ -482,6 +483,17 @@ pub fn sync_version_metadata(
         .map(|value| Uuid::parse_str(value).context("failed to parse parent version uuid"))
         .transpose()?;
 
+    let game_folder_slug =
+        required_string_field(version.game.folder_slug.as_deref(), "game.folder_slug")?;
+    let game_entity_dir = game_dir(repository_root, game_folder_slug);
+    let slot_entity_dir = slot_dir(&game_entity_dir, &version.slot.folder_slug);
+    let version_entity_dir = version_dir(&slot_entity_dir, folder_slug);
+
+    let existing = if version_entity_dir.exists() {
+        Some(read_metadata_json::<VersionMetadata>(&version_entity_dir)?)
+    } else {
+        None
+    };
     let metadata = VersionMetadata {
         entity: "version".to_string(),
         uuid: version_uuid,
@@ -493,16 +505,102 @@ pub fn sync_version_metadata(
         tag: version.version.tag.clone(),
         reason: VersionReason::from_str_or_watcher(&version.version.reason),
         created_at: DateTime::<Utc>::from_naive_utc_and_offset(version.version.created_at, Utc),
-        content_hash: String::new(),
-        files: Vec::new(),
+        content_hash: existing
+            .as_ref()
+            .map(|metadata| metadata.content_hash.clone())
+            .unwrap_or_default(),
+        files: existing
+            .as_ref()
+            .map(|metadata| metadata.files.clone())
+            .unwrap_or_default(),
     };
+    write_metadata_json(&version_entity_dir, &metadata)
+}
 
+pub fn commit_version_metadata(
+    repository_root: &Path,
+    version: &crate::models::FullVersion,
+    snapshot: &crate::content_store::CapturedSnapshot,
+) -> Result<()> {
+    let version_uuid = parse_uuid_field(version.version.uuid.as_deref(), "version.uuid")?;
+    let game_uuid = parse_uuid_field(version.game.uuid.as_deref(), "game.uuid")?;
+    let folder_slug = required_string_field(
+        version.version.folder_slug.as_deref(),
+        "version.folder_slug",
+    )?;
+    let parent_version_uuid = version
+        .parent_uuid
+        .as_deref()
+        .map(|value| Uuid::parse_str(value).context("failed to parse parent version uuid"))
+        .transpose()?;
+    let slot_uuid = Uuid::parse_str(&version.slot.uuid).context("failed to parse slot.uuid")?;
     let game_folder_slug =
         required_string_field(version.game.folder_slug.as_deref(), "game.folder_slug")?;
+
+    let metadata = VersionMetadata {
+        entity: "version".to_string(),
+        uuid: version_uuid,
+        game_uuid,
+        slot_uuid: Some(slot_uuid),
+        version_number: version.version.version_number,
+        folder_slug: folder_slug.to_string(),
+        parent_version_uuid,
+        tag: version.version.tag.clone(),
+        reason: VersionReason::from_str_or_watcher(&version.version.reason),
+        created_at: DateTime::<Utc>::from_naive_utc_and_offset(version.version.created_at, Utc),
+        content_hash: snapshot.content_hash.clone(),
+        files: snapshot.files.clone(),
+    };
+
     let game_entity_dir = game_dir(repository_root, game_folder_slug);
     let slot_entity_dir = slot_dir(&game_entity_dir, &version.slot.folder_slug);
-    let version_entity_dir = version_dir(&slot_entity_dir, folder_slug);
-    write_metadata_json(&version_entity_dir, &metadata)
+    let versions_parent = versions_dir(&slot_entity_dir);
+    let final_dir = version_dir(&slot_entity_dir, folder_slug);
+    if final_dir.exists() {
+        return Err(anyhow!(
+            "version metadata already exists at {}",
+            final_dir.display()
+        ));
+    }
+
+    fs::create_dir_all(&versions_parent).with_context(|| {
+        format!(
+            "failed to create versions directory at {}",
+            versions_parent.display()
+        )
+    })?;
+    let temp_dir = versions_parent.join(format!("{folder_slug}.tmp-{}", Uuid::new_v4()));
+    fs::create_dir(&temp_dir).with_context(|| {
+        format!(
+            "failed to create temporary version directory at {}",
+            temp_dir.display()
+        )
+    })?;
+
+    let result = (|| -> Result<()> {
+        write_metadata_json(&temp_dir, &metadata)?;
+        sync_parent_dir(&temp_dir);
+        if final_dir.exists() {
+            return Err(anyhow!(
+                "version metadata already exists at {}",
+                final_dir.display()
+            ));
+        }
+        fs::rename(&temp_dir, &final_dir).with_context(|| {
+            format!(
+                "failed to publish version metadata from {} to {}",
+                temp_dir.display(),
+                final_dir.display()
+            )
+        })?;
+        sync_parent_dir(&final_dir);
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+    result
 }
 
 fn metadata_tmp_path(path: &Path) -> PathBuf {
@@ -538,7 +636,78 @@ fn sync_parent_dir(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content_store::CapturedSnapshot;
+    use crate::models::{FullVersion, Game, Slot, Version};
+    use chrono::NaiveDateTime;
     use tempfile::tempdir;
+
+    fn full_version_fixture() -> FullVersion {
+        FullVersion {
+            version: Version {
+                id: 7,
+                uuid: Some("11111111-1111-1111-1111-111111111111".to_string()),
+                folder_slug: Some("v007__v_11111111".to_string()),
+                version_number: 7,
+                slot_id: 5,
+                tag: Some("before-boss".to_string()),
+                reason: "manual".to_string(),
+                created_at: NaiveDateTime::parse_from_str(
+                    "2026-01-02 03:04:05",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .unwrap(),
+                parent_id: Some(6),
+            },
+            game: Game {
+                id: 3,
+                uuid: Some("33333333-3333-3333-3333-333333333333".to_string()),
+                title: "Hollow Knight".to_string(),
+                title_normalized: Some("hollow knight".to_string()),
+                folder_slug: Some("hollow-knight__g_33333333".to_string()),
+                active_slot_id: Some(5),
+                icon_path: None,
+            },
+            slot: Slot {
+                id: 5,
+                uuid: "55555555-5555-5555-5555-555555555555".to_string(),
+                game_id: 3,
+                name: "Default Slot".to_string(),
+                name_normalized: "default slot".to_string(),
+                folder_slug: "default-slot__s_55555555".to_string(),
+                active_version_id: Some(7),
+                created_at: NaiveDateTime::parse_from_str(
+                    "2026-01-01 00:00:00",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .unwrap(),
+                updated_at: NaiveDateTime::parse_from_str(
+                    "2026-01-02 03:04:05",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .unwrap(),
+            },
+            parent_uuid: Some("66666666-6666-6666-6666-666666666666".to_string()),
+        }
+    }
+
+    fn file_entry_fixture() -> VersionFileMetadata {
+        VersionFileMetadata {
+            tracked_dir_uuid: Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap(),
+            relative_path: "save.dat".to_string(),
+            size: 9,
+            sha256: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+        }
+    }
+
+    fn expected_version_dir(root: &Path, _version: &FullVersion) -> PathBuf {
+        root.join("games")
+            .join("hollow-knight__g_33333333")
+            .join("slots")
+            .join("default-slot__s_55555555")
+            .join("versions")
+            .join("v007__v_11111111")
+    }
 
     #[test]
     fn normalizes_display_names_for_uniqueness() {
@@ -658,6 +827,39 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "repository format 1 is unsupported; this pre-release build requires wiping and recreating the repository"
+        );
+    }
+
+    #[test]
+    fn commits_version_metadata_by_directory_rename_without_legacy_dirs() {
+        let root = tempdir().unwrap();
+        let version = full_version_fixture();
+        let snapshot = CapturedSnapshot {
+            content_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .into(),
+            files: vec![file_entry_fixture()],
+        };
+
+        commit_version_metadata(root.path(), &version, &snapshot).unwrap();
+        let final_dir = expected_version_dir(root.path(), &version);
+
+        assert_eq!(
+            read_metadata_json::<VersionMetadata>(&final_dir)
+                .unwrap()
+                .files,
+            snapshot.files
+        );
+        assert!(!final_dir.join("dirs").exists());
+        assert!(
+            fs::read_dir(final_dir.parent().unwrap())
+                .unwrap()
+                .all(|entry| {
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains(".tmp-")
+                })
         );
     }
 }
