@@ -497,7 +497,7 @@ fn parse_library_folders(steam_root: &Path) -> Vec<PathBuf> {
         if let Ok(parsed) = keyvalues_parser::parse(&content) {
             let vdf = keyvalues_parser::Vdf::from(parsed);
             if let Some(obj) = val_as_obj(&vdf.value) {
-                for (_key, values) in obj.iter() {
+                for values in obj.values() {
                     for val in values {
                         if let Some(folder_obj) = val_as_obj(val) {
                             if let Some(path_vals) = folder_obj.get("path") {
@@ -567,7 +567,7 @@ fn detect_steam_user_id(steam_root: &Path) -> Option<String> {
     } else if subdirs.len() == 1 {
         Some(subdirs[0].0.clone())
     } else {
-        subdirs.sort_by(|a, b| b.1.cmp(&a.1));
+        subdirs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         Some(subdirs[0].0.clone())
     }
 }

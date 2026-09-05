@@ -776,7 +776,7 @@ mod tests {
             .run(
                 vec![],
                 notif_tx,
-                &[game.clone()],
+                std::slice::from_ref(&game),
                 working_base.path(),
                 MonitoringSettings::default(),
             )
@@ -1098,7 +1098,7 @@ mod tests {
             .run(
                 vec![rescan_event()],
                 notif_tx,
-                &[game.clone()],
+                std::slice::from_ref(&game),
                 working_base.path(),
                 MonitoringSettings::default(),
             )

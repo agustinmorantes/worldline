@@ -73,24 +73,26 @@ enum VersionsAction {
 #[derive(Subcommand)]
 enum SlotsAction {
     List {
-        game_id: i32,
+        game: String,
     },
     Create {
-        game_id: i32,
+        game: String,
         name: String,
     },
     Switch {
-        game_id: i32,
-        slot_id: i32,
+        game: String,
+        slot: String,
     },
     Rename {
-        slot_id: i32,
-        name: String,
+        game: String,
+        slot: String,
+        new_name: String,
     },
     Delete {
-        slot_id: i32,
+        game: String,
+        slot: String,
         #[arg(long)]
-        replacement: Option<i32>,
+        replacement: Option<String>,
     },
 }
 
@@ -132,6 +134,33 @@ fn default_data_dir() -> Result<PathBuf> {
     let local_data = dirs::data_local_dir()
         .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))?;
     Ok(local_data.join("agustinmorantes.savegame-timeline"))
+}
+
+fn resolve_game_id(core: &TimelineCore, game: &str) -> Result<i32> {
+    if let Ok(id) = game.parse() {
+        return Ok(id);
+    }
+
+    core.get_games()?
+        .into_iter()
+        .find(|candidate| candidate.game.title == game)
+        .map(|candidate| candidate.game.id)
+        .ok_or_else(|| anyhow::anyhow!("Game '{game}' not found"))
+}
+
+fn resolve_slot_id(core: &TimelineCore, game_id: i32, slot: &str) -> Result<i32> {
+    let slots = core.get_slots(game_id)?;
+    if let Ok(id) = slot.parse()
+        && slots.iter().any(|candidate| candidate.slot.id == id)
+    {
+        return Ok(id);
+    }
+
+    slots
+        .into_iter()
+        .find(|candidate| candidate.slot.name == slot || candidate.slot.uuid == slot)
+        .map(|candidate| candidate.slot.id)
+        .ok_or_else(|| anyhow::anyhow!("Slot '{slot}' not found for game {game_id}"))
 }
 
 fn main() -> Result<()> {
@@ -227,7 +256,8 @@ fn main() -> Result<()> {
             }
         },
         Commands::Slots { action } => match action {
-            SlotsAction::List { game_id } => {
+            SlotsAction::List { game } => {
+                let game_id = resolve_game_id(&core, &game)?;
                 let full = core.get_game(game_id)?;
                 for slot in &full.slots {
                     let marker = if full.active_slot.as_ref().is_some_and(|a| a.id == slot.id) {
@@ -238,22 +268,31 @@ fn main() -> Result<()> {
                     println!("{marker} [{}] {}", slot.id, slot.name);
                 }
             }
-            SlotsAction::Create { game_id, name } => {
+            SlotsAction::Create { game, name } => {
+                let game_id = resolve_game_id(&core, &game)?;
                 let full = core.create_slot(game_id, &name)?;
                 let slot = full
                     .active_slot
                     .ok_or_else(|| anyhow::anyhow!("No active slot after creation"))?;
                 println!("Created slot [{}] {}", slot.id, slot.name);
             }
-            SlotsAction::Switch { game_id, slot_id } => {
+            SlotsAction::Switch { game, slot } => {
+                let game_id = resolve_game_id(&core, &game)?;
+                let slot_id = resolve_slot_id(&core, game_id, &slot)?;
                 let full = core.switch_slot(game_id, slot_id)?;
                 let slot = full
                     .active_slot
                     .ok_or_else(|| anyhow::anyhow!("No active slot after switch"))?;
                 println!("Switched to slot [{}] {}", slot.id, slot.name);
             }
-            SlotsAction::Rename { slot_id, name } => {
-                let full = core.rename_slot(slot_id, &name)?;
+            SlotsAction::Rename {
+                game,
+                slot,
+                new_name,
+            } => {
+                let game_id = resolve_game_id(&core, &game)?;
+                let slot_id = resolve_slot_id(&core, game_id, &slot)?;
+                let full = core.rename_slot(slot_id, &new_name)?;
                 let slot = full
                     .slots
                     .into_iter()
@@ -262,9 +301,16 @@ fn main() -> Result<()> {
                 println!("Renamed slot [{}] to {}", slot.id, slot.name);
             }
             SlotsAction::Delete {
-                slot_id,
+                game,
+                slot,
                 replacement,
             } => {
+                let game_id = resolve_game_id(&core, &game)?;
+                let slot_id = resolve_slot_id(&core, game_id, &slot)?;
+                let replacement = replacement
+                    .as_deref()
+                    .map(|slot| resolve_slot_id(&core, game_id, slot))
+                    .transpose()?;
                 core.delete_slot(slot_id, replacement)?;
                 println!("Deleted slot {slot_id}");
             }

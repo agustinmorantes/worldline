@@ -255,7 +255,7 @@ fn slots_list_shows_the_default_slot() {
         .success();
 
     cli(dir.path())
-        .args(["slots", "list", "1"])
+        .args(["slots", "list", "Slot CLI Game"])
         .assert()
         .success()
         .stdout(contains("Default Slot"));
@@ -270,13 +270,13 @@ fn slots_create_adds_a_new_slot() {
         .success();
 
     cli(dir.path())
-        .args(["slots", "create", "1", "New Game Plus"])
+        .args(["slots", "create", "Create Slot Game", "New Game Plus"])
         .assert()
         .success()
         .stdout(contains("New Game Plus"));
 
     cli(dir.path())
-        .args(["slots", "list", "1"])
+        .args(["slots", "list", "Create Slot Game"])
         .assert()
         .success()
         .stdout(contains("Default Slot"))
@@ -297,7 +297,7 @@ fn slots_switch_changes_the_active_slot() {
         .success();
 
     cli(dir.path())
-        .args(["slots", "switch", "1", "1"])
+        .args(["slots", "switch", "Switch Slot Game", "Default Slot"])
         .assert()
         .success()
         .stdout(contains("Default Slot"));
@@ -318,7 +318,13 @@ fn slots_rename_changes_the_name() {
         .success();
 
     cli(dir.path())
-        .args(["slots", "rename", "1", "Renamed Slot"])
+        .args([
+            "slots",
+            "rename",
+            "Rename Slot Game",
+            "Default Slot",
+            "Renamed Slot",
+        ])
         .assert()
         .success()
         .stdout(contains("Renamed Slot"));
@@ -344,7 +350,7 @@ fn slots_rename_to_duplicate_name_fails_with_message() {
         .success();
 
     cli(dir.path())
-        .args(["slots", "rename", "1", "Second Slot"])
+        .args(["slots", "rename", "1", "1", "Second Slot"])
         .assert()
         .failure()
         .stderr(contains("already exists"));
@@ -359,7 +365,7 @@ fn slots_delete_last_slot_fails_with_message() {
         .success();
 
     cli(dir.path())
-        .args(["slots", "delete", "1"])
+        .args(["slots", "delete", "1", "1"])
         .assert()
         .failure()
         .stderr(contains("must keep at least one slot"));
@@ -379,7 +385,7 @@ fn slots_delete_active_slot_without_replacement_fails_with_message() {
         .success();
 
     cli(dir.path())
-        .args(["slots", "delete", "2"])
+        .args(["slots", "delete", "1", "2"])
         .assert()
         .failure()
         .stderr(contains("requires a replacement slot"));
@@ -399,7 +405,7 @@ fn slots_delete_with_replacement_succeeds() {
 
     // Slot 2 is active; replace it with slot 1 before deleting it.
     cli(dir.path())
-        .args(["slots", "delete", "2", "--replacement", "1"])
+        .args(["slots", "delete", "1", "2", "--replacement", "1"])
         .assert()
         .success()
         .stdout(contains("Deleted slot 2"));
