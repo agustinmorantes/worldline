@@ -25,6 +25,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1", features = ["fs"] }
 
 [build-dependencies]
 ureq = { version = "2.9", features = ["tls"] }

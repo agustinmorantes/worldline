@@ -3894,6 +3894,7 @@ dependencies = [
  "libsqlite3-sys",
  "mockall",
  "notify-debouncer-full",
+ "rustix",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -3902,6 +3903,7 @@ dependencies = [
  "tempfile",
  "ureq",
  "uuid",
+ "windows-sys 0.59.0",
  "winreg 0.52.0",
 ]
 

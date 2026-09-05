@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -214,12 +214,8 @@ fn publish_blob_no_replace(
     hash: &str,
     expected_size: u64,
 ) -> Result<()> {
-    match fs::hard_link(temp, destination) {
-        Ok(()) => {
-            fs::remove_file(temp)
-                .with_context(|| format!("failed to remove blob temp file {}", temp.display()))?;
-            Ok(())
-        }
+    match atomic_rename_no_replace(temp, destination) {
+        Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let verification = verify_existing_blob(destination, hash, expected_size);
             let _ = fs::remove_file(temp);
@@ -227,6 +223,51 @@ fn publish_blob_no_replace(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn atomic_rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE).map_err(Into::into)
+}
+
+#[cfg(windows)]
+fn atomic_rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn atomic_rename_no_replace(_: &Path, _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace rename is only implemented for Linux and Windows",
+    ))
 }
 
 fn verify_existing_blob(path: &Path, hash: &str, expected_size: u64) -> Result<()> {
@@ -382,5 +423,18 @@ mod tests {
         assert!(first.is_err());
         assert!(second.is_err());
         assert_eq!(fs::read(&destination).unwrap(), b"original bytes");
+    }
+
+    #[test]
+    fn atomic_publication_renames_same_directory_temp_file() {
+        let repo = tempdir().unwrap();
+        let temp = repo.path().join(".blob.tmp");
+        let destination = repo.path().join("blob");
+        fs::write(&temp, b"complete bytes").unwrap();
+
+        atomic_rename_no_replace(&temp, &destination).unwrap();
+
+        assert!(!temp.exists());
+        assert_eq!(fs::read(destination).unwrap(), b"complete bytes");
     }
 }
