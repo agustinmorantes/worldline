@@ -675,6 +675,9 @@ struct Harness {
     source_dir: tempfile::TempDir,
     _icons_dir: tempfile::TempDir,
     save_file: std::path::PathBuf,
+    /// The watcher thread shuts itself down as soon as a notification send
+    /// fails, so this receiver has to outlive everything the test does.
+    _notif_rx: savegame_timeline_core::detection::NotificationReceiver,
 }
 
 fn harness(initial_contents: &str) -> Harness {
@@ -696,7 +699,7 @@ fn harness(initial_contents: &str) -> Harness {
     ));
     let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
 
-    let (core, _rx) = TimelineCore::new(
+    let (core, notif_rx) = TimelineCore::new(
         games_repo,
         versions_repo,
         scan_roots_repo,
@@ -713,6 +716,7 @@ fn harness(initial_contents: &str) -> Harness {
         source_dir,
         _icons_dir: icons_dir,
         save_file,
+        _notif_rx: notif_rx,
     }
 }
 
@@ -733,6 +737,20 @@ impl Harness {
                 Some(vec![self.source_dir.path().to_str().unwrap()]),
             )
             .unwrap()
+    }
+
+    /// Pushes every version well outside the watcher's `version_cooldown_minutes`
+    /// window (15 by default), so a later genuine change really does produce a
+    /// new version instead of being silently swallowed by the cooldown.
+    fn backdate_versions(&self) {
+        use diesel::prelude::*;
+        use savegame_timeline_core::schema::versions;
+        let long_ago = chrono::Utc::now().naive_utc() - chrono::Duration::hours(1);
+        let conn = &mut self.pool.get().unwrap();
+        diesel::update(versions::table)
+            .set(versions::created_at.eq(long_ago))
+            .execute(conn)
+            .unwrap();
     }
 }
 
@@ -1036,5 +1054,125 @@ fn test_exclusions_are_honoured_symmetrically_on_capture_and_restore() {
         fs::read_to_string(&cfg).unwrap(),
         "changed-after-capture",
         "an excluded file must survive a restore untouched"
+    );
+}
+
+/// Polls `get_game` until the active slot holds at least `target` versions,
+/// giving up after `timeout`. Returns the count actually observed.
+fn wait_for_version_count(
+    core: &TimelineCore,
+    game_id: i32,
+    target: usize,
+    timeout: Duration,
+) -> usize {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let count = core.get_game(game_id).unwrap().versions.len();
+        if count >= target || std::time::Instant::now() >= deadline {
+            return count;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn test_restore_does_not_trigger_a_spurious_watcher_version() {
+    // NOTE: the brief's version of this test proves nothing. It reads
+    // `full.versions` straight after `create_game`, but `save_game` never
+    // creates a version, so its `min_by_key(...).unwrap()` panics. And even
+    // fixed up, the watcher refuses to create a version while the newest one is
+    // younger than `version_cooldown_minutes` (15 by default) — so "restore,
+    // then assert no new version" passes on the cooldown alone and would keep
+    // passing with watcher suppression deleted outright.
+    //
+    // This version backdates `created_at` so the cooldown is wide open at the
+    // moment the restore's own writes land, and then asserts BOTH halves of the
+    // contract: the app's writes produce nothing, and the watcher is still live
+    // afterwards (suppression that never lifted would pass the first half while
+    // having silently killed file watching).
+    let h = harness("v1-state");
+    let game = h.create_game("Suppression Test");
+    // save_game registers the tracked dir with the watcher asynchronously; give
+    // that registration time to land, or the first write is invisible.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // A genuine user write produces a version, proving the watcher is live.
+    fs::write(&h.save_file, "v2-state").unwrap();
+    assert_eq!(
+        wait_for_version_count(&h.core, game.id, 1, Duration::from_secs(5)),
+        1,
+        "a genuine user write must produce a version"
+    );
+    // Exactly one version exists, so this is unambiguously it — no need to
+    // order by the non-unique version_number to pick a target.
+    let target = h.core.get_game(game.id).unwrap().versions[0].id;
+
+    // Re-open the cooldown window. `run_with_paused_watcher` reloads the
+    // watcher's cached games from the database (ReregisterGames) before
+    // resuming, so the restore's own events are judged against these backdated
+    // timestamps: nothing but the suppression itself stops them versioning.
+    h.backdate_versions();
+
+    // restore_version wipes and re-copies the tracked dir, so the app really
+    // does generate remove+create events for files the watcher is watching.
+    h.core.restore_version(target).unwrap();
+    assert_eq!(
+        fs::read_to_string(&h.save_file).unwrap(),
+        "v2-state",
+        "the restore must actually have rewritten the tracked directory"
+    );
+
+    // Well past the harness's 0.1s debounce window and the settle delay.
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(
+        h.core.get_game(game.id).unwrap().versions.len(),
+        1,
+        "a restore's own writes must not produce a watcher version"
+    );
+
+    // The other half of the contract. This also retroactively proves the
+    // assertion above had teeth: the cooldown was open the whole time, so a
+    // leaked event would have versioned.
+    fs::write(&h.save_file, "user-write-after-restore").unwrap();
+    assert_eq!(
+        wait_for_version_count(&h.core, game.id, 2, Duration::from_secs(5)),
+        2,
+        "the watcher must still be live after a restore"
+    );
+}
+
+#[test]
+fn test_watcher_is_resumed_when_the_paused_operation_fails() {
+    // One failed restore must not disable file watching for the rest of the
+    // session: `run_with_paused_watcher` has to resume (and reregister) on the
+    // error path too.
+    let h = harness("v1-state");
+    let game = h.create_game("Resume On Error");
+    std::thread::sleep(Duration::from_millis(300));
+
+    fs::write(&h.save_file, "v2-state").unwrap();
+    assert_eq!(
+        wait_for_version_count(&h.core, game.id, 1, Duration::from_secs(5)),
+        1,
+        "a genuine user write must produce a version"
+    );
+    h.backdate_versions();
+
+    assert!(
+        h.core.restore_version(999_999).is_err(),
+        "restoring a version that does not exist must fail inside the paused block"
+    );
+
+    // Resume/ReregisterGames are processed asynchronously by the watcher thread,
+    // and a failing restore returns almost instantly — give the re-registration
+    // the same grace as the initial one. (A watcher that never resumed would
+    // stay paused forever, so no amount of waiting could rescue this assertion.)
+    std::thread::sleep(Duration::from_millis(300));
+
+    fs::write(&h.save_file, "written-after-the-failure").unwrap();
+    assert_eq!(
+        wait_for_version_count(&h.core, game.id, 2, Duration::from_secs(5)),
+        2,
+        "the watcher must be resumed even when the paused operation returns Err"
     );
 }

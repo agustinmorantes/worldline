@@ -9,6 +9,20 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// How long a caller waits for the watcher to acknowledge a pause before giving
+/// up and proceeding unsuppressed. Generous, because it should only ever be hit
+/// by a wedged watcher thread: a dead one drops the acknowledgement channel and
+/// fails the wait immediately. A spurious version is a far better outcome than a
+/// restore that hangs the UI.
+const WATCHER_PAUSE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long to stay paused after mutating tracked directories, so the OS has time
+/// to deliver events for our own writes while they are still being discarded.
+/// Chosen to comfortably exceed filesystem notification latency without being
+/// noticeable in a restore; the debouncer is rebuilt on `Resume` as well, which
+/// covers anything still buffered when this elapses.
+const WATCHER_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
 pub struct TimelineCore {
     games_repo: Arc<dyn GameRepository>,
     versions_repo: Arc<dyn VersionRepository>,
@@ -361,12 +375,39 @@ impl TimelineCore {
         Ok(items)
     }
 
+    /// Runs `operation` with the watcher suppressed, so the writes it makes to
+    /// tracked directories are not mistaken for the user playing the game.
+    ///
+    /// The contract is: pause and wait for the watcher to confirm its queue is
+    /// clear, mutate, let trailing OS events arrive while still paused, resume.
+    /// Every wait is bounded and the watcher is always resumed — including when
+    /// `operation` returns `Err` or panics, since leaving suppression latched
+    /// would silently stop versioning for the rest of the session.
     fn run_with_paused_watcher<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         self.cmd_tx
-            .send(Command::Pause)
+            .send(Command::Pause(ack_tx))
             .context("Failed to send pause command")?;
 
-        let result = operation();
+        // Block until the watcher confirms it has drained what was already queued,
+        // otherwise the operation races events that were in flight before it began.
+        // Bounded: a watcher thread that died drops the ack sender and this returns
+        // at once, and one that is wedged costs a bounded wait instead of hanging
+        // the UI forever. Either way suppression degrades rather than deadlocks.
+        if ack_rx.recv_timeout(WATCHER_PAUSE_ACK_TIMEOUT).is_err() {
+            eprintln!(
+                "Watcher did not acknowledge pause within {:?}; continuing without \
+                 event suppression",
+                WATCHER_PAUSE_ACK_TIMEOUT
+            );
+        }
+
+        // `catch_unwind` so a panicking operation still reaches the resume below.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+
+        // Let trailing OS events for our own writes arrive while still paused, so
+        // they are discarded instead of being delivered once watching resumes.
+        std::thread::sleep(WATCHER_SETTLE_DELAY);
 
         let reregister_result = self
             .games_repo
@@ -383,16 +424,18 @@ impl TimelineCore {
             .context("Failed to send resume command");
 
         match result {
-            Ok(value) => {
+            Ok(Ok(value)) => {
                 reregister_result?;
                 resume_result?;
                 Ok(value)
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 let _ = reregister_result;
                 let _ = resume_result;
                 Err(err)
             }
+            // The watcher has been resumed; let the panic carry on unchanged.
+            Err(panic) => std::panic::resume_unwind(panic),
         }
     }
 

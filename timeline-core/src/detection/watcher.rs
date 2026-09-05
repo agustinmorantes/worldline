@@ -7,7 +7,7 @@ use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debou
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct WatcherContext<'a> {
     pub cmd_rx: CommandReceiver,
@@ -19,6 +19,12 @@ pub struct WatcherContext<'a> {
     pub versions_repo: Arc<dyn VersionRepository>,
     pub monitoring_settings: MonitoringSettings,
 }
+
+/// Upper bound on how long a pause may spend discarding already-queued events
+/// before acknowledging. The drain normally ends far sooner, as soon as the queue
+/// is empty; this only stops a directory under constant churn from stalling the
+/// caller.
+const PAUSE_DRAIN_BUDGET: Duration = Duration::from_millis(100);
 
 type RecommendedDebouncer = Debouncer<notify_debouncer_full::notify::RecommendedWatcher, FileIdMap>;
 
@@ -98,14 +104,38 @@ pub fn watch(mut ctx: WatcherContext) {
 
     // Global listener
     let mut paused = false;
-    for event in agg_rx {
+    // `while let` rather than `for`, so the body can still reach `agg_rx` to drain
+    // it when a pause arrives.
+    while let Ok(event) = agg_rx.recv() {
         match event {
             AggregatedEvent::Command(cmd) => match cmd {
                 Command::Shutdown => {
                     break;
                 }
-                Command::Pause => {
+                Command::Pause(ack) => {
                     paused = true;
+                    // Drop whatever the OS already queued: those events describe
+                    // state from before the operation and must not outlive it.
+                    // `try_recv` ends the drain as soon as the queue is empty; the
+                    // deadline bounds it even if a directory is under constant
+                    // churn, so the acknowledgement can never be held up for long.
+                    let drain_deadline = Instant::now() + PAUSE_DRAIN_BUDGET;
+                    let mut deferred = Vec::new();
+                    while Instant::now() < drain_deadline {
+                        match agg_rx.try_recv() {
+                            Ok(AggregatedEvent::FsEvent(_)) => {}
+                            // Commands must not be dropped — a swallowed Resume
+                            // would disable watching for the rest of the session.
+                            Ok(AggregatedEvent::Command(deferred_cmd)) => {
+                                deferred.push(deferred_cmd)
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = ack.send(());
+                    for deferred_cmd in deferred {
+                        let _ = agg_tx.send(AggregatedEvent::Command(deferred_cmd));
+                    }
                 }
                 Command::Resume => {
                     paused = false;
