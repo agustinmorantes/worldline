@@ -155,6 +155,65 @@ fn test_version_operations() {
 }
 
 #[test]
+fn test_dangling_parent_id_errors_instead_of_silent_none() {
+    // Regression: resolving a version's parent UUID must distinguish a
+    // genuinely absent parent_id (a real root version, Ok(None)) from a
+    // parent_id that points at a row which no longer exists (corrupt/
+    // ambiguous data, must be an error). Collapsing both into `None` would
+    // make a dangling reference silently look like a root — exactly the bug
+    // that would make a future sync's fast-forward/divergence check
+    // misclassify a broken chain as a fresh one.
+    let pool = init_db();
+    let games_repo = SqliteGameRepository::new(pool.clone());
+    let versions_repo = SqliteVersionRepository::new(pool.clone());
+
+    let form = GameForm {
+        id: None,
+        uuid: None,
+        title: "Dangling Parent Game",
+        title_normalized: None,
+        folder_slug: None,
+        active_slot_id: None,
+        icon_path: None,
+    };
+    let game = games_repo.save_game(form, None).unwrap();
+
+    let parent = versions_repo
+        .create_version(game.id, VersionReason::Manual)
+        .unwrap();
+    let child = versions_repo
+        .create_version(game.id, VersionReason::Manual)
+        .unwrap();
+    assert_eq!(
+        child.version.parent_id,
+        Some(parent.version.id),
+        "sanity check: the second version's parent is the first"
+    );
+
+    // Manufacture the dangling state: FK enforcement (parent_id REFERENCES
+    // versions(id)) prevents this from arising naturally, so disable it just
+    // for this delete, then remove the parent row directly, leaving the
+    // child's parent_id pointing nowhere.
+    {
+        use diesel::prelude::*;
+        use savegame_timeline_core::schema::versions::dsl as versions_dsl;
+        let conn = &mut pool.get().unwrap();
+        diesel::sql_query("PRAGMA foreign_keys = OFF")
+            .execute(conn)
+            .unwrap();
+        diesel::delete(versions_dsl::versions.filter(versions_dsl::id.eq(parent.version.id)))
+            .execute(conn)
+            .unwrap();
+    }
+
+    let result = versions_repo.get_version(child.version.id);
+    assert!(
+        result.is_err(),
+        "a parent_id pointing at a deleted row must error, not silently resolve to None"
+    );
+}
+
+#[test]
 fn test_negative_paths() {
     let pool = init_db();
     let games_repo = SqliteGameRepository::new(pool.clone());

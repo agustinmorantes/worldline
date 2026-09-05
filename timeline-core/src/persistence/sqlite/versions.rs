@@ -2,13 +2,18 @@ use super::SqliteVersionRepository;
 use crate::models::{FullVersion, Game, Slot, Version, VersionForm};
 use crate::persistence::VersionRepository;
 use crate::repository::VersionReason;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use diesel::prelude::*;
 use uuid::Uuid;
 
 /// Resolves a version's parent's UUID from its local `parent_id`, so the
 /// durable identity written to disk is always the UUID, never the local
 /// integer key.
+///
+/// A genuinely absent `parent_id` (a real root version) yields `Ok(None)`.
+/// A `parent_id` that doesn't resolve to an existing row, or resolves to a
+/// row whose `uuid` is null, is corrupt/ambiguous data — not a root — and
+/// is reported as an error rather than silently collapsed into `None`.
 fn resolve_parent_uuid(
     conn: &mut diesel::SqliteConnection,
     parent_id: Option<i32>,
@@ -19,15 +24,16 @@ fn resolve_parent_uuid(
         return Ok(None);
     };
 
-    let uuid = versions::table
+    let uuid: Option<String> = versions::table
         .filter(versions::id.eq(parent_id))
         .select(versions::uuid)
-        .first::<Option<String>>(conn)
+        .first(conn)
         .optional()
         .context("Error loading parent version uuid")?
-        .flatten();
+        .ok_or_else(|| anyhow!("parent version {parent_id} referenced by parent_id not found"))?;
 
-    Ok(uuid)
+    uuid.ok_or_else(|| anyhow!("parent version {parent_id} has no uuid"))
+        .map(Some)
 }
 
 impl VersionRepository for SqliteVersionRepository {
