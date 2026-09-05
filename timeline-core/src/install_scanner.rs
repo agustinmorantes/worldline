@@ -23,6 +23,7 @@ pub struct InstallScannerItem {
     pub dirs: Vec<String>,
     pub install_path: Option<String>,
     pub icon_path: Option<String>,
+    pub last_modified_at: Option<i64>,
     pub source: GameSource,
 }
 
@@ -69,6 +70,8 @@ struct EpicManifest {
     display_name: String,
     #[serde(rename = "InstallLocation")]
     install_location: String,
+    #[serde(rename = "LaunchExecutable")]
+    launch_executable: Option<String>,
 }
 
 // ---------------------------------------------------------
@@ -368,6 +371,72 @@ fn find_ico_file(dir: &Path) -> Option<String> {
     None
 }
 
+fn is_non_game_exe(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    // Skip known crash handlers, uninstallers, and redistributables
+    lower.contains("crashhandler")
+        || lower.contains("crashreportclient")
+        || matches!(
+            lower.as_str(),
+            "setup.exe"
+                | "install.exe"
+                | "uninstall.exe"
+                | "vcredist_x64.exe"
+                | "vcredist_x86.exe"
+                | "dxsetup.exe"
+                | "directx.exe"
+                | "dotnetfx.exe"
+        )
+        || lower.starts_with("unins")
+        || lower.starts_with("vcredist")
+}
+
+fn find_largest_exe(dir: &Path) -> Option<String> {
+    let mut best: Option<(u64, PathBuf)> = None;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let is_exe = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("exe"))
+                .unwrap_or(false);
+            if is_exe && !is_non_game_exe(filename) && let Ok(meta) = entry.metadata() {
+                let size = meta.len();
+                if best.as_ref().is_none_or(|(s, _)| size > *s) {
+                    best = Some((size, path));
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p.to_string_lossy().into_owned())
+}
+
+fn max_mtime_in_dirs(dirs: &[String]) -> Option<i64> {
+    use std::time::UNIX_EPOCH;
+    let mut best: Option<i64> = None;
+    for dir in dirs {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata()
+                    && let Ok(modified) = meta.modified()
+                    && let Ok(dur) = modified.duration_since(UNIX_EPOCH)
+                {
+                    let secs = dur.as_secs() as i64;
+                    if best.is_none_or(|b| secs > b) {
+                        best = Some(secs);
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
 // ---------------------------------------------------------
 // Pass 1 - Store Enumerations
 // ---------------------------------------------------------
@@ -601,8 +670,11 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
                 icon_path = Some(steam_icon.to_string_lossy().to_string());
             } else if let Some(ico) = find_ico_file(install_location) {
                 icon_path = Some(ico);
+            } else if let Some(exe) = find_largest_exe(install_location) {
+                icon_path = Some(exe);
             }
 
+            let last_modified_at = max_mtime_in_dirs(&verified_dirs);
             results.insert(
                 title.clone(),
                 InstallScannerItem {
@@ -610,6 +682,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
                     dirs: verified_dirs,
                     install_path: Some(install_location.to_string_lossy().to_string()),
                     icon_path,
+                    last_modified_at,
                     source: GameSource::Steam,
                 },
             );
@@ -744,8 +817,21 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
         }
 
         if !verified_dirs.is_empty() {
-            let icon_path = find_ico_file(&install_location);
+            let icon_path = app
+                .launch_executable
+                .as_ref()
+                .and_then(|rel| {
+                    let exe_path = install_location.join(rel);
+                    if exe_path.exists() {
+                        Some(exe_path.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| find_ico_file(&install_location))
+                .or_else(|| find_largest_exe(&install_location));
 
+            let last_modified_at = max_mtime_in_dirs(&verified_dirs);
             results.insert(
                 title.clone(),
                 InstallScannerItem {
@@ -753,6 +839,7 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
                     dirs: verified_dirs,
                     install_path: Some(app.install_location.clone()),
                     icon_path,
+                    last_modified_at,
                     source: GameSource::Epic,
                 },
             );
@@ -915,6 +1002,7 @@ fn os_location_scan(manifest: &Manifest, results: &mut HashMap<String, InstallSc
         }
 
         if !verified_dirs.is_empty() {
+            let last_modified_at = max_mtime_in_dirs(&verified_dirs);
             results.insert(
                 title.clone(),
                 InstallScannerItem {
@@ -922,6 +1010,7 @@ fn os_location_scan(manifest: &Manifest, results: &mut HashMap<String, InstallSc
                     dirs: verified_dirs,
                     install_path: None,
                     icon_path: None,
+                    last_modified_at,
                     source: GameSource::Local,
                 },
             );
@@ -1035,7 +1124,8 @@ fn custom_roots_scan(
                             }
 
                             if !verified_dirs.is_empty() {
-                                let icon_path = find_ico_file(&path);
+                                let icon_path = find_ico_file(&path).or_else(|| find_largest_exe(&path));
+                                let last_modified_at = max_mtime_in_dirs(&verified_dirs);
                                 results.insert(
                                     title.to_string(),
                                     InstallScannerItem {
@@ -1043,6 +1133,7 @@ fn custom_roots_scan(
                                         dirs: verified_dirs,
                                         install_path: Some(path.to_string_lossy().to_string()),
                                         icon_path,
+                                        last_modified_at,
                                         source: GameSource::Custom,
                                     },
                                 );
@@ -1172,5 +1263,44 @@ mod tests {
         if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
             assert!(is_shared_dir(Path::new(&localappdata)));
         }
+    }
+
+    #[test]
+    fn test_find_largest_exe() {
+        let dir = tempdir().unwrap();
+        let path = dir.path();
+
+        // No exes → None
+        assert_eq!(find_largest_exe(path), None);
+
+        // Single exe → that one
+        fs::write(path.join("launcher.exe"), "x".repeat(100)).unwrap();
+        assert_eq!(
+            find_largest_exe(path),
+            Some(path.join("launcher.exe").to_string_lossy().into_owned())
+        );
+
+        // Two exes → the larger one
+        fs::write(path.join("game.exe"), "x".repeat(500)).unwrap();
+        assert_eq!(
+            find_largest_exe(path),
+            Some(path.join("game.exe").to_string_lossy().into_owned())
+        );
+
+        // Non-exe files are ignored even if they are larger
+        fs::write(path.join("readme.txt"), "x".repeat(9999)).unwrap();
+        assert_eq!(
+            find_largest_exe(path),
+            Some(path.join("game.exe").to_string_lossy().into_owned())
+        );
+
+        // Known non-game exes are skipped even if largest
+        fs::write(path.join("UnityCrashHandler64.exe"), "x".repeat(9000)).unwrap();
+        fs::write(path.join("unins000.exe"), "x".repeat(8000)).unwrap();
+        fs::write(path.join("CrashReportClient.exe"), "x".repeat(7000)).unwrap();
+        assert_eq!(
+            find_largest_exe(path),
+            Some(path.join("game.exe").to_string_lossy().into_owned())
+        );
     }
 }

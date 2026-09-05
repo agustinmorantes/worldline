@@ -1,7 +1,8 @@
 use crate::detection::{Notification, NotificationSender};
-use crate::models::{FullGame, FullVersion, TrackedDir};
+use crate::models::{FullGame, FullVersion, MonitoringSettings, TrackedDir};
 use crate::persistence::{GameRepository, VersionRepository};
 use anyhow::{Context, Result};
+use chrono::{Duration, Utc};
 use notify_debouncer_full::DebouncedEvent;
 use std::collections::HashSet;
 use std::fs;
@@ -33,7 +34,10 @@ impl FsEventHandler {
         notif_tx: NotificationSender,
         games: &[FullGame],
         working_base: &Path,
-    ) -> Result<()> {
+        monitoring_settings: MonitoringSettings,
+    ) -> Result<Vec<FullGame>> {
+        let games = games.to_vec();
+
         let dirs = games
             .iter()
             .flat_map(|game| game.tracked_dirs.iter())
@@ -67,7 +71,7 @@ impl FsEventHandler {
             .cloned()
             .collect::<Vec<TrackedDir>>();
 
-        self.handle_rescan(&first_scan_dirs, games).ok();
+        self.handle_rescan(&first_scan_dirs, &games).ok();
 
         // Collect all modified tracked directories
         let mut modified_dirs: HashSet<i32> = HashSet::new();
@@ -77,7 +81,8 @@ impl FsEventHandler {
             println!("event detected: {:?}", ev);
 
             if ev.need_rescan() {
-                return self.handle_rescan(&dirs, games);
+                self.handle_rescan(&dirs, &games)?;
+                return Ok(games);
             }
 
             // Find which tracked directories were affected by this event
@@ -107,7 +112,7 @@ impl FsEventHandler {
                 .context("failed to find modified game")?;
 
             if let Some(version) = self
-                .handle_new_version(game)
+                .handle_new_version(game, monitoring_settings)
                 .context("failed to handle new version")?
             {
                 new_versions.insert(*game_id);
@@ -122,9 +127,9 @@ impl FsEventHandler {
 
         // Reload games if new versions were created to get updated active_version_id
         let games = if !new_versions.is_empty() {
-            self.reload_games(games)?
+            self.reload_games(&games)?
         } else {
-            games.to_vec()
+            games
         };
 
         // Now copy all modified tracked directories into the correct version
@@ -143,7 +148,7 @@ impl FsEventHandler {
             notif_tx.send(Notification::ChangeDetected { game_id: *game_id })?;
         }
 
-        Ok(())
+        Ok(games)
     }
 
     fn sync_tracked_dir(&self, dir: &TrackedDir, games: &[FullGame]) -> Result<()> {
@@ -220,7 +225,19 @@ impl FsEventHandler {
             .context("failed to reload games from database")
     }
 
-    fn handle_new_version(&self, game: &FullGame) -> Result<Option<FullVersion>> {
+    fn handle_new_version(
+        &self,
+        game: &FullGame,
+        monitoring_settings: MonitoringSettings,
+    ) -> Result<Option<FullVersion>> {
+        let cooldown_cutoff =
+            Utc::now().naive_utc() - Duration::minutes(i64::from(monitoring_settings.version_cooldown_minutes));
+        let latest_version_created_at = game.versions.iter().map(|version| version.created_at).max();
+
+        if latest_version_created_at.is_some_and(|created_at| created_at > cooldown_cutoff) {
+            return Ok(None);
+        }
+
         println!("Creating new game version");
 
         let version = self
@@ -237,9 +254,9 @@ impl FsEventHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Game, Slot, Version};
+    use crate::models::{Game, MonitoringSettings, Slot, Version};
     use crate::persistence::{MockGameRepository, MockVersionRepository};
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use notify_debouncer_full::notify::Event;
     use std::sync::mpsc;
     use tempfile::tempdir;
@@ -305,7 +322,7 @@ mod tests {
 
         let (notif_tx, notif_rx) = mpsc::channel();
 
-        // Game last version is intentionally recent
+        // Game last version is intentionally old enough to allow a new version.
         let game = FullGame {
             game: Game {
                 id: 1,
@@ -325,7 +342,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
-                created_at: Utc::now().naive_utc(),
+                created_at: (Utc::now() - Duration::minutes(20)).naive_utc(),
                 parent_id: None,
             }),
             tracked_dirs: vec![TrackedDir {
@@ -335,7 +352,16 @@ mod tests {
                 game_id: 1,
                 path: source_path.clone(),
             }],
-            versions: vec![],
+            versions: vec![Version {
+                id: 0,
+                uuid: None,
+                folder_slug: None,
+                slot_id: 10,
+                version_number: 1,
+                tag: None,
+                created_at: (Utc::now() - Duration::minutes(20)).naive_utc(),
+                parent_id: None,
+            }],
         };
 
         let mut event = Event::new(notify_debouncer_full::notify::EventKind::Any);
@@ -347,7 +373,13 @@ mod tests {
         }];
 
         handler
-            .run(events, notif_tx, &[game], working_base.path())
+            .run(
+                events,
+                notif_tx,
+                &[game],
+                working_base.path(),
+                MonitoringSettings::default(),
+            )
             .unwrap();
 
         let mut received_version = false;
@@ -383,8 +415,7 @@ mod tests {
 
     #[test]
     fn test_always_creates_version_on_debounce_fire() {
-        // Each time the debouncer fires, a new version should always be created.
-        // Timing/debounce is the debouncer's responsibility, not FsEventHandler's.
+        // If the cooldown has elapsed, a debounced batch should create a version.
         let mut games_repo = MockGameRepository::new();
         let mut versions_repo = MockVersionRepository::new();
 
@@ -449,7 +480,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
-                created_at: Utc::now().naive_utc(),
+                created_at: (Utc::now() - Duration::minutes(16)).naive_utc(),
                 parent_id: None,
             }),
             tracked_dirs: vec![TrackedDir {
@@ -459,7 +490,16 @@ mod tests {
                 game_id: 1,
                 path: source_path.clone(),
             }],
-            versions: vec![],
+            versions: vec![Version {
+                id: 1,
+                uuid: None,
+                folder_slug: None,
+                slot_id: 10,
+                version_number: 1,
+                tag: None,
+                created_at: (Utc::now() - Duration::minutes(16)).naive_utc(),
+                parent_id: None,
+            }],
         };
 
         let mut event = Event::new(notify_debouncer_full::notify::EventKind::Any);
@@ -471,7 +511,13 @@ mod tests {
         }];
 
         handler
-            .run(events, notif_tx, &[game], working_base.path())
+            .run(
+                events,
+                notif_tx,
+                &[game],
+                working_base.path(),
+                MonitoringSettings::default(),
+            )
             .unwrap();
 
         let mut received_version = false;
@@ -592,7 +638,13 @@ mod tests {
         ];
 
         handler
-            .run(events, notif_tx, &[game], working_base.path())
+            .run(
+                events,
+                notif_tx,
+                &[game],
+                working_base.path(),
+                MonitoringSettings::default(),
+            )
             .unwrap();
 
         let mut version_count = 0;
@@ -666,7 +718,13 @@ mod tests {
         };
 
         handler
-            .run(vec![], notif_tx, &[game.clone()], working_base.path())
+            .run(
+                vec![],
+                notif_tx,
+                &[game.clone()],
+                working_base.path(),
+                MonitoringSettings::default(),
+            )
             .unwrap();
 
         let expected_path = crate::repository::game_snapshot_dir(
@@ -693,5 +751,104 @@ mod tests {
             !wrong_path.exists(),
             "active_version_id should not be used as folder name"
         );
+    }
+
+    #[test]
+    fn test_recent_version_suppresses_new_version_creation() {
+        let games_repo = MockGameRepository::new();
+        let mut versions_repo = MockVersionRepository::new();
+        versions_repo.expect_create_version().times(0);
+
+        let working_base = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source_path = source_dir.path().to_str().unwrap().to_string();
+
+        let handler = FsEventHandler::new(
+            working_base.path().to_path_buf(),
+            Arc::new(games_repo),
+            Arc::new(versions_repo),
+        );
+
+        let (notif_tx, notif_rx) = mpsc::channel();
+        let created_at = Utc::now().naive_utc();
+
+        let game = FullGame {
+            game: Game {
+                id: 1,
+                uuid: None,
+                title: "Test Game".to_string(),
+                title_normalized: None,
+                folder_slug: Some("test-game__g_deadbeef".to_string()),
+                active_slot_id: Some(10),
+                icon_path: None,
+            },
+            slots: vec![default_slot(1, Some(1))],
+            active_slot: Some(default_slot(1, Some(1))),
+            last_version: Some(Version {
+                id: 1,
+                uuid: None,
+                folder_slug: Some("v001__v_abcdef12".to_string()),
+                slot_id: 10,
+                version_number: 1,
+                tag: None,
+                created_at,
+                parent_id: None,
+            }),
+            tracked_dirs: vec![TrackedDir {
+                id: 1,
+                uuid: None,
+                folder_slug: Some("saves__d_12345678".to_string()),
+                game_id: 1,
+                path: source_path.clone(),
+            }],
+            versions: vec![Version {
+                id: 1,
+                uuid: None,
+                folder_slug: Some("v001__v_abcdef12".to_string()),
+                slot_id: 10,
+                version_number: 1,
+                tag: None,
+                created_at,
+                parent_id: None,
+            }],
+        };
+
+        let mut event = Event::new(notify_debouncer_full::notify::EventKind::Any);
+        event = event.add_path(source_dir.path().join("save.dat"));
+
+        let events = vec![DebouncedEvent {
+            event,
+            time: std::time::Instant::now(),
+        }];
+
+        handler
+            .run(
+                events,
+                notif_tx,
+                &[game],
+                working_base.path(),
+                MonitoringSettings::default(),
+            )
+            .unwrap();
+
+        let mut received_version = false;
+        let mut received_change = false;
+
+        while let Ok(msg) = notif_rx.try_recv() {
+            match msg {
+                Notification::VersionCreated { .. } => received_version = true,
+                Notification::ChangeDetected { game_id } => {
+                    assert_eq!(game_id, 1);
+                    received_change = true;
+                }
+                Notification::Error(_) => panic!("Should not receive error"),
+            }
+        }
+
+        assert!(
+            !received_version,
+            "Should not create a version during the cooldown window"
+        );
+        assert!(received_change);
     }
 }

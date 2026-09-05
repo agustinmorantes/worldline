@@ -90,6 +90,20 @@ fn remove_scan_root(path: String, core: State<Arc<TimelineCore>>) -> Result<(), 
     core.remove_scan_root(&path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_monitoring_settings(core: State<Arc<TimelineCore>>) -> Result<MonitoringSettings, String> {
+    core.get_monitoring_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_monitoring_settings(
+    monitoring_settings: MonitoringSettings,
+    core: State<Arc<TimelineCore>>,
+) -> Result<MonitoringSettings, String> {
+    core.update_monitoring_settings(monitoring_settings)
+        .map_err(|e| e.to_string())
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
@@ -106,5 +120,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_scan_roots,
         add_scan_root,
         remove_scan_root,
+        get_monitoring_settings,
+        update_monitoring_settings,
     ])
 }

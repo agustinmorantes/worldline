@@ -11,9 +11,10 @@ pub fn is_excluded_file(name: &str) -> bool {
     }
     name_lower.ends_with(".log")
         || name_lower.ends_with(".tmp")
-        || name_lower.ends_with(".bak")
+        || name_lower.contains(".bak")
         || name_lower.ends_with(".backup")
         || name_lower.ends_with(".cache")
+        || name_lower.ends_with(".ini")
 }
 
 pub fn copy_dir_filtered(src: &Path, dst: &Path) -> Result<()> {

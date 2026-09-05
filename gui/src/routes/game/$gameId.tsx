@@ -7,11 +7,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { BranchingTimeline } from '@/components/BranchingTimeline';
-import { RestoreModal } from '@/components/RestoreModal';
+import { EmptyTimelineState } from '@/components/EmptyTimelineState';
 import { SlotSelector } from '@/components/SlotSelector';
+import { RestoreModal } from '@/components/RestoreModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image } from 'lucide-react';
+import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image, EllipsisVertical } from 'lucide-react';
 import { Version } from '@/models/version';
 import { Game } from '@/models/game';
 import { Slot } from '@/models/slot.ts';
@@ -212,8 +213,8 @@ function GameDetail(): ReactElement {
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 px-3 text-[10px] font-bold uppercase tracking-wider">
-                  Options
+                <Button variant="outline" size="icon" className="h-8 w-8 rounded-full border-border/50 text-muted-foreground hover:text-foreground">
+                  <EllipsisVertical size={15} />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
@@ -276,12 +277,19 @@ function GameDetail(): ReactElement {
               </div>
             </div>
 
-            <BranchingTimeline
-              versions={versions}
-              activeVersionId={game.active_version_id ?? undefined}
-              onRestore={(v) => { setRestoreTarget(v); }}
-              onTag={(v, tag) => { void handleTag(v, tag); }}
-            />
+            {versions.length === 0 ? (
+              <EmptyTimelineState
+                gameTitle={game.title}
+                trackedDirCount={tracked_dirs.length}
+              />
+            ) : (
+              <BranchingTimeline
+                versions={versions}
+                activeVersionId={game.active_version_id ?? undefined}
+                onRestore={(v) => { setRestoreTarget(v); }}
+                onTag={(v, tag) => { void handleTag(v, tag); }}
+              />
+            )}
           </TabsContent>
 
           <TabsContent value="dirs" className="m-0 p-8 pt-6">

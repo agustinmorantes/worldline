@@ -13,12 +13,14 @@ use std::sync::Arc;
 use tauri::{App, Emitter, Manager};
 
 pub mod commands;
+mod tray;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(init);
 
     let builder = add_handlers(builder);
@@ -70,6 +72,7 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         None,
     )?;
     app.manage(Arc::new(core));
+    tray::setup_tray(app)?;
 
     let notif_app = app.handle().clone();
     std::thread::spawn(move || {

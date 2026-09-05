@@ -5,13 +5,13 @@ import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 import { Input } from './ui/input';
 
-type SlotSelectorProps = {
+interface SlotSelectorProps {
   slots: Slot[];
   activeSlotId?: number;
   disabled?: boolean;
   onSwitch: (slot: Slot) => Promise<void>;
   onCreate: (name: string) => Promise<void>;
-};
+}
 
 export function SlotSelector({
   slots,

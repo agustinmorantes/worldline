@@ -1,6 +1,11 @@
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { GameIcon } from './GameIcon';
+
+vi.mock('@tauri-apps/api/core', () => ({
+  convertFileSrc: (path: string) => `asset://${path}`,
+}));
+
 
 describe('GameIcon', () => {
   it('renders the first letter of the title', () => {

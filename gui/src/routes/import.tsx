@@ -1,7 +1,7 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router';
 import { ReactElement, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { saveGame, addScanRoot, removeScanRoot } from '@/api/games';
+import { saveGame, setGameIcon } from '@/api/games';
 import { InstallScannerItem } from '@/models/install_scanner_item';
 import { Game } from '@/models/game';
 import { Button } from '@/components/ui/button';
@@ -10,10 +10,9 @@ import { Badge } from '@/components/ui/badge';
 import { GameIcon } from '@/components/GameIcon';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
-import { CheckCircle2, Info, FolderPlus, Trash2, ChevronDown, ChevronUp, HardDrive, Search, Sparkles } from 'lucide-react';
+import { CheckCircle2, Info, Search, Sparkles } from 'lucide-react';
 import { CheckedState } from '@radix-ui/react-checkbox';
-import { useScannedGames, useScanRoots } from '@/api/queries';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { useScannedGames } from '@/api/queries';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 export const Route = createFileRoute('/import')({
@@ -24,61 +23,9 @@ function ImportGames(): ReactElement {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const [isRootsExpanded, setIsRootsExpanded] = useState(false);
   const [hasRequestedScan, setHasRequestedScan] = useState(false);
 
   const { data: scanned, isLoading, error, refetch, isFetching } = useScannedGames(hasRequestedScan);
-  const { data: scanRoots } = useScanRoots();
-
-  const addRootMutation = useMutation({
-    mutationFn: async (path: string) => {
-      await addScanRoot(path);
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['scan-roots'] });
-      if (hasRequestedScan) {
-        void queryClient.invalidateQueries({ queryKey: ['scanned-games'] });
-      }
-      toast.success("Scan root added successfully");
-    },
-    onError: (err: unknown) => {
-      console.error(err);
-      toast.error("Failed to add scan root");
-    }
-  });
-
-  const removeRootMutation = useMutation({
-    mutationFn: async (path: string) => {
-      await removeScanRoot(path);
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['scan-roots'] });
-      if (hasRequestedScan) {
-        void queryClient.invalidateQueries({ queryKey: ['scanned-games'] });
-      }
-      toast.success("Scan root removed successfully");
-    },
-    onError: (err: unknown) => {
-      console.error(err);
-      toast.error("Failed to remove scan root");
-    }
-  });
-
-  const handlePickDirectory = async (): Promise<void> => {
-    try {
-      const selectedPath = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Select Custom Game Install Directory / Library Root"
-      });
-      if (selectedPath !== null && typeof selectedPath === 'string') {
-        addRootMutation.mutate(selectedPath);
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to open directory dialog");
-    }
-  };
 
   const importMutation = useMutation({
     mutationFn: async (items: InstallScannerItem[]) => {
@@ -86,7 +33,15 @@ function ImportGames(): ReactElement {
         items.map(async (i) => {
           const game = new Game(i.title);
           game.tracked_dirs = i.dirs.map(d => ({ path: d }));
-          return await saveGame(game);
+          const saved = await saveGame(game);
+          if (i.icon_path !== null && i.icon_path !== undefined && saved.id !== undefined) {
+            try {
+              await setGameIcon(saved.id, i.icon_path);
+            } catch (err) {
+              console.warn(`Failed to set icon for "${i.title}":`, err);
+            }
+          }
+          return saved;
         })
       );
       return results;
@@ -140,6 +95,18 @@ function ImportGames(): ReactElement {
     return "indeterminate";
   }, [selected, scanned]);
 
+  const sortedScanned = useMemo(() => {
+    if (!scanned) return scanned;
+    return [...scanned].sort((a, b) => {
+      const at = a.last_modified_at ?? null;
+      const bt = b.last_modified_at ?? null;
+      if (at === null && bt === null) return a.title.localeCompare(b.title);
+      if (at === null) return 1;
+      if (bt === null) return -1;
+      return bt - at;
+    });
+  }, [scanned]);
+
   const isScanning = isLoading || isFetching;
   const detectedCount = scanned?.length ?? 0;
   const scanStateLabel = !hasRequestedScan ? 'Ready' : isScanning ? 'Scanning' : 'Detected';
@@ -182,7 +149,7 @@ function ImportGames(): ReactElement {
       </header>
 
       {/* Custom Scan Roots Section */}
-      <div className="mx-8 mb-4 border border-border/40 rounded-2xl bg-sf/30 backdrop-blur-sm overflow-hidden transition-all duration-300">
+      { /* <div className="mx-8 mb-4 border border-border/40 rounded-2xl bg-sf/30 backdrop-blur-sm overflow-hidden transition-all duration-300">
         <div
           role="button"
           tabIndex={0}
@@ -259,6 +226,7 @@ function ImportGames(): ReactElement {
           </div>
         )}
       </div>
+      */ }
 
       <ScrollArea className="flex-1 min-h-0" viewportClassName="p-8 pt-4">
       <div>
@@ -320,18 +288,18 @@ function ImportGames(): ReactElement {
               </label>
             </div>
 
-            {scanned?.map((item, idx) => (
-              <div 
-                key={`${item.title}-${idx.toString()}`} 
+            {sortedScanned?.map((item, idx) => (
+              <div
+                key={`${item.title}-${idx.toString()}`}
                 className="flex items-center gap-4 p-4 px-6 rounded-xl bg-sf border border-border/40 hover:border-primary/20 transition-all cursor-pointer group"
                 onClick={() => { handleToggleItem(item, !selected.has(item.title)); }}
               >
-                <Checkbox 
-                  checked={selected.has(item.title)} 
+                <Checkbox
+                  checked={selected.has(item.title)}
                   onCheckedChange={(s) => { handleToggleItem(item, s); }}
-                  onClick={(e) => { e.stopPropagation(); }} 
+                  onClick={(e) => { e.stopPropagation(); }}
                 />
-                <GameIcon title={item.title} size={40} />
+                <GameIcon title={item.title} iconPath={item.icon_path ?? undefined} size={40} />
                 <div className="flex-1 min-w-0">
                   <h3 className="text-sm font-bold tracking-tight text-foreground">{item.title}</h3>
                   <div className="flex items-center gap-2 mt-0.5">
@@ -358,8 +326,8 @@ function ImportGames(): ReactElement {
           <Button variant="ghost" onClick={() => { router.history.back(); }}>
             Cancel
           </Button>
-          <Button 
-            onClick={() => { handleImport(); }} 
+          <Button
+            onClick={() => { handleImport(); }}
             disabled={selected.size === 0 || importMutation.isPending || isScanning}
             className="font-bold px-8"
           >

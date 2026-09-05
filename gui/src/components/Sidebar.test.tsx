@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Sidebar } from './Sidebar';
 import type { FullGame } from '@/models/game';
@@ -41,10 +41,10 @@ beforeEach(() => {
 });
 
 describe('Sidebar', () => {
-  it('renders the app logo', () => {
+  it('renders the library header', () => {
     mockQuery(undefined, { isLoading: true });
     render(<Sidebar />);
-    expect(screen.getByText('TIMELINE')).toBeInTheDocument();
+    expect(screen.getByText('Library')).toBeInTheDocument();
   });
 
   it('renders skeleton rows while loading, defaulting to 3', () => {
@@ -84,5 +84,18 @@ describe('Sidebar', () => {
     render(<Sidebar />);
     expect(screen.getByText('Import Games')).toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
+  });
+
+  it('shows Help & Tour and dispatches the onboarding event', () => {
+    mockQuery([]);
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+    render(<Sidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: /help & tour/i }));
+
+    expect(screen.getByRole('button', { name: /help & tour/i })).toBeInTheDocument();
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(dispatchSpy.mock.calls[0]?.[0]).toBeInstanceOf(CustomEvent);
+    expect(dispatchSpy.mock.calls[0]?.[0].type).toBe('open-onboarding');
   });
 });

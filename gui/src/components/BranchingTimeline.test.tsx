@@ -114,4 +114,29 @@ describe('BranchingTimeline', () => {
     fireEvent.click(restoreButtons[0]);
     expect(onRestore).toHaveBeenCalled();
   });
+
+  it('can render as a read-only preview without restore actions', () => {
+    const versions = [makeVersion(1, 1), makeVersion(2, 2, 1)];
+    render(<BranchingTimeline versions={versions} activeVersionId={2} showActions={false} />);
+
+    expect(screen.queryByRole('button', { name: /restore/i })).toBeNull();
+  });
+
+  it('active version appears at its correct temporal position, not forced to top', () => {
+    // v3 is active (restored) but has an older created_at than v4 and v5.
+    // It should appear at position 2 (after v5 and v4) so tree edges always point downward.
+    const versions = [
+      makeVersion(1, 1),
+      makeVersion(2, 2, 1),
+      makeVersion(3, 3, 2), // active, date = Jan 3
+      makeVersion(4, 4, 2), // inactive branch, date = Jan 4
+      makeVersion(5, 5, 2), // inactive branch, date = Jan 5 (newest)
+    ];
+    render(<BranchingTimeline versions={versions} activeVersionId={3} />);
+    const labels = screen.getAllByText(/^v\d{3}$/);
+    // Sorted by date descending: v5, v4, v3 (active), v2, v1
+    expect(labels[0].textContent).toBe('v005');
+    expect(labels[1].textContent).toBe('v004');
+    expect(labels[2].textContent).toBe('v003');
+  });
 });
