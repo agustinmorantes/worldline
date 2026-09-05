@@ -161,10 +161,16 @@ impl TimelineCore {
                 .get_game(game_id)
                 .context("Failed to reload game after switching slots")?;
 
-            if let Some(version) = target_game.last_version.as_ref() {
+            let target_slot = target_game
+                .slots
+                .iter()
+                .find(|slot| slot.id == slot_id)
+                .context("Target slot not found after switching")?;
+
+            if let Some(active_version_id) = target_slot.active_version_id {
                 let full_version = self
                     .versions_repo
-                    .get_version(version.id)
+                    .get_version(active_version_id)
                     .context("Failed to load active version for target slot")?;
                 self.restore_version_files(&target_game, &full_version)
                     .context("Failed to restore target slot snapshot")?;

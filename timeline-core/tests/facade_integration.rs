@@ -5,6 +5,7 @@ use diesel_migrations::MigrationHarness;
 use savegame_timeline_core::MIGRATIONS;
 use savegame_timeline_core::TimelineCore;
 use savegame_timeline_core::models::*;
+use savegame_timeline_core::persistence::GameRepository;
 use savegame_timeline_core::persistence::sqlite::{
     SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
 };
@@ -423,6 +424,115 @@ fn test_slot_creation_and_switching_preserve_independent_histories() {
     assert_eq!(fs::read_to_string(&save_file).unwrap(), "slot-two-state");
 }
 
+#[test]
+fn test_switch_slot_restores_slot_active_version_not_newest() {
+    let h = harness("v1-state");
+    let game = h.create_game("Rollback Slot Test");
+
+    // Build history in the default slot, then branch off into a scratch slot.
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+    fs::write(&h.save_file, "v2-state").unwrap();
+    let with_second = h.core.create_slot(game.id, "Scratch").unwrap();
+    let scratch_slot_id = with_second.active_slot.as_ref().unwrap().id;
+
+    // Back to default, then deliberately roll back to its FIRST version.
+    h.core.switch_slot(game.id, default_slot_id).unwrap();
+    let default_versions: Vec<Version> = h
+        .core
+        .get_game(game.id)
+        .unwrap()
+        .versions
+        .into_iter()
+        .filter(|v| v.slot_id == default_slot_id)
+        .collect();
+    let oldest = default_versions
+        .iter()
+        .min_by_key(|v| v.version_number)
+        .unwrap();
+    h.core.restore_version(oldest.id).unwrap();
+    let rolled_back_contents = fs::read_to_string(&h.save_file).unwrap();
+
+    // Leave and come back. The rollback must survive.
+    h.core.switch_slot(game.id, scratch_slot_id).unwrap();
+    h.core.switch_slot(game.id, default_slot_id).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&h.save_file).unwrap(),
+        rolled_back_contents,
+        "switching back must restore the slot's ACTIVE version, not its newest"
+    );
+}
+
+#[test]
+fn test_switch_slot_to_never_versioned_slot_clears_live_dir() {
+    // A freshly created slot has active_version_id = NULL until something is
+    // checkpointed into it. Switching to such a slot must clear the live
+    // directory rather than leaving the previous slot's files in place under
+    // the new slot's identity.
+    let pool = init_db();
+    let working_base = tempdir().unwrap();
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.path().to_path_buf(),
+    ));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
+    let source_dir = tempdir().unwrap();
+    let icons_dir = tempdir().unwrap();
+
+    let save_file = source_dir.path().join("save.dat");
+    fs::write(&save_file, "default-slot-state").unwrap();
+
+    let (core, _notif_rx) = TimelineCore::new(
+        games_repo.clone(),
+        versions_repo,
+        scan_roots_repo,
+        working_base.path().to_path_buf(),
+        icons_dir.path().to_path_buf(),
+        Some(0.1),
+    )
+    .unwrap();
+
+    let game = core
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Never Versioned Slot Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            Some(vec![source_dir.path().to_str().unwrap()]),
+        )
+        .unwrap();
+
+    // Create the slot at the repository layer directly, bypassing the
+    // facade's `create_slot` (which immediately gives new slots a baseline
+    // version). This slot never gets a version, so active_version_id stays NULL.
+    let empty_slot = games_repo.create_slot(game.id, "Empty").unwrap();
+    assert!(
+        empty_slot.slot.active_version_id.is_none(),
+        "precondition: slot must have no active version"
+    );
+
+    let after_switch = core.switch_slot(game.id, empty_slot.slot.id).unwrap();
+    assert_eq!(
+        after_switch.active_slot.as_ref().unwrap().id,
+        empty_slot.slot.id
+    );
+
+    assert!(
+        !save_file.exists(),
+        "switching to a slot with no active version must clear the live directory, \
+         not leave the previous slot's files behind"
+    );
+}
+
 /// Everything a facade test needs. Fields are kept alive by the struct:
 /// dropping a `TempDir` deletes it, so these must outlive the test body.
 #[allow(dead_code)]
@@ -435,7 +545,6 @@ struct Harness {
     save_file: std::path::PathBuf,
 }
 
-#[allow(dead_code)]
 fn harness(initial_contents: &str) -> Harness {
     let pool = init_db();
     let working_base = tempdir().unwrap();
@@ -475,7 +584,6 @@ fn harness(initial_contents: &str) -> Harness {
     }
 }
 
-#[allow(dead_code)]
 impl Harness {
     /// Creates a game tracking `source_dir`, returning the created game.
     fn create_game(&self, title: &str) -> Game {
