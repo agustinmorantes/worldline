@@ -12,6 +12,7 @@ const RESERVED_WINDOWS_NAMES: &[&str] = &[
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 const METADATA_FILE_NAME: &str = "metadata.json";
+pub const REPOSITORY_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepositoryEntityKind {
@@ -192,6 +193,10 @@ pub fn games_dir(repository_root: &Path) -> PathBuf {
     repository_root.join("games")
 }
 
+pub fn blobs_dir(repository_root: &Path) -> PathBuf {
+    repository_root.join("blobs")
+}
+
 pub fn game_dir(repository_root: &Path, folder_slug: &str) -> PathBuf {
     games_dir(repository_root).join(folder_slug)
 }
@@ -304,17 +309,33 @@ where
 }
 
 pub fn ensure_repository_root(repository_root: &Path) -> Result<()> {
+    let root_metadata_path = metadata_path(repository_root);
+    if root_metadata_path.exists() {
+        let metadata: RepositoryMetadata = read_metadata_json(repository_root)?;
+        if metadata.format_version != REPOSITORY_FORMAT_VERSION {
+            return Err(anyhow!(
+                "repository format {} is unsupported; this pre-release build requires wiping and recreating the repository",
+                metadata.format_version
+            ));
+        }
+    }
+
     fs::create_dir_all(games_dir(repository_root)).with_context(|| {
         format!(
             "failed to create repository games dir at {}",
             games_dir(repository_root).display()
         )
     })?;
+    fs::create_dir_all(blobs_dir(repository_root)).with_context(|| {
+        format!(
+            "failed to create repository blobs dir at {}",
+            blobs_dir(repository_root).display()
+        )
+    })?;
 
-    let root_metadata_path = metadata_path(repository_root);
     if !root_metadata_path.exists() {
         let metadata = RepositoryMetadata {
-            format_version: 1,
+            format_version: REPOSITORY_FORMAT_VERSION,
             created_at: Utc::now(),
             app: "savegame-timeline".to_string(),
         };
@@ -616,9 +637,27 @@ mod tests {
         ensure_repository_root(dir.path()).expect("ensure repository root");
 
         assert!(games_dir(dir.path()).exists(), "games dir should exist");
+        assert!(blobs_dir(dir.path()).exists(), "blobs dir should exist");
         let loaded: RepositoryMetadata =
             read_metadata_json(dir.path()).expect("read repository metadata");
-        assert_eq!(loaded.format_version, 1);
+        assert_eq!(loaded.format_version, REPOSITORY_FORMAT_VERSION);
         assert_eq!(loaded.app, "savegame-timeline");
+    }
+
+    #[test]
+    fn rejects_unsupported_repository_format() {
+        let dir = tempdir().expect("temp dir");
+        let metadata = RepositoryMetadata {
+            format_version: 1,
+            created_at: Utc::now(),
+            app: "savegame-timeline".to_string(),
+        };
+        write_metadata_json(dir.path(), &metadata).expect("write metadata");
+
+        let error = ensure_repository_root(dir.path()).expect_err("format should be rejected");
+        assert_eq!(
+            error.to_string(),
+            "repository format 1 is unsupported; this pre-release build requires wiping and recreating the repository"
+        );
     }
 }

@@ -17,6 +17,7 @@ libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 ureq = { version = "2.9", features = ["tls"] }
 serde_yaml_ng = "0.9"
 serde_json = "1.0"
+sha2 = "0.10"
 dirs = "5.0"
 keyvalues-parser = "0.2"
 glob = "0.3"

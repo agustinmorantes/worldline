@@ -1,3 +1,4 @@
+pub mod content_store;
 pub mod core_facade;
 pub mod detection;
 pub mod exclusions;
