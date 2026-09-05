@@ -229,6 +229,73 @@ fn test_repository_metadata_is_written_for_game_and_version() {
     assert_eq!(version_metadata.game_uuid, game_metadata.uuid);
 }
 
+fn seed_game_with_slot(conn: &mut SqliteConnection, title: &str) -> (i32, i32) {
+    use diesel::prelude::*;
+    use savegame_timeline_core::schema::{games, slots};
+
+    let game_id: i32 = diesel::insert_into(games::table)
+        .values((
+            games::title.eq(title),
+            games::title_normalized.eq(title.to_lowercase()),
+        ))
+        .returning(games::id)
+        .get_result(conn)
+        .unwrap();
+
+    let slot_id: i32 = diesel::insert_into(slots::table)
+        .values((
+            slots::uuid.eq("aaaaaaaa-0000-0000-0000-000000000000"),
+            slots::game_id.eq(game_id),
+            slots::name.eq("Default Slot"),
+            slots::name_normalized.eq("default slot"),
+            slots::folder_slug.eq("default-slot__s_aaaaaaaa"),
+        ))
+        .returning(slots::id)
+        .get_result(conn)
+        .unwrap();
+
+    (game_id, slot_id)
+}
+
+#[test]
+fn test_duplicate_version_numbers_allowed_within_a_slot() {
+    use diesel::prelude::*;
+    use savegame_timeline_core::schema::versions;
+
+    let pool = init_db();
+    let conn = &mut pool.get().unwrap();
+
+    let (_game_id, slot_id) = seed_game_with_slot(conn, "Dup Number Game");
+
+    for uuid in [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    ] {
+        diesel::insert_into(versions::table)
+            .values((
+                versions::uuid.eq(uuid),
+                versions::folder_slug.eq(format!("v005__v_{}", &uuid[..8])),
+                versions::version_number.eq(5),
+                versions::slot_id.eq(slot_id),
+                versions::reason.eq("watcher"),
+            ))
+            .execute(conn)
+            .expect("both versions numbered 5 must insert");
+    }
+
+    let count: i64 = versions::table
+        .filter(versions::slot_id.eq(slot_id))
+        .filter(versions::version_number.eq(5))
+        .count()
+        .get_result(conn)
+        .unwrap();
+
+    assert_eq!(
+        count, 2,
+        "two versions may share a version_number in one slot"
+    );
+}
+
 #[test]
 fn test_slot_repository_operations() {
     let pool = init_db();
