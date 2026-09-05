@@ -386,19 +386,28 @@ impl TimelineCore {
     /// Runs `operation` with the watcher suppressed, so the writes it makes to
     /// tracked directories are not mistaken for the user playing the game.
     ///
-    /// The contract is: pause and wait for the watcher to confirm its queue is
-    /// clear, mutate, let trailing OS events arrive while still paused, resume.
+    /// The contract is: pause and wait for the watcher to confirm it, mutate, let
+    /// trailing OS events arrive while still paused, resume.
     /// Every wait is bounded and the watcher is always resumed — including when
     /// `operation` returns `Err` or panics, since leaving suppression latched
-    /// would silently stop versioning for the rest of the session.
+    /// would silently stop versioning for the rest of the session. A watcher that
+    /// is gone or wedged costs suppression, never the operation itself.
     fn run_with_paused_watcher<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-        self.cmd_tx
-            .send(Command::Pause(ack_tx))
-            .context("Failed to send pause command")?;
+        // A stopped watcher must not make restoring impossible. Propagating here
+        // would fail every restore and slot switch for the rest of the session;
+        // a spurious version is the better failure by a wide margin, so this logs
+        // and falls through. The wait below then fails immediately (the ack sender
+        // went with the dropped command) and the operation runs unsuppressed.
+        if let Err(err) = self.cmd_tx.send(Command::Pause(ack_tx)) {
+            eprintln!("Watcher is not accepting commands ({err}); continuing unsuppressed");
+        }
 
-        // Block until the watcher confirms it has drained what was already queued,
-        // otherwise the operation races events that were in flight before it began.
+        // Block until the watcher confirms it has seen the pause. Without this the
+        // operation races an event the debouncer has already promoted to the queue
+        // but the watcher has not dequeued yet: that event is still judged unpaused
+        // and becomes a version. Rebuilding the debouncer on `Resume` cannot help
+        // there — it only discards what is still buffered inside the debouncer.
         // Bounded: a watcher thread that died drops the ack sender and this returns
         // at once, and one that is wedged costs a bounded wait instead of hanging
         // the UI forever. Either way suppression degrades rather than deadlocks.

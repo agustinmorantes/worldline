@@ -84,13 +84,21 @@ fn test_restore_uses_version_id_not_version_number() {
     fs::write(game1_dir.path().join("save.dat"), "game1 modified").unwrap();
     // Bounded: an unbounded poll loop turns a missed event into a hung test
     // binary rather than a failure.
-    wait_for_version_count(&core, game1.id, 1, Duration::from_secs(30));
+    assert_eq!(
+        wait_for_version_count(&core, game1.id, 1, Duration::from_secs(30)),
+        1,
+        "the watcher must version Game 1's change"
+    );
     while notif_rx.try_recv().is_ok() {}
 
     // Now write the state we want to restore to. After this, the watcher will
     // create version id=2 (version_number=1) for Game 2, snapshotting this content.
     fs::write(game2_dir.path().join("save.dat"), "game2 good save").unwrap();
-    wait_for_version_count(&core, game2.id, 1, Duration::from_secs(30));
+    assert_eq!(
+        wait_for_version_count(&core, game2.id, 1, Duration::from_secs(30)),
+        1,
+        "the watcher must version Game 2's change"
+    );
     while notif_rx.try_recv().is_ok() {}
 
     let full_game2 = core.get_game(game2.id).unwrap();
@@ -112,7 +120,16 @@ fn test_restore_uses_version_id_not_version_number() {
         version.version_number
     );
 
-    // Corrupt the save file and immediately restore (before the 0.1s debounce fires).
+    // The version row appears before the watcher has finished snapshotting: the
+    // handler creates the version, notifies, and only then copies the live dir
+    // into it. Corrupting save.dat while that copy is still in flight lets the
+    // copy pick up "corrupted!" and write it into the very snapshot this test is
+    // about to restore from. Waiting past the debounce window plus the copy makes
+    // the ordering deterministic instead of raced.
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Corrupt the save file and restore. The fresh 0.1s debounce on this write
+    // cannot fire before restore_version pauses the watcher.
     fs::write(game2_dir.path().join("save.dat"), "corrupted!").unwrap();
     core.restore_version(version.id).unwrap();
 
@@ -172,7 +189,11 @@ fn test_version_cooldown_prevents_rapid_second_version() {
     fs::write(&save_file, "change 1").unwrap();
     // Bounded: an unbounded poll loop turns a missed event into a hung test
     // binary rather than a failure.
-    wait_for_version_count(&core, game.id, 1, Duration::from_secs(30));
+    assert_eq!(
+        wait_for_version_count(&core, game.id, 1, Duration::from_secs(30)),
+        1,
+        "the watcher must version the first change"
+    );
     while notif_rx.try_recv().is_ok() {}
 
     // Trigger a second change immediately — still well within the 15-minute cooldown.
@@ -622,7 +643,7 @@ fn test_version_metadata_records_parent_uuid() {
     );
 
     let game_dir = savegame_timeline_core::repository::game_dir(
-        h.working_base.path(),
+        &h.repo_root(),
         default_slot.game.folder_slug.as_deref().unwrap(),
     );
     let slot_dir =
@@ -670,6 +691,11 @@ struct Harness {
 fn harness(initial_contents: &str) -> Harness {
     let pool = init_db();
     let working_base = tempdir().unwrap();
+    // Nested one level on purpose: TimelineCore derives the monitoring settings
+    // path from working_base.parent(), so a bare tempdir would resolve it to the
+    // shared system temp directory and every harness test would read - and one
+    // day write - the same file.
+    let repo_root = working_base.path().join("repository");
     let source_dir = tempdir().unwrap();
     let icons_dir = tempdir().unwrap();
 
@@ -678,11 +704,11 @@ fn harness(initial_contents: &str) -> Harness {
 
     let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
         pool.clone(),
-        working_base.path().to_path_buf(),
+        repo_root.clone(),
     ));
     let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
         pool.clone(),
-        working_base.path().to_path_buf(),
+        repo_root.clone(),
     ));
     let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
 
@@ -690,7 +716,7 @@ fn harness(initial_contents: &str) -> Harness {
         games_repo,
         versions_repo,
         scan_roots_repo,
-        working_base.path().to_path_buf(),
+        repo_root.clone(),
         icons_dir.path().to_path_buf(),
         Some(0.1),
     )
@@ -717,6 +743,11 @@ impl Drop for Harness {
 }
 
 impl Harness {
+    /// The repository root the core writes into — one level inside `working_base`.
+    fn repo_root(&self) -> std::path::PathBuf {
+        self.working_base.path().join("repository")
+    }
+
     /// Creates a game tracking `source_dir`, returning the created game.
     fn create_game(&self, title: &str) -> Game {
         self.core
@@ -843,10 +874,8 @@ fn test_restore_version_rejects_orphaned_version_without_mutating_slot() {
     // restore the stale *first* one, so any mutation is actually observable.
     let h = harness("live-state");
     let game = h.create_game("Ownership Test");
-    let versions_repo = SqliteVersionRepository::with_repository_root(
-        h.pool.clone(),
-        h.working_base.path().to_path_buf(),
-    );
+    let versions_repo =
+        SqliteVersionRepository::with_repository_root(h.pool.clone(), h.repo_root());
 
     let v1 = versions_repo
         .create_version(game.id, VersionReason::Watcher)
@@ -994,13 +1023,13 @@ fn test_exclusions_are_honoured_symmetrically_on_capture_and_restore() {
 
     // 1. The excluded file must never have been captured into any snapshot.
     assert!(
-        !repo_contains_file(h.working_base.path(), "settings.cfg"),
+        !repo_contains_file(&h.repo_root(), "settings.cfg"),
         "an excluded file must not be copied into any snapshot in the repository"
     );
     // A .ini file is real save data for many games and must be captured
     // (regression for the over-broad global exclusion list in fs_utils).
     assert!(
-        repo_contains_file(h.working_base.path(), "config.ini"),
+        repo_contains_file(&h.repo_root(), "config.ini"),
         ".ini files are real save data and must be captured into the snapshot"
     );
 
