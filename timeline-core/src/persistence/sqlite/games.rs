@@ -159,6 +159,97 @@ impl GameRepository for SqliteGameRepository {
         self.get_slot(created_slot.id)
     }
 
+    fn rename_slot(&self, slot_id: i32, name: &str) -> Result<FullSlot> {
+        use crate::schema::slots::dsl as slots_dsl;
+
+        let game_id = {
+            let conn = &mut self.pool.get().context("Error getting db connection")?;
+
+            let slot: Slot = slots_dsl::slots
+                .filter(slots_dsl::id.eq(slot_id))
+                .select(Slot::as_select())
+                .first(conn)
+                .context("Error loading slot to rename")?;
+
+            let new_name = name.trim();
+            if new_name.is_empty() {
+                return Err(anyhow!("A slot name cannot be empty"));
+            }
+
+            let normalized_name = crate::repository::normalize_display_name(new_name);
+            let duplicate_slot: Option<i32> = slots_dsl::slots
+                .filter(slots_dsl::game_id.eq(slot.game_id))
+                .filter(slots_dsl::name_normalized.eq(&normalized_name))
+                .filter(slots_dsl::id.ne(slot_id))
+                .select(slots_dsl::id)
+                .first(conn)
+                .optional()
+                .context("Error checking for duplicate slot name")?;
+
+            if duplicate_slot.is_some() {
+                return Err(anyhow!(
+                    "A slot named '{new_name}' already exists for this game"
+                ));
+            }
+
+            // `folder_slug` is deliberately left alone: it is anchored on the
+            // slot's UUID and already names every version directory beneath it,
+            // so the human part of the slug is a readability nicety, not
+            // identity. Renaming the directory would have to move live snapshot
+            // paths for no functional gain.
+            diesel::update(slots_dsl::slots.filter(slots_dsl::id.eq(slot_id)))
+                .set((
+                    slots_dsl::name.eq(new_name),
+                    slots_dsl::name_normalized.eq(&normalized_name),
+                    slots_dsl::updated_at.eq(Utc::now().naive_utc()),
+                ))
+                .execute(conn)
+                .context("Error renaming slot")?;
+
+            slot.game_id
+        };
+
+        sync_game_metadata_if_needed(self, game_id)?;
+        self.get_slot(slot_id)
+    }
+
+    fn delete_slot(&self, slot_id: i32) -> Result<()> {
+        use crate::schema::slots::dsl as slots_dsl;
+        use crate::schema::versions::dsl as versions_dsl;
+
+        let game_id = {
+            let conn = &mut self.pool.get().context("Error getting db connection")?;
+
+            let slot: Slot = slots_dsl::slots
+                .filter(slots_dsl::id.eq(slot_id))
+                .select(Slot::as_select())
+                .first(conn)
+                .context("Error loading slot to delete")?;
+
+            conn.transaction::<_, diesel::result::Error, _>(|conn| {
+                // `slots.active_version_id` and `versions.slot_id` reference each
+                // other, so the cycle has to be broken before either row can go:
+                // release the slot's pointer, then its versions, then the slot.
+                // A version's `parent_id` only ever points at another version in
+                // the same slot (see `create_version`), so dropping this slot's
+                // whole history cannot orphan another slot's chain.
+                diesel::update(slots_dsl::slots.filter(slots_dsl::id.eq(slot_id)))
+                    .set(slots_dsl::active_version_id.eq(None::<i32>))
+                    .execute(conn)?;
+                diesel::delete(versions_dsl::versions.filter(versions_dsl::slot_id.eq(slot_id)))
+                    .execute(conn)?;
+                diesel::delete(slots_dsl::slots.filter(slots_dsl::id.eq(slot_id))).execute(conn)?;
+                Ok(())
+            })
+            .context("Error deleting slot")?;
+
+            slot.game_id
+        };
+
+        sync_game_metadata_if_needed(self, game_id)?;
+        Ok(())
+    }
+
     fn set_active_slot(&self, game_id: i32, slot_id: i32) -> Result<Slot> {
         use crate::schema::games::dsl as games_dsl;
         use crate::schema::slots::dsl as slots_dsl;

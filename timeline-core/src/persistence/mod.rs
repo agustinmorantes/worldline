@@ -11,6 +11,11 @@ pub trait GameRepository: Send + Sync {
     fn get_slot(&self, id: i32) -> Result<FullSlot>;
     fn list_slots(&self, game_id: i32) -> Result<Vec<FullSlot>>;
     fn create_slot(&self, game_id: i32, name: &str) -> Result<FullSlot>;
+    fn rename_slot(&self, slot_id: i32, name: &str) -> Result<FullSlot>;
+    /// Removes a slot together with every version it owns. Callers are
+    /// responsible for ensuring the slot is neither the game's last one nor
+    /// its currently active one.
+    fn delete_slot(&self, slot_id: i32) -> Result<()>;
     fn set_active_slot(&self, game_id: i32, slot_id: i32) -> Result<Slot>;
     fn save_game<'a>(&self, game: GameForm<'a>, dirs: Option<Vec<&'a str>>) -> Result<Game>;
     fn delete_game(&self, id: i32) -> Result<()>;

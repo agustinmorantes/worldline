@@ -1201,3 +1201,237 @@ fn test_watcher_is_resumed_when_the_paused_operation_fails() {
         "the watcher must be resumed even when the paused operation returns Err"
     );
 }
+
+/// Reads a slot's version ids straight from the table.
+///
+/// `get_slots` would answer through the very repository code under test, and
+/// the facade otherwise only ever exposes the *active* slot's versions. Going
+/// to the table means a delete that drops the slot row but leaves its versions
+/// behind — pointing at a slot that no longer exists — cannot pass.
+fn version_ids_for_slot(
+    pool: &Pool<ConnectionManager<SqliteConnection>>,
+    slot_id: i32,
+) -> Vec<i32> {
+    use diesel::prelude::*;
+    use savegame_timeline_core::schema::versions::dsl as versions_dsl;
+
+    let conn = &mut pool.get().unwrap();
+    versions_dsl::versions
+        .filter(versions_dsl::slot_id.eq(slot_id))
+        .select(versions_dsl::id)
+        .load(conn)
+        .unwrap()
+}
+
+#[test]
+fn test_delete_inactive_slot_drops_only_its_history_and_leaves_live_files_alone() {
+    let h = harness("default-state");
+    let game = h.create_game("Delete Inactive Slot");
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+
+    // Leaving the default slot checkpoints "default-state" into it, so the slot
+    // we delete genuinely owns history rather than being empty.
+    let with_scratch = h.core.create_slot(game.id, "Scratch").unwrap();
+    let scratch_slot_id = with_scratch.active_slot.as_ref().unwrap().id;
+    fs::write(&h.save_file, "scratch-state").unwrap();
+
+    let doomed_versions = version_ids_for_slot(&h.pool, default_slot_id);
+    assert!(
+        !doomed_versions.is_empty(),
+        "precondition: the slot being deleted must own at least one version"
+    );
+    let survivors = version_ids_for_slot(&h.pool, scratch_slot_id);
+    assert!(
+        !survivors.is_empty(),
+        "precondition: the surviving slot must own at least one version"
+    );
+
+    // No replacement needed: the deleted slot is not the active one.
+    let after = h.core.delete_slot(default_slot_id, None).unwrap();
+
+    assert_eq!(after.slots.len(), 1, "the deleted slot must be gone");
+    assert_eq!(
+        after.active_slot.as_ref().unwrap().id,
+        scratch_slot_id,
+        "deleting an inactive slot must not move the active slot"
+    );
+    assert!(
+        version_ids_for_slot(&h.pool, default_slot_id).is_empty(),
+        "the deleted slot's versions must be removed, not orphaned"
+    );
+    assert_eq!(
+        version_ids_for_slot(&h.pool, scratch_slot_id),
+        survivors,
+        "the surviving slot's history must be untouched"
+    );
+    assert_eq!(
+        fs::read_to_string(&h.save_file).unwrap(),
+        "scratch-state",
+        "deleting an inactive slot must never write to the live save directory"
+    );
+}
+
+#[test]
+fn test_delete_active_slot_restores_the_replacement_slots_files() {
+    let h = harness("default-state");
+    let game = h.create_game("Delete Active Slot");
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+
+    let with_scratch = h.core.create_slot(game.id, "Scratch").unwrap();
+    let scratch_slot_id = with_scratch.active_slot.as_ref().unwrap().id;
+    fs::write(&h.save_file, "scratch-state").unwrap();
+
+    let after = h
+        .core
+        .delete_slot(scratch_slot_id, Some(default_slot_id))
+        .unwrap();
+
+    assert_eq!(after.slots.len(), 1);
+    assert_eq!(
+        after.active_slot.as_ref().unwrap().id,
+        default_slot_id,
+        "deleting the active slot must leave the replacement active"
+    );
+    assert_eq!(
+        fs::read_to_string(&h.save_file).unwrap(),
+        "default-state",
+        "the live save directory must hold the replacement slot's state, not \
+         the deleted slot's leftovers"
+    );
+    assert!(
+        version_ids_for_slot(&h.pool, scratch_slot_id).is_empty(),
+        "the deleted slot's versions must be removed, not orphaned"
+    );
+    assert!(
+        !version_ids_for_slot(&h.pool, default_slot_id).is_empty(),
+        "the replacement slot must keep the history it is being restored from"
+    );
+}
+
+#[test]
+fn test_delete_slot_refuses_to_leave_a_game_without_a_coherent_active_slot() {
+    let h = harness("default-state");
+    let game = h.create_game("Delete Slot Guards");
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+
+    // Every guard below is asserted on its message rather than on a bare
+    // `is_err`. The four rejected calls all target the active slot, so any one
+    // guard is enough to make `is_err` true for all of them — removing three of
+    // the four left this test green until the messages were pinned down.
+    // `{:#}` renders the whole anyhow chain: plain `to_string` would show only
+    // the outermost context and hide the guard that actually fired.
+    let refusal = |slot_id, replacement| {
+        let err = h
+            .core
+            .delete_slot(slot_id, replacement)
+            .expect_err("delete must be rejected");
+        format!("{err:#}")
+    };
+
+    let err = refusal(default_slot_id, None);
+    assert!(
+        err.contains("must keep at least one slot"),
+        "the last remaining slot must not be deletable, got: {err}"
+    );
+
+    let with_scratch = h.core.create_slot(game.id, "Scratch").unwrap();
+    let scratch_slot_id = with_scratch.active_slot.as_ref().unwrap().id;
+
+    let err = refusal(scratch_slot_id, None);
+    assert!(
+        err.contains("requires a replacement slot"),
+        "deleting the active slot without a replacement must fail, got: {err}"
+    );
+
+    let err = refusal(scratch_slot_id, Some(scratch_slot_id));
+    assert!(
+        err.contains("must not be the slot being deleted"),
+        "the slot being deleted must not be its own replacement, got: {err}"
+    );
+
+    let err = refusal(scratch_slot_id, Some(999_999));
+    assert!(
+        err.contains("does not belong to this game"),
+        "a replacement slot from another game must be rejected, got: {err}"
+    );
+
+    let game_after = h.core.get_game(game.id).unwrap();
+    assert_eq!(
+        game_after.slots.len(),
+        2,
+        "no rejected delete may have removed a slot"
+    );
+    assert_eq!(
+        game_after.active_slot.as_ref().unwrap().id,
+        scratch_slot_id,
+        "no rejected delete may have moved the active slot"
+    );
+}
+
+#[test]
+fn test_rename_slot_keeps_identity_and_history_and_rejects_collisions() {
+    let h = harness("default-state");
+    let game = h.create_game("Rename Slot");
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+    h.core.create_slot(game.id, "Scratch").unwrap();
+
+    let slug_before = h
+        .core
+        .get_slots(game.id)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.slot.id == default_slot_id)
+        .unwrap()
+        .slot
+        .folder_slug;
+    let versions_before = version_ids_for_slot(&h.pool, default_slot_id);
+
+    let after = h.core.rename_slot(default_slot_id, "Story Mode").unwrap();
+    let renamed = after
+        .slots
+        .iter()
+        .find(|s| s.id == default_slot_id)
+        .unwrap();
+
+    assert_eq!(renamed.name, "Story Mode");
+    assert_eq!(
+        renamed.folder_slug, slug_before,
+        "a rename must not move the slot's repository directory: the slug is \
+         anchored on the slot UUID and already names every version beneath it"
+    );
+    assert_eq!(
+        version_ids_for_slot(&h.pool, default_slot_id),
+        versions_before,
+        "a rename must not disturb the slot's history"
+    );
+
+    // Asserted on the message: a unique index on (game_id, name_normalized)
+    // means a bare `is_err` is satisfied by the raw SQL constraint failure, and
+    // stays green with the explicit check — and its readable message — deleted.
+    let collision = format!(
+        "{:#}",
+        h.core
+            .rename_slot(default_slot_id, "Scratch")
+            .expect_err("rename onto a sibling's name must be rejected")
+    );
+    assert!(
+        collision.contains("already exists for this game"),
+        "renaming onto a sibling slot's name must be rejected by name, got: {collision}"
+    );
+    assert!(
+        h.core.rename_slot(default_slot_id, "   ").is_err(),
+        "an empty slot name must be rejected"
+    );
+    assert_eq!(
+        h.core
+            .get_slots(game.id)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.slot.id == default_slot_id)
+            .unwrap()
+            .slot
+            .name,
+        "Story Mode",
+        "a rejected rename must leave the previous name in place"
+    );
+}

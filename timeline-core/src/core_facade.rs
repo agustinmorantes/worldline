@@ -167,40 +167,130 @@ impl TimelineCore {
             self.checkpoint_current_state(&current_game, VersionReason::PreSwitch)
                 .context("Failed to checkpoint current slot before switching")?;
 
-            self.games_repo
-                .set_active_slot(game_id, slot_id)
-                .context("Failed to activate target slot")?;
+            self.activate_slot(game_id, slot_id)
+        })
+    }
 
-            let target_game = self
-                .games_repo
-                .get_game(game_id)
-                .context("Failed to reload game after switching slots")?;
+    /// Makes `slot_id` the game's active slot and materialises its files into
+    /// the live tracked directories. The caller owns the decision of whether
+    /// the outgoing slot's live state is worth checkpointing first, and must
+    /// have the watcher paused: this writes to tracked directories.
+    fn activate_slot(&self, game_id: i32, slot_id: i32) -> Result<FullGame> {
+        self.games_repo
+            .set_active_slot(game_id, slot_id)
+            .context("Failed to activate target slot")?;
 
-            let target_slot = target_game
+        let target_game = self
+            .games_repo
+            .get_game(game_id)
+            .context("Failed to reload game after switching slots")?;
+
+        let target_slot = target_game
+            .slots
+            .iter()
+            .find(|slot| slot.id == slot_id)
+            .context("Target slot not found after switching")?;
+
+        if let Some(active_version_id) = target_slot.active_version_id {
+            let full_version = self
+                .versions_repo
+                .get_version(active_version_id)
+                .context("Failed to load active version for target slot")?;
+            self.restore_version_files(&target_game, &full_version)
+                .context("Failed to restore target slot snapshot")?;
+        } else {
+            self.clear_tracked_dirs(&target_game)
+                .context("Failed to clear tracked directories for empty slot")?;
+        }
+
+        self.resync_game_metadata(game_id)
+            .context("Failed to sync metadata after switching slots")?;
+
+        self.games_repo
+            .get_game(game_id)
+            .context("Failed to reload game after switching slots")
+    }
+
+    pub fn rename_slot(&self, slot_id: i32, name: &str) -> Result<FullGame> {
+        let slot = self
+            .games_repo
+            .rename_slot(slot_id, name)
+            .context("Failed to rename slot")?;
+
+        self.games_repo
+            .get_game(slot.slot.game_id)
+            .context("Failed to reload game after renaming slot")
+    }
+
+    /// Deletes a slot and the whole version history it owns.
+    ///
+    /// A game with no active slot has no coherent state, so two rules are
+    /// enforced here rather than in the UI: the last remaining slot can never
+    /// be deleted, and deleting the *active* slot requires naming the slot to
+    /// switch to first. The replacement is switched into (restoring its files)
+    /// before the target is dropped, so the live save directory always ends up
+    /// holding some slot's real state.
+    pub fn delete_slot(&self, slot_id: i32, replacement_slot_id: Option<i32>) -> Result<FullGame> {
+        let slot = self
+            .games_repo
+            .get_slot(slot_id)
+            .context("Failed to load slot for deletion")?;
+        let game_id = slot.slot.game_id;
+        let game = self
+            .games_repo
+            .get_game(game_id)
+            .context("Failed to load game before slot deletion")?;
+
+        if game.slots.len() <= 1 {
+            return Err(anyhow!(
+                "Cannot delete '{}': a game must keep at least one slot",
+                slot.slot.name
+            ));
+        }
+
+        let is_active = game
+            .active_slot
+            .as_ref()
+            .is_some_and(|active| active.id == slot_id);
+
+        if is_active {
+            let replacement_slot_id = replacement_slot_id.context(
+                "Deleting the active slot requires a replacement slot to switch to first",
+            )?;
+            if replacement_slot_id == slot_id {
+                return Err(anyhow!(
+                    "The replacement slot must not be the slot being deleted"
+                ));
+            }
+            if !game
                 .slots
                 .iter()
-                .find(|slot| slot.id == slot_id)
-                .context("Target slot not found after switching")?;
-
-            if let Some(active_version_id) = target_slot.active_version_id {
-                let full_version = self
-                    .versions_repo
-                    .get_version(active_version_id)
-                    .context("Failed to load active version for target slot")?;
-                self.restore_version_files(&target_game, &full_version)
-                    .context("Failed to restore target slot snapshot")?;
-            } else {
-                self.clear_tracked_dirs(&target_game)
-                    .context("Failed to clear tracked directories for empty slot")?;
+                .any(|candidate| candidate.id == replacement_slot_id)
+            {
+                return Err(anyhow!(
+                    "Replacement slot {replacement_slot_id} does not belong to this game"
+                ));
             }
 
-            self.resync_game_metadata(game_id)
-                .context("Failed to sync metadata after switching slots")?;
+            // Deliberately no checkpoint of the outgoing slot: it is about to be
+            // discarded, so capturing its live state would only mint a version
+            // that the delete below immediately removes.
+            self.run_with_paused_watcher(|| self.activate_slot(game_id, replacement_slot_id))
+                .context("Failed to switch to the replacement slot before deleting")?;
+        }
 
-            self.games_repo
-                .get_game(game_id)
-                .context("Failed to reload game after switching slots")
-        })
+        // The slot's directory under the repository is deliberately left on
+        // disk, matching `delete_game`. Nothing in the app can bring a deleted
+        // timeline back, so keeping the bytes is the reversible failure mode;
+        // orphaned slot directories accumulate until a repository GC pass
+        // reclaims them.
+        self.games_repo
+            .delete_slot(slot_id)
+            .context("Failed to delete slot")?;
+
+        self.games_repo
+            .get_game(game_id)
+            .context("Failed to reload game after deleting slot")
     }
 
     pub fn restore_version(&self, version_id: i32) -> Result<()> {
