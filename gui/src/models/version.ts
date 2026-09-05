@@ -4,7 +4,9 @@ import {tagVersion,restoreVersion} from "@/api/versions.ts";
 export const VersionSchema = z.object({
   id: z.number().optional().nullable(),
   version_number: z.number(),
-  game_id: z.number(),
+  // Versions belong to a slot, not to a game: `versions.game_id` was dropped
+  // from the schema, and the backend no longer serialises it.
+  slot_id: z.number(),
   tag: z.string().optional().nullable(),
   created_at: z.string().optional()
     .transform(s => s !== undefined ? new Date(s + 'Z') : undefined),
@@ -19,7 +21,7 @@ export class Version {
   
   constructor(
     public version_number: number,
-    public game_id: number,
+    public slot_id: number,
   ) {}
   
   static fromData(data: unknown): Version|undefined {
@@ -31,7 +33,7 @@ export class Version {
 
     const parsedData = result.data;
     
-    const version = new Version(parsedData.version_number, parsedData.game_id);
+    const version = new Version(parsedData.version_number, parsedData.slot_id);
     version.id = parsedData.id ?? undefined;
     version.created_at = parsedData.created_at;
     version.tag = parsedData.tag ?? undefined;

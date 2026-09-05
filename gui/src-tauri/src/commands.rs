@@ -54,6 +54,25 @@ fn switch_slot(
 }
 
 #[tauri::command]
+fn rename_slot(
+    slot_id: i32,
+    name: String,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    core.rename_slot(slot_id, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_slot(
+    slot_id: i32,
+    replacement_slot_id: Option<i32>,
+    core: State<Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    core.delete_slot(slot_id, replacement_slot_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn restore_version(id: i32, core: State<Arc<TimelineCore>>) -> Result<(), String> {
     core.restore_version(id).map_err(|e| format!("{:?}", e))
 }
@@ -122,6 +141,8 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         delete_game,
         create_slot,
         switch_slot,
+        rename_slot,
+        delete_slot,
         restore_version,
         tag_version,
         set_game_icon,
