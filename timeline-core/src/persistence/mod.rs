@@ -1,6 +1,7 @@
 pub mod sqlite;
 
 use crate::models::{FullGame, FullSlot, FullVersion, Game, GameForm, Slot, Version};
+use crate::repository::VersionReason;
 use anyhow::Result;
 
 #[cfg_attr(test, mockall::automock)]
@@ -17,7 +18,7 @@ pub trait GameRepository: Send + Sync {
 
 #[cfg_attr(test, mockall::automock)]
 pub trait VersionRepository: Send + Sync {
-    fn create_version(&self, game_id: i32) -> Result<FullVersion>;
+    fn create_version(&self, game_id: i32, reason: VersionReason) -> Result<FullVersion>;
     fn set_active_version(&self, version_id: i32) -> Result<FullVersion>;
     fn tag_version(&self, id: i32, tag: String) -> Result<Version>;
     fn get_version(&self, id: i32) -> Result<FullVersion>;

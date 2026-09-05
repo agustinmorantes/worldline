@@ -648,6 +648,65 @@ impl Harness {
 }
 
 #[test]
+fn test_version_reason_is_persisted_per_operation() {
+    // NOTE: the brief's version of this test asserted that the very first
+    // version returned by `h.create_game(...)` alone has reason "initial".
+    // That doesn't hold in this codebase: `save_game`/`ensure_default_slot`
+    // creates the default slot but never calls `create_version` — the first
+    // version only appears once something actually checkpoints (create_slot's
+    // baseline) or the watcher fires. So this test drives `create_slot` and
+    // `switch_slot` instead, which are the real call sites that tag versions
+    // with distinct reasons, and checks all three resulting reasons are
+    // present and different — not just "some string is set" everywhere.
+    let h = harness("initial-state");
+    let game = h.create_game("Reason Test");
+    let default_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+
+    // Creating a second slot checkpoints the outgoing (default) slot with
+    // reason=pre_slot_create and gives the new slot an empty baseline with
+    // reason=initial.
+    fs::write(&h.save_file, "changed-before-slot-create").unwrap();
+    let after_slot = h.core.create_slot(game.id, "Second").unwrap();
+    let second_slot_id = after_slot.active_slot.as_ref().unwrap().id;
+
+    let baseline = after_slot.versions.iter().find(|v| v.reason == "initial");
+    assert!(
+        baseline.is_some(),
+        "the new slot's baseline version is created with reason=initial"
+    );
+
+    let slots = h.core.get_slots(game.id).unwrap();
+    let default_slot = slots.iter().find(|s| s.slot.id == default_slot_id).unwrap();
+    let pre_create = default_slot
+        .versions
+        .iter()
+        .find(|v| v.reason == "pre_slot_create");
+    assert!(
+        pre_create.is_some(),
+        "leaving the default slot to create a new one checkpoints it with reason=pre_slot_create"
+    );
+
+    // Switching back to the default slot checkpoints the outgoing (second)
+    // slot with yet another, distinct reason: pre_switch.
+    fs::write(&h.save_file, "changed-before-switch").unwrap();
+    h.core.switch_slot(game.id, default_slot_id).unwrap();
+
+    let slots_after_switch = h.core.get_slots(game.id).unwrap();
+    let second_slot = slots_after_switch
+        .iter()
+        .find(|s| s.slot.id == second_slot_id)
+        .unwrap();
+    let pre_switch = second_slot
+        .versions
+        .iter()
+        .find(|v| v.reason == "pre_switch");
+    assert!(
+        pre_switch.is_some(),
+        "switching away from a slot checkpoints it with reason=pre_switch"
+    );
+}
+
+#[test]
 fn test_monitoring_settings_persist_through_facade() {
     let pool = init_db();
     let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));

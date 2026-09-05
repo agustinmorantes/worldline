@@ -1,12 +1,13 @@
 use super::SqliteVersionRepository;
 use crate::models::{FullVersion, Game, Slot, Version, VersionForm};
 use crate::persistence::VersionRepository;
+use crate::repository::VersionReason;
 use anyhow::{Context, Result};
 use diesel::prelude::*;
 use uuid::Uuid;
 
 impl VersionRepository for SqliteVersionRepository {
-    fn create_version(&self, game_id_param: i32) -> Result<FullVersion> {
+    fn create_version(&self, game_id_param: i32, reason: VersionReason) -> Result<FullVersion> {
         use crate::schema::games;
         use crate::schema::slots;
         use crate::schema::versions;
@@ -47,6 +48,7 @@ impl VersionRepository for SqliteVersionRepository {
             slot_id: active_slot_id,
             version_number: new_version_number,
             tag: None,
+            reason: reason.as_str().to_string(),
             created_at: None,
             parent_id: slot_model.active_version_id,
         };

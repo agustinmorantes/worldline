@@ -77,7 +77,7 @@ pub struct SlotMetadata {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionReason {
     Initial,
@@ -86,6 +86,30 @@ pub enum VersionReason {
     PreRestore,
     PreSlotCreate,
     Watcher,
+}
+
+impl VersionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Manual => "manual",
+            Self::PreSwitch => "pre_switch",
+            Self::PreRestore => "pre_restore",
+            Self::PreSlotCreate => "pre_slot_create",
+            Self::Watcher => "watcher",
+        }
+    }
+
+    pub fn from_str_or_watcher(value: &str) -> Self {
+        match value {
+            "initial" => Self::Initial,
+            "manual" => Self::Manual,
+            "pre_switch" => Self::PreSwitch,
+            "pre_restore" => Self::PreRestore,
+            "pre_slot_create" => Self::PreSlotCreate,
+            _ => Self::Watcher,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -442,7 +466,7 @@ pub fn sync_version_metadata(
         folder_slug: folder_slug.to_string(),
         parent_version_uuid,
         tag: version.version.tag.clone(),
-        reason: VersionReason::Watcher,
+        reason: VersionReason::from_str_or_watcher(&version.version.reason),
         created_at: DateTime::<Utc>::from_naive_utc_and_offset(version.version.created_at, Utc),
         content_hash: String::new(),
         files: Vec::new(),

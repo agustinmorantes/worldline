@@ -2,6 +2,7 @@ use crate::detection::{self, Command, CommandSender, NotificationReceiver};
 use crate::install_scanner::InstallScannerItem;
 use crate::models::*;
 use crate::persistence::{GameRepository, ScanRootsRepository, VersionRepository};
+use crate::repository::VersionReason;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
@@ -97,7 +98,7 @@ impl TimelineCore {
                 .get_game(game_id)
                 .context("Failed to load game before slot creation")?;
 
-            self.checkpoint_current_state(&current_game)
+            self.checkpoint_current_state(&current_game, VersionReason::PreSlotCreate)
                 .context("Failed to checkpoint current slot before creating a new slot")?;
 
             let slot = self
@@ -119,7 +120,7 @@ impl TimelineCore {
 
             let baseline = self
                 .versions_repo
-                .create_version(game_id)
+                .create_version(game_id, VersionReason::Initial)
                 .context("Failed to create empty baseline for new slot")?;
 
             self.ensure_empty_snapshot_dirs(&active_game, &baseline)
@@ -149,7 +150,7 @@ impl TimelineCore {
                 return Ok(current_game);
             }
 
-            self.checkpoint_current_state(&current_game)
+            self.checkpoint_current_state(&current_game, VersionReason::PreSwitch)
                 .context("Failed to checkpoint current slot before switching")?;
 
             self.games_repo
@@ -381,14 +382,18 @@ impl TimelineCore {
         }
     }
 
-    fn checkpoint_current_state(&self, game: &FullGame) -> Result<Option<FullVersion>> {
+    fn checkpoint_current_state(
+        &self,
+        game: &FullGame,
+        reason: VersionReason,
+    ) -> Result<Option<FullVersion>> {
         if game.tracked_dirs.is_empty() {
             return Ok(None);
         }
 
         let version = self
             .versions_repo
-            .create_version(game.game.id)
+            .create_version(game.game.id, reason)
             .context("Failed to create checkpoint version")?;
 
         for dir in &game.tracked_dirs {

@@ -6,6 +6,7 @@ use savegame_timeline_core::models::*;
 use savegame_timeline_core::persistence::sqlite::{SqliteGameRepository, SqliteVersionRepository};
 use savegame_timeline_core::persistence::{GameRepository, VersionRepository};
 use savegame_timeline_core::repository;
+use savegame_timeline_core::repository::VersionReason;
 use tempfile::tempdir;
 
 fn init_db() -> Pool<ConnectionManager<SqliteConnection>> {
@@ -116,7 +117,9 @@ fn test_version_operations() {
     let game = games_repo.save_game(form, None).unwrap();
 
     // Create version
-    let version = versions_repo.create_version(game.id).unwrap();
+    let version = versions_repo
+        .create_version(game.id, VersionReason::Manual)
+        .unwrap();
     assert_eq!(version.version.version_number, 1);
     assert!(
         version
@@ -220,7 +223,9 @@ fn test_repository_metadata_is_written_for_game_and_version() {
         repository::read_metadata_json(&slot_dir).unwrap();
     assert_eq!(slot_metadata.game_uuid, game_metadata.uuid);
 
-    let version = versions_repo.create_version(game.id).unwrap();
+    let version = versions_repo
+        .create_version(game.id, VersionReason::Manual)
+        .unwrap();
     let version_dir =
         repository::version_dir(&slot_dir, version.version.folder_slug.as_deref().unwrap());
     let version_metadata: repository::VersionMetadata =

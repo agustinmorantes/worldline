@@ -1,6 +1,7 @@
 use crate::detection::{Notification, NotificationSender};
 use crate::models::{FullGame, FullVersion, MonitoringSettings, TrackedDir};
 use crate::persistence::{GameRepository, VersionRepository};
+use crate::repository::VersionReason;
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use notify_debouncer_full::DebouncedEvent;
@@ -243,7 +244,7 @@ impl FsEventHandler {
 
         let version = self
             .versions_repo
-            .create_version(game.game.id)
+            .create_version(game.game.id, VersionReason::Watcher)
             .context("failed to create new version")?;
 
         println!("Created new version with id: {}", version.version.id);
@@ -284,7 +285,7 @@ mod tests {
         versions_repo
             .expect_create_version()
             .times(1)
-            .returning(|game_id| {
+            .returning(|game_id, _reason| {
                 Ok(FullVersion {
                     version: Version {
                         id: 1,
@@ -293,6 +294,7 @@ mod tests {
                         slot_id: 10,
                         version_number: 2,
                         tag: None,
+                        reason: "watcher".to_string(),
                         created_at: Utc::now().naive_utc(),
                         parent_id: Some(1),
                     },
@@ -343,6 +345,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
+                reason: "watcher".to_string(),
                 created_at: (Utc::now() - Duration::minutes(20)).naive_utc(),
                 parent_id: None,
             }),
@@ -360,6 +363,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
+                reason: "watcher".to_string(),
                 created_at: (Utc::now() - Duration::minutes(20)).naive_utc(),
                 parent_id: None,
             }],
@@ -423,7 +427,7 @@ mod tests {
         versions_repo
             .expect_create_version()
             .times(1)
-            .returning(|game_id| {
+            .returning(|game_id, _reason| {
                 Ok(FullVersion {
                     version: Version {
                         id: 2,
@@ -432,6 +436,7 @@ mod tests {
                         slot_id: 10,
                         version_number: 2,
                         tag: None,
+                        reason: "watcher".to_string(),
                         created_at: Utc::now().naive_utc(),
                         parent_id: Some(1),
                     },
@@ -481,6 +486,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
+                reason: "watcher".to_string(),
                 created_at: (Utc::now() - Duration::minutes(16)).naive_utc(),
                 parent_id: None,
             }),
@@ -498,6 +504,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
+                reason: "watcher".to_string(),
                 created_at: (Utc::now() - Duration::minutes(16)).naive_utc(),
                 parent_id: None,
             }],
@@ -561,7 +568,7 @@ mod tests {
         versions_repo
             .expect_create_version()
             .times(1)
-            .returning(|game_id| {
+            .returning(|game_id, _reason| {
                 Ok(FullVersion {
                     version: Version {
                         id: 2,
@@ -570,6 +577,7 @@ mod tests {
                         slot_id: 10,
                         version_number: 2,
                         tag: None,
+                        reason: "watcher".to_string(),
                         created_at: Utc::now().naive_utc(),
                         parent_id: Some(1),
                     },
@@ -705,6 +713,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 3,
                 tag: None,
+                reason: "watcher".to_string(),
                 created_at: Utc::now().naive_utc(),
                 parent_id: None,
             }),
@@ -792,6 +801,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
+                reason: "watcher".to_string(),
                 created_at,
                 parent_id: None,
             }),
@@ -809,6 +819,7 @@ mod tests {
                 slot_id: 10,
                 version_number: 1,
                 tag: None,
+                reason: "watcher".to_string(),
                 created_at,
                 parent_id: None,
             }],

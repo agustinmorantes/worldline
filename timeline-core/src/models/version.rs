@@ -14,6 +14,7 @@ pub struct Version {
     pub version_number: i32,
     pub slot_id: i32,
     pub tag: Option<String>,
+    pub reason: String,
     pub created_at: NaiveDateTime,
     pub parent_id: Option<i32>,
 }
@@ -29,6 +30,7 @@ pub struct VersionForm<'a> {
     pub slot_id: i32,
     pub version_number: i32,
     pub tag: Option<&'a str>,
+    pub reason: String,
     pub created_at: Option<NaiveDateTime>,
     pub parent_id: Option<i32>,
 }
