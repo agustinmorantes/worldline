@@ -5,10 +5,11 @@ use diesel_migrations::MigrationHarness;
 use savegame_timeline_core::MIGRATIONS;
 use savegame_timeline_core::TimelineCore;
 use savegame_timeline_core::models::*;
-use savegame_timeline_core::persistence::GameRepository;
 use savegame_timeline_core::persistence::sqlite::{
     SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
 };
+use savegame_timeline_core::persistence::{GameRepository, VersionRepository};
+use savegame_timeline_core::repository::VersionReason;
 use std::fs;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -791,6 +792,100 @@ fn test_version_reason_is_persisted_per_operation() {
     assert!(
         pre_switch.is_some(),
         "switching away from a slot checkpoints it with reason=pre_switch"
+    );
+}
+
+#[test]
+fn test_restore_version_rejects_orphaned_version_without_mutating_slot() {
+    // NOTE: the brief's own repro (`restore_version(999_999)`) can't expose this
+    // bug. A nonexistent version id fails at the very first `SELECT ... FROM
+    // versions` lookup, and that lookup is identical in the buggy code (inside
+    // `set_active_version`) and the fixed code (inside `get_version`) — so
+    // nothing is ever mutated either way, and the test can't tell old from new
+    // behavior. `game.slots.iter().any(|slot| slot.id == version.slot_id)` is
+    // similarly untestable through the public API: `game` is always fetched via
+    // `version.game.id`, which is itself derived from `version.slot_id`, so that
+    // predicate is tautologically true for any consistent row graph reachable
+    // through the facade.
+    //
+    // This SQLite build enforces foreign keys (confirmed empirically: calling
+    // the facade's own `delete_game` on a game with slots/versions attached
+    // fails with "FOREIGN KEY constraint failed" instead of cascading), so the
+    // app's normal code paths can never actually produce a dangling
+    // version/slot/game graph — every reachable version's slot and game are
+    // guaranteed to exist. To still exercise the validate-then-mutate ordering
+    // this task is about, we manufacture the scenario directly: create two real
+    // versions on the same slot (so the slot's active pointer no longer matches
+    // the older one), then disable FK enforcement on the connection just long
+    // enough to delete the owning game row without cascading, leaving the slot
+    // and both versions as dangling-but-individually-loadable rows — exactly
+    // like a stale foreign version_id would look to `restore_version`.
+    //
+    // Two versions matter here: `create_version` itself sets the slot's
+    // `active_version_id` to whatever it just created, so with only one version
+    // the "before" pointer would already equal the version we try to restore —
+    // making the final assertion vacuously true regardless of the bug. With two
+    // versions, "before" is the *second* version's id, and we attempt to
+    // restore the stale *first* one, so any mutation is actually observable.
+    let h = harness("live-state");
+    let game = h.create_game("Ownership Test");
+    let versions_repo = SqliteVersionRepository::with_repository_root(
+        h.pool.clone(),
+        h.working_base.path().to_path_buf(),
+    );
+
+    let v1 = versions_repo
+        .create_version(game.id, VersionReason::Watcher)
+        .unwrap();
+    let v2 = versions_repo
+        .create_version(game.id, VersionReason::Watcher)
+        .unwrap();
+    let default_slot_id = v2.slot.id;
+    let before = v2.slot.active_version_id;
+    assert_eq!(
+        before,
+        Some(v2.version.id),
+        "sanity check: creating a version activates it"
+    );
+    assert_ne!(
+        v1.version.id, v2.version.id,
+        "sanity check: the two versions must be distinct"
+    );
+
+    // Orphan the graph: disable FK enforcement on this connection just for the
+    // delete, then remove the game row directly so it isn't cascaded away.
+    {
+        use diesel::prelude::*;
+        use savegame_timeline_core::schema::games::dsl as games_dsl;
+        let conn = &mut h.pool.get().unwrap();
+        diesel::sql_query("PRAGMA foreign_keys = OFF")
+            .execute(conn)
+            .unwrap();
+        diesel::delete(games_dsl::games.filter(games_dsl::id.eq(game.id)))
+            .execute(conn)
+            .unwrap();
+    }
+
+    // Attempt to restore the now-stale, now-orphaned first version.
+    let result = h.core.restore_version(v1.version.id);
+    assert!(
+        result.is_err(),
+        "restoring a version whose owning game no longer exists must fail"
+    );
+
+    let after: Option<i32> = {
+        use diesel::prelude::*;
+        use savegame_timeline_core::schema::slots::dsl as slots_dsl;
+        let conn = &mut h.pool.get().unwrap();
+        slots_dsl::slots
+            .filter(slots_dsl::id.eq(default_slot_id))
+            .select(slots_dsl::active_version_id)
+            .first(conn)
+            .unwrap()
+    };
+    assert_eq!(
+        before, after,
+        "a failed restore must not mutate the slot's active_version_id pointer"
     );
 }
 

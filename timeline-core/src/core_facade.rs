@@ -3,7 +3,7 @@ use crate::install_scanner::InstallScannerItem;
 use crate::models::*;
 use crate::persistence::{GameRepository, ScanRootsRepository, VersionRepository};
 use crate::repository::VersionReason;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -191,21 +191,35 @@ impl TimelineCore {
 
     pub fn restore_version(&self, version_id: i32) -> Result<()> {
         self.run_with_paused_watcher(|| {
+            // Read and validate BEFORE any filesystem mutation.
             let version = self
                 .versions_repo
-                .set_active_version(version_id)
-                .context("Failed to activate version for restoration")?;
+                .get_version(version_id)
+                .context("Failed to load version for restoration")?;
             let game = self
                 .games_repo
                 .get_game(version.game.id)
                 .context("Failed to reload game for restoration")?;
 
+            if !game
+                .slots
+                .iter()
+                .any(|slot| slot.id == version.version.slot_id)
+            {
+                return Err(anyhow!(
+                    "Version {} does not belong to game {}",
+                    version_id,
+                    game.game.id
+                ));
+            }
+
+            self.versions_repo
+                .set_active_version(version_id)
+                .context("Failed to activate version for restoration")?;
             self.restore_version_files(&game, &version)
                 .context("Failed to restore version files")?;
             self.resync_game_metadata(game.game.id)
                 .context("Failed to sync metadata after restoration")?;
-
-            println!("Restored version {} for game {}", version_id, game.game.id);
 
             Ok(())
         })
