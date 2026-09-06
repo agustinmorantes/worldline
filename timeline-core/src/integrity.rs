@@ -581,6 +581,17 @@ mod tests {
     }
 
     #[test]
+    fn shallow_check_ignores_blob_size_mismatch() {
+        let fixture = IntegrityFixture::valid();
+        fixture.write_wrong_size_blob();
+
+        let report = check_repository(fixture.root(), false);
+
+        assert!(!report.has_kind(RepositoryIssueKind::BlobSizeMismatch));
+        assert!(report.issues.is_empty());
+    }
+
+    #[test]
     fn unsupported_format_stops_descendant_interpretation() {
         let fixture = IntegrityFixture::valid();
         fixture.set_format_version(1);
@@ -853,7 +864,7 @@ mod tests {
         }
 
         fn add_malformed_version_metadata(&self) {
-            let dir = self.version_dir.parent().unwrap().join("v005__v_00000000");
+            let dir = self.version_dir.parent().unwrap().join("v000__v_00000000");
             fs::create_dir_all(&dir).unwrap();
             fs::write(repository::metadata_path(&dir), b"not json").unwrap();
         }
