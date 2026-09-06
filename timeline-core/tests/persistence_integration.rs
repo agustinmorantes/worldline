@@ -27,6 +27,73 @@ fn empty_snapshot() -> CapturedSnapshot {
 }
 
 #[test]
+fn tracked_directory_reactivation_preserves_identity() {
+    use diesel::prelude::*;
+    use savegame_timeline_core::schema::tracked_dirs::dsl;
+    let pool = init_db();
+    let root = tempdir().unwrap();
+    let repo = SqliteGameRepository::with_repository_root(pool.clone(), root.path().to_path_buf());
+    let form = |id| GameForm {
+        id,
+        uuid: None,
+        title: "Directory history",
+        title_normalized: None,
+        folder_slug: None,
+        active_slot_id: None,
+        icon_path: None,
+    };
+    let game = repo
+        .save_game(form(None), Some(vec!["/history/a", "/history/b"]))
+        .unwrap();
+    let original = repo.get_game(game.id).unwrap().tracked_dirs.remove(0);
+    {
+        diesel::update(dsl::tracked_dirs.filter(dsl::id.eq(original.id)))
+            .set(dsl::exclusions.eq(r#"["*.cfg"]"#))
+            .execute(&mut pool.get().unwrap())
+            .unwrap();
+    }
+    repo.save_game(form(Some(game.id)), Some(vec!["/history/a", "/history/b"]))
+        .unwrap();
+    repo.save_game(form(Some(game.id)), Some(vec!["/history/b"]))
+        .unwrap();
+    assert_eq!(repo.get_game(game.id).unwrap().tracked_dirs.len(), 1);
+    assert_eq!(repo.get_games().unwrap()[0].tracked_dirs.len(), 1);
+    let retired: Option<chrono::NaiveDateTime> = dsl::tracked_dirs
+        .filter(dsl::id.eq(original.id))
+        .select(dsl::retired_at)
+        .first(&mut pool.get().unwrap())
+        .expect("removed row must remain");
+    assert!(retired.is_some());
+    let entity = repository::tracked_dir_dir(
+        &repository::game_dir(root.path(), game.folder_slug.as_deref().unwrap()),
+        original.folder_slug.as_deref().unwrap(),
+    );
+    let metadata: repository::TrackedDirMetadata = repository::read_metadata_json(&entity).unwrap();
+    assert!(metadata.retired_at.is_some());
+    assert_eq!(metadata.exclusions, vec!["*.cfg"]);
+    repo.save_game(form(Some(game.id)), Some(vec!["/history/a", "/history/b"]))
+        .unwrap();
+    let restored = repo
+        .get_game(game.id)
+        .unwrap()
+        .tracked_dirs
+        .into_iter()
+        .find(|dir| dir.path == "/history/a")
+        .unwrap();
+    assert_eq!(restored.uuid, original.uuid);
+    assert_eq!(restored.folder_slug, original.folder_slug);
+    let retired: Option<chrono::NaiveDateTime> = dsl::tracked_dirs
+        .filter(dsl::id.eq(original.id))
+        .select(dsl::retired_at)
+        .first(&mut pool.get().unwrap())
+        .unwrap();
+    assert!(retired.is_none());
+    let metadata: repository::TrackedDirMetadata = repository::read_metadata_json(&entity).unwrap();
+    assert!(metadata.retired_at.is_none());
+    assert_eq!(metadata.exclusions, vec!["*.cfg"]);
+}
+
+#[test]
 fn test_game_crud() {
     let pool = init_db();
     let games_repo = SqliteGameRepository::new(pool.clone());

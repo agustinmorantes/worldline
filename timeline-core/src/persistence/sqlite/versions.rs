@@ -308,6 +308,7 @@ fn load_full_game(conn: &mut diesel::SqliteConnection, id: i32) -> Result<crate:
         .context("Error loading game")?;
 
     let dirs: Vec<crate::models::TrackedDir> = crate::models::TrackedDir::belonging_to(&game)
+        .filter(crate::schema::tracked_dirs::retired_at.is_null())
         .select(crate::models::TrackedDir::as_select())
         .load(conn)?;
 

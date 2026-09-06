@@ -77,6 +77,69 @@ fn unchanged_checkpoint_reuses_active_version_and_changed_checkpoint_captures_ev
 }
 
 #[test]
+fn restore_resolves_retired_tracked_directories() {
+    let mut harness = TwoDirHarness::new();
+    let initial = harness.active_version();
+    let form = |id| GameForm {
+        id: Some(id),
+        uuid: None,
+        title: "Two Directory Test",
+        title_normalized: None,
+        folder_slug: None,
+        active_slot_id: None,
+        icon_path: None,
+    };
+    harness
+        .core
+        .save_game(
+            form(harness.game.game.id),
+            Some(vec![harness.second_dir.to_str().unwrap()]),
+        )
+        .unwrap();
+    fs::write(harness.first_dir.join("first.dat"), b"retired changes").unwrap();
+    fs::write(harness.second_dir.join("second.dat"), b"live changes").unwrap();
+    harness.core.restore_version(initial.version.id).unwrap();
+    assert_eq!(
+        fs::read(harness.first_dir.join("first.dat")).unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        fs::read(harness.second_dir.join("second.dat")).unwrap(),
+        b"second"
+    );
+    harness
+        .core
+        .save_game(
+            form(harness.game.game.id),
+            Some(vec![
+                harness.first_dir.to_str().unwrap(),
+                harness.second_dir.to_str().unwrap(),
+            ]),
+        )
+        .unwrap();
+    harness.game = harness.core.get_game(harness.game.game.id).unwrap();
+    fs::write(harness.first_dir.join("new.dat"), b"new checkpoint").unwrap();
+    let CheckpointOutcome::Created(captured) = harness.checkpoint(VersionReason::Manual) else {
+        panic!("changed files must create a checkpoint");
+    };
+    let metadata = harness.read_version_metadata(&captured);
+    assert!(
+        metadata
+            .files
+            .iter()
+            .any(|file| file.tracked_dir_uuid == harness.first_uuid
+                && file.relative_path == "new.dat")
+    );
+    assert!(
+        metadata
+            .files
+            .iter()
+            .any(|file| file.tracked_dir_uuid == harness.second_uuid
+                && file.relative_path == "second.dat")
+    );
+}
+
+#[test]
 fn restore_uses_manifest_as_the_complete_listing() {
     let harness = RestoreHarness::version_with_files(&[("keep.dat", b"old")]);
     fs::write(harness.live_dir.join("extra.dat"), b"must disappear").unwrap();

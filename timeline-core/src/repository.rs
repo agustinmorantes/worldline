@@ -389,6 +389,32 @@ pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame
     };
     write_metadata_json(&game_entity_dir, &game_metadata)?;
 
+    let active_uuids = game
+        .tracked_dirs
+        .iter()
+        .map(|dir| parse_uuid_field(dir.uuid.as_deref(), "tracked_dir.uuid"))
+        .collect::<Result<std::collections::HashSet<_>>>()?;
+    let tracked_root = tracked_dirs_dir(&game_entity_dir);
+    if tracked_root.exists() {
+        for entry in fs::read_dir(&tracked_root)? {
+            let path = entry?.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let mut metadata: TrackedDirMetadata = read_metadata_json(&path)?;
+            if metadata.game_uuid != game_uuid {
+                return Err(anyhow!(
+                    "Tracked directory metadata belongs to another game"
+                ));
+            }
+            if !active_uuids.contains(&metadata.uuid) && metadata.retired_at.is_none() {
+                metadata.retired_at = Some(now);
+                metadata.updated_at = now;
+                write_metadata_json(&path, &metadata)?;
+            }
+        }
+    }
+
     for tracked_dir in &game.tracked_dirs {
         let tracked_uuid = parse_uuid_field(tracked_dir.uuid.as_deref(), "tracked_dir.uuid")?;
         let tracked_slug = validate_folder_slug(
@@ -407,7 +433,10 @@ pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame
                 &tracked_dir.path,
             )),
             label: None,
-            exclusions: Vec::new(),
+            exclusions: crate::exclusions::parse(&tracked_dir.exclusions)
+                .iter()
+                .map(|pattern| pattern.as_str().to_string())
+                .collect(),
             folder_slug: tracked_slug.to_string(),
             retired_at: None,
             created_at: existing_metadata

@@ -609,43 +609,92 @@ impl TimelineCore {
         let metadata: crate::repository::VersionMetadata =
             crate::repository::read_metadata_json(&version_dir)
                 .context("Failed to read version metadata")?;
+        let game_uuid = uuid::Uuid::parse_str(
+            game.game
+                .uuid
+                .as_deref()
+                .context("Game is missing a UUID")?,
+        )?;
+        let mut roots = std::collections::HashMap::new();
+        let mut restore_roots = std::collections::BTreeMap::new();
+        for dir in &game.tracked_dirs {
+            let uuid = uuid::Uuid::parse_str(
+                dir.uuid
+                    .as_deref()
+                    .context("Tracked directory is missing a UUID")?,
+            )?;
+            let path = PathBuf::from(&dir.path);
+            let exclusions = crate::exclusions::parse(&dir.exclusions);
+            if let Some((previous, _)) = roots.insert(uuid, (path.clone(), exclusions.clone())) {
+                anyhow::ensure!(
+                    previous == path,
+                    "Conflicting paths for tracked directory {uuid}"
+                );
+            }
+            restore_roots.entry(path).or_insert(exclusions);
+        }
+        let tracked_root = crate::repository::tracked_dirs_dir(&crate::repository::game_dir(
+            &self.working_base,
+            game_folder_slug,
+        ));
+        if tracked_root.exists() {
+            for entry in std::fs::read_dir(tracked_root)? {
+                let entity_dir = entry?.path();
+                if !entity_dir.is_dir() {
+                    continue;
+                }
+                let dir: crate::repository::TrackedDirMetadata =
+                    crate::repository::read_metadata_json(&entity_dir)?;
+                anyhow::ensure!(
+                    dir.game_uuid == game_uuid,
+                    "Tracked directory metadata belongs to another game"
+                );
+                let path = PathBuf::from(crate::path_placeholders::expand_path_placeholders(
+                    &dir.path,
+                ));
+                if let Some((previous, _)) = roots.get(&dir.uuid) {
+                    anyhow::ensure!(
+                        *previous == path,
+                        "Conflicting paths for tracked directory {}",
+                        dir.uuid
+                    );
+                } else {
+                    let exclusions = dir
+                        .exclusions
+                        .iter()
+                        .filter_map(|pattern| glob::Pattern::new(pattern).ok())
+                        .collect();
+                    roots.insert(dir.uuid, (path, exclusions));
+                }
+            }
+        }
+        for file in &metadata.files {
+            let (path, exclusions) = roots.get(&file.tracked_dir_uuid).with_context(|| {
+                format!(
+                    "Version references unknown tracked directory {}",
+                    file.tracked_dir_uuid
+                )
+            })?;
+            restore_roots
+                .entry(path.clone())
+                .or_insert_with(|| exclusions.clone());
+        }
         let validated_files =
             crate::content_store::validate_snapshot_blobs(&self.working_base, &metadata)
                 .context("Failed to validate snapshot manifest")?;
         let mut files = Vec::new();
         for (file, blob) in validated_files {
-            let tracked_dir = game
-                .tracked_dirs
-                .iter()
-                .find(|dir| {
-                    dir.uuid
-                        .as_deref()
-                        .and_then(|uuid| uuid::Uuid::parse_str(uuid).ok())
-                        == Some(file.tracked_dir_uuid)
-                })
-                .with_context(|| {
-                    format!(
-                        "Version references unknown tracked directory {}",
-                        file.tracked_dir_uuid
-                    )
-                })?;
+            let (path, exclusions) = &roots[&file.tracked_dir_uuid];
             let relative = Path::new(&file.relative_path);
-            if crate::exclusions::is_excluded(
-                &crate::exclusions::parse(&tracked_dir.exclusions),
-                relative,
-            ) {
+            if crate::exclusions::is_excluded(exclusions, relative) {
                 continue;
             }
-            files.push((
-                PathBuf::from(&tracked_dir.path),
-                relative.to_path_buf(),
-                blob,
-            ));
+            files.push((path.clone(), relative.to_path_buf(), blob));
         }
 
-        for dir in &game.tracked_dirs {
-            crate::fs_utils::validate_restore_path(Path::new(&dir.path), Path::new(""))
-                .with_context(|| format!("Unsafe tracked dir {}", dir.path))?;
+        for path in restore_roots.keys() {
+            crate::fs_utils::validate_restore_path(path, Path::new(""))
+                .with_context(|| format!("Unsafe tracked dir {}", path.display()))?;
         }
         for (live_dir, relative, _) in &files {
             crate::fs_utils::validate_restore_path(live_dir, relative).with_context(|| {
@@ -656,16 +705,14 @@ impl TimelineCore {
             })?;
         }
 
-        for dir in &game.tracked_dirs {
-            let live_dir = PathBuf::from(&dir.path);
-            let exclusions = crate::exclusions::parse(&dir.exclusions);
+        for (live_dir, exclusions) in &restore_roots {
             if live_dir.exists() {
-                crate::fs_utils::clear_dir_except(&live_dir, &exclusions).with_context(|| {
+                crate::fs_utils::clear_dir_except(live_dir, exclusions).with_context(|| {
                     format!("Failed to clear live tracked dir {}", live_dir.display())
                 })?;
             }
 
-            std::fs::create_dir_all(&live_dir).with_context(|| {
+            std::fs::create_dir_all(live_dir).with_context(|| {
                 format!(
                     "Failed to recreate empty tracked dir {}",
                     live_dir.display()

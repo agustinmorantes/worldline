@@ -32,6 +32,7 @@ impl GameRepository for SqliteGameRepository {
             .context("Error loading games")?;
 
         let dirs = TrackedDir::belonging_to(&all_games)
+            .filter(crate::schema::tracked_dirs::retired_at.is_null())
             .select(TrackedDir::as_select())
             .load(conn)?;
 
@@ -295,38 +296,46 @@ impl GameRepository for SqliteGameRepository {
                 .context("Error saving new game")?;
 
             if let Some(dirs) = dirs {
-                diesel::delete(
+                let now = Utc::now().naive_utc();
+                diesel::update(
                     dsl::tracked_dirs.filter(
                         tracked_dirs::game_id
                             .eq(res.id)
-                            .and(tracked_dirs::path.ne_all(&dirs)),
+                            .and(tracked_dirs::path.ne_all(&dirs))
+                            .and(tracked_dirs::retired_at.is_null()),
                     ),
                 )
+                .set((dsl::retired_at.eq(Some(now)), dsl::updated_at.eq(now)))
                 .execute(conn)
-                .context("Error deleting old tracked dirs")?;
+                .context("Error retiring old tracked dirs")?;
 
-                let new_dirs: Vec<TrackedDirForm> = dirs
-                    .iter()
-                    .map(|path| {
-                        let uuid = Uuid::new_v4();
-                        TrackedDirForm {
-                            uuid: Some(uuid.to_string()),
-                            folder_slug: Some(crate::repository::build_folder_slug(
-                                crate::repository::RepositoryEntityKind::TrackedDir,
-                                tracked_dir_slug_source(path),
-                                uuid,
-                            )),
-                            game_id: res.id,
-                            path,
-                            id: None,
-                        }
-                    })
-                    .collect();
-
-                // Can't do bulk insert with on_conflict do nothing.
-                for dir in &new_dirs {
+                for path in dirs {
+                    let reactivated = diesel::update(
+                        dsl::tracked_dirs.filter(dsl::game_id.eq(res.id).and(dsl::path.eq(path))),
+                    )
+                    .set((
+                        dsl::retired_at.eq(None::<chrono::NaiveDateTime>),
+                        dsl::updated_at.eq(now),
+                    ))
+                    .execute(conn)
+                    .context("Error reactivating tracked dir")?;
+                    if reactivated > 0 {
+                        continue;
+                    }
+                    let uuid = Uuid::new_v4();
+                    let dir = TrackedDirForm {
+                        uuid: Some(uuid.to_string()),
+                        folder_slug: Some(crate::repository::build_folder_slug(
+                            crate::repository::RepositoryEntityKind::TrackedDir,
+                            tracked_dir_slug_source(path),
+                            uuid,
+                        )),
+                        game_id: res.id,
+                        path,
+                        id: None,
+                    };
                     diesel::insert_into(tracked_dirs::table)
-                        .values(dir)
+                        .values(&dir)
                         .on_conflict(tracked_dirs::path)
                         .do_nothing()
                         .execute(conn)
@@ -374,6 +383,7 @@ fn load_full_game(conn: &mut diesel::SqliteConnection, id: i32) -> Result<FullGa
         .context("Error loading game")?;
 
     let dirs: Vec<TrackedDir> = TrackedDir::belonging_to(&game)
+        .filter(crate::schema::tracked_dirs::retired_at.is_null())
         .select(TrackedDir::as_select())
         .load(conn)?;
 
