@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::models::TrackedDir;
-use crate::repository::VersionFileMetadata;
+use crate::repository::{VersionFileMetadata, VersionMetadata};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CapturedSnapshot {
@@ -77,12 +77,41 @@ pub fn capture_snapshot(
             .cmp(&b.tracked_dir_uuid)
             .then_with(|| a.relative_path.cmp(&b.relative_path))
     });
-    let manifest = serde_json::to_vec(&files).context("failed to serialize snapshot manifest")?;
-    let content_hash = format_hash(&Sha256::digest(manifest));
+    let content_hash = snapshot_content_hash(&files)?;
     Ok(CapturedSnapshot {
         content_hash,
         files,
     })
+}
+
+pub(crate) fn snapshot_content_hash(files: &[VersionFileMetadata]) -> Result<String> {
+    let manifest = serde_json::to_vec(files).context("failed to serialize snapshot manifest")?;
+    Ok(format_hash(&Sha256::digest(manifest)))
+}
+
+pub fn validate_snapshot_blobs(
+    repository_root: &Path,
+    metadata: &VersionMetadata,
+) -> Result<Vec<(VersionFileMetadata, PathBuf)>> {
+    parse_hash(&metadata.content_hash).context("invalid snapshot content hash")?;
+    let actual_content_hash = snapshot_content_hash(&metadata.files)?;
+    if actual_content_hash != metadata.content_hash {
+        return Err(anyhow!(
+            "snapshot content hash mismatch: expected {}, got {}",
+            metadata.content_hash,
+            actual_content_hash
+        ));
+    }
+
+    metadata
+        .files
+        .iter()
+        .map(|file| {
+            validate_relative_path(&file.relative_path)?;
+            let blob = verify_blob(repository_root, &file.sha256, file.size)?;
+            Ok((file.clone(), blob))
+        })
+        .collect()
 }
 
 pub fn blob_path(repository_root: &Path, hash: &str) -> Result<PathBuf> {
@@ -116,6 +145,26 @@ pub fn verify_blob(repository_root: &Path, hash: &str, expected_size: u64) -> Re
         return Err(anyhow!("blob {} failed SHA-256 verification", hash));
     }
     Ok(path)
+}
+
+fn validate_relative_path(relative_path: &str) -> Result<()> {
+    let path = Path::new(relative_path);
+    let mut has_normal_component = false;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => has_normal_component = true,
+            std::path::Component::CurDir => {}
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::ParentDir => {
+                return Err(anyhow!("unsafe snapshot relative path {relative_path}"));
+            }
+        }
+    }
+    if path.is_absolute() || path.has_root() || !has_normal_component {
+        return Err(anyhow!("unsafe snapshot relative path {relative_path}"));
+    }
+    Ok(())
 }
 
 fn collect_regular_files(

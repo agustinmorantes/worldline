@@ -11,6 +11,7 @@ use savegame_timeline_core::persistence::sqlite::{
 };
 use savegame_timeline_core::persistence::{GameRepository, VersionRepository};
 use savegame_timeline_core::repository::VersionReason;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,6 +54,95 @@ fn unchanged_checkpoint_reuses_active_version_and_changed_checkpoint_captures_ev
             .iter()
             .any(|file| file.tracked_dir_uuid == harness.second_uuid)
     );
+}
+
+#[test]
+fn restore_uses_manifest_as_the_complete_listing() {
+    let harness = RestoreHarness::version_with_files(&[("keep.dat", b"old")]);
+    fs::write(harness.live_dir.join("extra.dat"), b"must disappear").unwrap();
+    harness.core.restore_version(harness.version.id).unwrap();
+    assert_eq!(fs::read(harness.live_dir.join("keep.dat")).unwrap(), b"old");
+    assert!(!harness.live_dir.join("extra.dat").exists());
+}
+
+#[test]
+fn corrupt_blob_aborts_before_live_files_are_cleared() {
+    let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
+    fs::write(harness.blob_for("save.dat"), b"corrupt").unwrap();
+    fs::write(harness.live_dir.join("save.dat"), b"current progress").unwrap();
+    assert!(harness.core.restore_version(harness.version.id).is_err());
+    assert_eq!(
+        fs::read(harness.live_dir.join("save.dat")).unwrap(),
+        b"current progress"
+    );
+}
+
+#[test]
+fn content_hash_mismatch_aborts_before_live_files_are_cleared() {
+    let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
+    let metadata_path = harness.version_dir.join("metadata.json");
+    let mut metadata: savegame_timeline_core::repository::VersionMetadata =
+        savegame_timeline_core::repository::read_metadata_json(&harness.version_dir).unwrap();
+    metadata.content_hash =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    fs::write(metadata_path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
+    fs::write(harness.live_dir.join("save.dat"), b"current progress").unwrap();
+
+    assert!(harness.core.restore_version(harness.version.id).is_err());
+    assert_eq!(
+        fs::read(harness.live_dir.join("save.dat")).unwrap(),
+        b"current progress"
+    );
+}
+
+#[test]
+fn unsafe_manifest_path_aborts_before_live_files_are_cleared() {
+    let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
+    harness.rewrite_manifest(|metadata| {
+        metadata.files[0].relative_path = "../outside.dat".to_string();
+    });
+    fs::write(harness.live_dir.join("save.dat"), b"current progress").unwrap();
+
+    assert!(harness.core.restore_version(harness.version.id).is_err());
+    assert_eq!(
+        fs::read(harness.live_dir.join("save.dat")).unwrap(),
+        b"current progress"
+    );
+}
+
+#[test]
+fn unknown_tracked_directory_aborts_before_live_files_are_cleared() {
+    let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
+    harness.rewrite_manifest(|metadata| {
+        metadata.files[0].tracked_dir_uuid = Uuid::new_v4();
+    });
+    fs::write(harness.live_dir.join("save.dat"), b"current progress").unwrap();
+
+    assert!(harness.core.restore_version(harness.version.id).is_err());
+    assert_eq!(
+        fs::read(harness.live_dir.join("save.dat")).unwrap(),
+        b"current progress"
+    );
+}
+
+#[test]
+fn missing_and_same_size_corrupt_blobs_abort_before_live_files_are_cleared() {
+    for corrupt_blob in [false, true] {
+        let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
+        let blob = harness.blob_for("save.dat");
+        if corrupt_blob {
+            fs::write(blob, b"bad bytes!").unwrap();
+        } else {
+            fs::remove_file(blob).unwrap();
+        }
+        fs::write(harness.live_dir.join("save.dat"), b"current progress").unwrap();
+
+        assert!(harness.core.restore_version(harness.version.id).is_err());
+        assert_eq!(
+            fs::read(harness.live_dir.join("save.dat")).unwrap(),
+            b"current progress"
+        );
+    }
 }
 
 #[test]
@@ -511,11 +601,20 @@ fn test_slot_creation_and_switching_preserve_independent_histories() {
     );
 
     let second_game = core.switch_slot(game.id, second_slot_id).unwrap();
+    assert_eq!(
+        fs::read_dir(source_dir.path()).unwrap().count(),
+        0,
+        "the unchanged second slot must restore its empty baseline"
+    );
     fs::write(&save_file, "slot-two-state").unwrap();
     assert_eq!(
         second_game.active_slot.as_ref().unwrap().name,
         "Second Slot"
     );
+
+    core.switch_slot(game.id, default_slot_id).unwrap();
+    assert_eq!(fs::read_to_string(&save_file).unwrap(), "slot-one-state");
+    core.switch_slot(game.id, second_slot_id).unwrap();
     assert_eq!(fs::read_to_string(&save_file).unwrap(), "slot-two-state");
 }
 
@@ -761,6 +860,136 @@ fn test_version_metadata_records_parent_uuid() {
 
 /// Everything a facade test needs. Fields are kept alive by the struct:
 /// dropping a `TempDir` deletes it, so these must outlive the test body.
+struct RestoreHarness {
+    core: TimelineCore,
+    version: Version,
+    live_dir: PathBuf,
+    repository_root: PathBuf,
+    version_dir: PathBuf,
+    _data_dir: tempfile::TempDir,
+    _live_dir: tempfile::TempDir,
+    _icons_dir: tempfile::TempDir,
+    _notif_rx: savegame_timeline_core::detection::NotificationReceiver,
+}
+
+impl RestoreHarness {
+    fn version_with_files(files: &[(&str, &[u8])]) -> Self {
+        let pool = init_db();
+        let data_dir = tempdir().unwrap();
+        let repository_root = data_dir.path().join("repository");
+        let live_dir = tempdir().unwrap();
+        let icons_dir = tempdir().unwrap();
+        for (relative_path, contents) in files {
+            let path = live_dir.path().join(relative_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+
+        let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+            pool.clone(),
+            repository_root.clone(),
+        ));
+        let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+            pool.clone(),
+            repository_root.clone(),
+        ));
+        let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool));
+        let (core, notif_rx) = TimelineCore::new(
+            games_repo,
+            versions_repo,
+            scan_roots_repo,
+            repository_root.clone(),
+            icons_dir.path().to_path_buf(),
+            Some(0.1),
+        )
+        .unwrap();
+        let game = core
+            .save_game(
+                GameForm {
+                    id: None,
+                    uuid: None,
+                    title: "Restore Test",
+                    title_normalized: None,
+                    folder_slug: None,
+                    active_slot_id: None,
+                    icon_path: None,
+                },
+                Some(vec![live_dir.path().to_str().unwrap()]),
+            )
+            .unwrap();
+        let default_slot_id = core.get_game(game.id).unwrap().active_slot.unwrap().id;
+        core.create_slot(game.id, "Scratch").unwrap();
+        let default_slot = core
+            .get_slots(game.id)
+            .unwrap()
+            .into_iter()
+            .find(|slot| slot.slot.id == default_slot_id)
+            .unwrap();
+        let version = default_slot
+            .versions
+            .iter()
+            .find(|version| version.reason == "pre_slot_create")
+            .unwrap()
+            .clone();
+        let version_dir = savegame_timeline_core::repository::version_dir(
+            &savegame_timeline_core::repository::slot_dir(
+                &savegame_timeline_core::repository::game_dir(
+                    &repository_root,
+                    default_slot.game.folder_slug.as_deref().unwrap(),
+                ),
+                &default_slot.slot.folder_slug,
+            ),
+            version.folder_slug.as_deref().unwrap(),
+        );
+
+        Self {
+            core,
+            version,
+            live_dir: live_dir.path().to_path_buf(),
+            repository_root,
+            version_dir,
+            _data_dir: data_dir,
+            _live_dir: live_dir,
+            _icons_dir: icons_dir,
+            _notif_rx: notif_rx,
+        }
+    }
+
+    fn blob_for(&self, relative_path: &str) -> PathBuf {
+        let metadata: savegame_timeline_core::repository::VersionMetadata =
+            savegame_timeline_core::repository::read_metadata_json(&self.version_dir).unwrap();
+        let file = metadata
+            .files
+            .iter()
+            .find(|file| file.relative_path == relative_path)
+            .unwrap();
+        savegame_timeline_core::content_store::blob_path(&self.repository_root, &file.sha256)
+            .unwrap()
+    }
+
+    fn rewrite_manifest(
+        &self,
+        mutate: impl FnOnce(&mut savegame_timeline_core::repository::VersionMetadata),
+    ) {
+        let mut metadata: savegame_timeline_core::repository::VersionMetadata =
+            savegame_timeline_core::repository::read_metadata_json(&self.version_dir).unwrap();
+        mutate(&mut metadata);
+        let manifest = serde_json::to_vec(&metadata.files).unwrap();
+        metadata.content_hash = format!("sha256:{:x}", Sha256::digest(manifest));
+        fs::write(
+            self.version_dir.join("metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+impl Drop for RestoreHarness {
+    fn drop(&mut self) {
+        self.core.shutdown();
+    }
+}
+
 #[allow(dead_code)]
 struct TwoDirHarness {
     core: TimelineCore,

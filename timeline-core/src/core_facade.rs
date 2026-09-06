@@ -604,8 +604,11 @@ impl TimelineCore {
         let metadata: crate::repository::VersionMetadata =
             crate::repository::read_metadata_json(&version_dir)
                 .context("Failed to read version metadata")?;
+        let validated_files =
+            crate::content_store::validate_snapshot_blobs(&self.working_base, &metadata)
+                .context("Failed to validate snapshot manifest")?;
         let mut files = Vec::new();
-        for file in &metadata.files {
+        for (file, blob) in validated_files {
             let tracked_dir = game
                 .tracked_dirs
                 .iter()
@@ -622,25 +625,12 @@ impl TimelineCore {
                     )
                 })?;
             let relative = Path::new(&file.relative_path);
-            if relative.is_absolute()
-                || relative.has_root()
-                || relative
-                    .components()
-                    .any(|component| matches!(component, std::path::Component::ParentDir))
-            {
-                return Err(anyhow!(
-                    "Version contains unsafe relative path {}",
-                    file.relative_path
-                ));
-            }
             if crate::exclusions::is_excluded(
                 &crate::exclusions::parse(&tracked_dir.exclusions),
                 relative,
             ) {
                 continue;
             }
-            let blob =
-                crate::content_store::verify_blob(&self.working_base, &file.sha256, file.size)?;
             files.push((
                 PathBuf::from(&tracked_dir.path),
                 relative.to_path_buf(),
