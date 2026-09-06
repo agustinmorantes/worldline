@@ -18,6 +18,26 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use uuid::Uuid;
 
+#[cfg(unix)]
+fn create_directory_link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(windows)]
+fn create_directory_link(target: &Path, link: &Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "failed to create test junction: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn unchanged_checkpoint_reuses_active_version_and_changed_checkpoint_captures_every_directory() {
     let mut harness = TwoDirHarness::new();
@@ -93,6 +113,60 @@ fn content_hash_mismatch_aborts_before_live_files_are_cleared() {
         fs::read(harness.live_dir.join("save.dat")).unwrap(),
         b"current progress"
     );
+}
+
+#[test]
+fn noncanonical_manifest_order_aborts_before_live_files_are_cleared() {
+    let harness = RestoreHarness::version_with_files(&[("a.dat", b"a"), ("b.dat", b"b")]);
+    harness.rewrite_manifest(|metadata| metadata.files.swap(0, 1));
+    fs::write(harness.live_dir.join("a.dat"), b"current progress").unwrap();
+
+    assert!(harness.core.restore_version(harness.version.id).is_err());
+    assert_eq!(
+        fs::read(harness.live_dir.join("a.dat")).unwrap(),
+        b"current progress"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn linked_restore_paths_abort_before_any_tracked_directory_is_mutated() {
+    for link_is_live_root in [false, true] {
+        let second_file = if link_is_live_root {
+            "second.dat"
+        } else {
+            "nested/second.dat"
+        };
+        let harness = RestoreHarness::version_with_directories(&[
+            &[("first.dat", b"old first")],
+            &[(second_file, b"old second")],
+        ]);
+        let first_dir = &harness.live_dir;
+        let second_dir = harness._live_dirs[1].path();
+        let external = tempdir().unwrap();
+        let external_file = external.path().join("second.dat");
+        fs::write(&external_file, b"external progress").unwrap();
+        fs::write(first_dir.join("first.dat"), b"current first").unwrap();
+        fs::write(first_dir.join("extra.dat"), b"current extra").unwrap();
+
+        if link_is_live_root {
+            fs::remove_dir(second_dir).unwrap();
+            create_directory_link(external.path(), second_dir);
+        } else {
+            create_directory_link(external.path(), &second_dir.join("nested"));
+        }
+
+        assert!(harness.core.restore_version(harness.version.id).is_err());
+        assert_eq!(
+            fs::read(first_dir.join("first.dat")).unwrap(),
+            b"current first"
+        );
+        assert_eq!(
+            fs::read(first_dir.join("extra.dat")).unwrap(),
+            b"current extra"
+        );
+        assert_eq!(fs::read(&external_file).unwrap(), b"external progress");
+    }
 }
 
 #[test]
@@ -867,23 +941,33 @@ struct RestoreHarness {
     repository_root: PathBuf,
     version_dir: PathBuf,
     _data_dir: tempfile::TempDir,
-    _live_dir: tempfile::TempDir,
+    _live_dirs: Vec<tempfile::TempDir>,
     _icons_dir: tempfile::TempDir,
     _notif_rx: savegame_timeline_core::detection::NotificationReceiver,
 }
 
 impl RestoreHarness {
     fn version_with_files(files: &[(&str, &[u8])]) -> Self {
+        Self::version_with_directories(&[files])
+    }
+
+    fn version_with_directories(directories: &[&[(&str, &[u8])]]) -> Self {
         let pool = init_db();
         let data_dir = tempdir().unwrap();
         let repository_root = data_dir.path().join("repository");
-        let live_dir = tempdir().unwrap();
+        let live_dirs = directories
+            .iter()
+            .map(|files| {
+                let live_dir = tempdir().unwrap();
+                for (relative_path, contents) in *files {
+                    let path = live_dir.path().join(relative_path);
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    fs::write(path, contents).unwrap();
+                }
+                live_dir
+            })
+            .collect::<Vec<_>>();
         let icons_dir = tempdir().unwrap();
-        for (relative_path, contents) in files {
-            let path = live_dir.path().join(relative_path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, contents).unwrap();
-        }
 
         let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
             pool.clone(),
@@ -914,7 +998,12 @@ impl RestoreHarness {
                     active_slot_id: None,
                     icon_path: None,
                 },
-                Some(vec![live_dir.path().to_str().unwrap()]),
+                Some(
+                    live_dirs
+                        .iter()
+                        .map(|live_dir| live_dir.path().to_str().unwrap())
+                        .collect(),
+                ),
             )
             .unwrap();
         let default_slot_id = core.get_game(game.id).unwrap().active_slot.unwrap().id;
@@ -945,11 +1034,11 @@ impl RestoreHarness {
         Self {
             core,
             version,
-            live_dir: live_dir.path().to_path_buf(),
+            live_dir: live_dirs[0].path().to_path_buf(),
             repository_root,
             version_dir,
             _data_dir: data_dir,
-            _live_dir: live_dir,
+            _live_dirs: live_dirs,
             _icons_dir: icons_dir,
             _notif_rx: notif_rx,
         }

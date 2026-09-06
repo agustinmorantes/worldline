@@ -72,11 +72,7 @@ pub fn capture_snapshot(
         }
     }
 
-    files.sort_by(|a, b| {
-        a.tracked_dir_uuid
-            .cmp(&b.tracked_dir_uuid)
-            .then_with(|| a.relative_path.cmp(&b.relative_path))
-    });
+    sort_manifest_files(&mut files);
     let content_hash = snapshot_content_hash(&files)?;
     Ok(CapturedSnapshot {
         content_hash,
@@ -85,7 +81,10 @@ pub fn capture_snapshot(
 }
 
 pub(crate) fn snapshot_content_hash(files: &[VersionFileMetadata]) -> Result<String> {
-    let manifest = serde_json::to_vec(files).context("failed to serialize snapshot manifest")?;
+    let mut canonical_files = files.to_vec();
+    sort_manifest_files(&mut canonical_files);
+    let manifest =
+        serde_json::to_vec(&canonical_files).context("failed to serialize snapshot manifest")?;
     Ok(format_hash(&Sha256::digest(manifest)))
 }
 
@@ -94,6 +93,13 @@ pub fn validate_snapshot_blobs(
     metadata: &VersionMetadata,
 ) -> Result<Vec<(VersionFileMetadata, PathBuf)>> {
     parse_hash(&metadata.content_hash).context("invalid snapshot content hash")?;
+    let mut canonical_files = metadata.files.clone();
+    sort_manifest_files(&mut canonical_files);
+    if canonical_files != metadata.files {
+        return Err(anyhow!(
+            "snapshot manifest files are not in canonical order"
+        ));
+    }
     let actual_content_hash = snapshot_content_hash(&metadata.files)?;
     if actual_content_hash != metadata.content_hash {
         return Err(anyhow!(
@@ -112,6 +118,14 @@ pub fn validate_snapshot_blobs(
             Ok((file.clone(), blob))
         })
         .collect()
+}
+
+fn sort_manifest_files(files: &mut [VersionFileMetadata]) {
+    files.sort_by(|a, b| {
+        a.tracked_dir_uuid
+            .cmp(&b.tracked_dir_uuid)
+            .then_with(|| a.relative_path.cmp(&b.relative_path))
+    });
 }
 
 pub fn blob_path(repository_root: &Path, hash: &str) -> Result<PathBuf> {

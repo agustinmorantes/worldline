@@ -566,6 +566,11 @@ impl TimelineCore {
 
     fn clear_tracked_dirs(&self, game: &FullGame) -> Result<()> {
         for dir in &game.tracked_dirs {
+            crate::fs_utils::validate_restore_path(Path::new(&dir.path), Path::new(""))
+                .with_context(|| format!("Unsafe tracked dir {}", dir.path))?;
+        }
+
+        for dir in &game.tracked_dirs {
             let live_dir = Path::new(&dir.path);
             if live_dir.exists() {
                 crate::fs_utils::clear_dir_except(
@@ -636,6 +641,19 @@ impl TimelineCore {
                 relative.to_path_buf(),
                 blob,
             ));
+        }
+
+        for dir in &game.tracked_dirs {
+            crate::fs_utils::validate_restore_path(Path::new(&dir.path), Path::new(""))
+                .with_context(|| format!("Unsafe tracked dir {}", dir.path))?;
+        }
+        for (live_dir, relative, _) in &files {
+            crate::fs_utils::validate_restore_path(live_dir, relative).with_context(|| {
+                format!(
+                    "Unsafe restore destination {}",
+                    live_dir.join(relative).display()
+                )
+            })?;
         }
 
         for dir in &game.tracked_dirs {
