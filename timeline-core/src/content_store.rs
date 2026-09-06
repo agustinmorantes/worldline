@@ -39,7 +39,7 @@ pub fn capture_snapshot(
         let root = Path::new(&tracked_dir.path);
         let exclusions = crate::exclusions::parse(&tracked_dir.exclusions);
         let mut paths = Vec::new();
-        collect_regular_files(root, &mut paths)?;
+        collect_regular_files(root, &exclusions, Path::new(""), true, &mut paths)?;
         paths.sort();
 
         for path in paths {
@@ -118,16 +118,38 @@ pub fn verify_blob(repository_root: &Path, hash: &str, expected_size: u64) -> Re
     Ok(path)
 }
 
-fn collect_regular_files(current: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(current)
-        .with_context(|| format!("failed to read tracked directory {}", current.display()))?
-    {
+fn collect_regular_files(
+    current: &Path,
+    exclusions: &[glob::Pattern],
+    relative: &Path,
+    is_root: bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let entries = match fs::read_dir(current) {
+        Ok(entries) => entries,
+        Err(error) if is_root && error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read tracked directory {}", current.display())
+            });
+        }
+    };
+
+    for entry in entries {
         let entry = entry?;
+        let file_name = entry.file_name();
+        if crate::fs_utils::is_excluded_file(&file_name.to_string_lossy()) {
+            continue;
+        }
+        let entry_relative = relative.join(&file_name);
+        if crate::exclusions::is_excluded(exclusions, &entry_relative) {
+            continue;
+        }
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)
             .with_context(|| format!("failed to stat tracked path {}", path.display()))?;
         if metadata.is_dir() {
-            collect_regular_files(&path, files)?;
+            collect_regular_files(&path, exclusions, &entry_relative, false, files)?;
         } else if metadata.is_file() {
             files.push(path);
         }
@@ -358,6 +380,10 @@ mod tests {
         let live = tempdir().unwrap();
         fs::write(live.path().join("save.dat"), b"same bytes").unwrap();
         fs::write(live.path().join("ignored.tmp"), b"ignored").unwrap();
+        fs::write(live.path().join("ignored.log"), b"globally ignored").unwrap();
+        let ignored_dir = live.path().join("ignored.cache");
+        fs::create_dir_all(&ignored_dir).unwrap();
+        fs::write(ignored_dir.join("nested.dat"), b"globally ignored subtree").unwrap();
         let dir = tracked_dir(live.path(), Uuid::from_u128(1), "[\"*.tmp\"]");
 
         let first = capture_snapshot(repo.path(), std::slice::from_ref(&dir)).unwrap();
@@ -386,6 +412,27 @@ mod tests {
                 .unwrap()
                 .is_file()
         );
+    }
+
+    #[test]
+    fn missing_tracked_root_is_empty_while_populated_root_is_captured() {
+        let repo = tempdir().unwrap();
+        let missing_parent = tempdir().unwrap();
+        let populated = tempdir().unwrap();
+        fs::write(populated.path().join("save.dat"), b"populated").unwrap();
+
+        let missing = tracked_dir(
+            &missing_parent.path().join("not-created"),
+            Uuid::from_u128(1),
+            "[]",
+        );
+        let populated = tracked_dir(populated.path(), Uuid::from_u128(2), "[]");
+
+        let snapshot = capture_snapshot(repo.path(), &[missing, populated]).unwrap();
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].tracked_dir_uuid, Uuid::from_u128(2));
+        assert_eq!(snapshot.files[0].relative_path, "save.dat");
     }
 
     #[test]

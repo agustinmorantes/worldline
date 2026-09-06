@@ -12,7 +12,7 @@ use savegame_timeline_core::persistence::sqlite::{
 use savegame_timeline_core::persistence::{GameRepository, VersionRepository};
 use savegame_timeline_core::repository::VersionReason;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::tempdir;
 use uuid::Uuid;
@@ -22,7 +22,9 @@ fn unchanged_checkpoint_reuses_active_version_and_changed_checkpoint_captures_ev
     let mut harness = TwoDirHarness::new();
     let initial = harness.active_version();
 
-    let unchanged = harness.checkpoint(VersionReason::Manual);
+    let CheckpointOutcome::Unchanged(unchanged) = harness.checkpoint(VersionReason::Manual) else {
+        panic!("identical content must return an unchanged checkpoint outcome");
+    };
     assert_eq!(unchanged.version.id, initial.version.id);
     assert_eq!(
         harness
@@ -35,7 +37,9 @@ fn unchanged_checkpoint_reuses_active_version_and_changed_checkpoint_captures_ev
     );
 
     fs::write(harness.first_dir.join("changed.dat"), b"changed").unwrap();
-    let created = harness.checkpoint(VersionReason::Manual);
+    let CheckpointOutcome::Created(created) = harness.checkpoint(VersionReason::Manual) else {
+        panic!("changed content must return a created checkpoint outcome");
+    };
     let metadata = harness.read_version_metadata(&created);
     assert!(
         metadata
@@ -119,30 +123,37 @@ fn test_restore_uses_version_id_not_version_number() {
         )
         .unwrap();
 
-    // Let the watcher register and perform initial scans for both games.
-    std::thread::sleep(Duration::from_millis(200));
-
     // Trigger a version for Game 1 — this consumes version id=1, so Game 2's
     // first version will get id=2 (while its version_number will be 1).
-    fs::write(game1_dir.path().join("save.dat"), "game1 modified").unwrap();
-    // Bounded: an unbounded poll loop turns a missed event into a hung test
-    // binary rather than a failure.
-    assert_eq!(
-        wait_for_version_count(&core, game1.id, 1, Duration::from_secs(30)),
+    assert!(write_until_version_count(
+        &core,
+        &game1_dir.path().join("save.dat"),
+        "game1 modified",
+        game1.id,
         1,
-        "the watcher must version Game 1's change"
-    );
-    while notif_rx.try_recv().is_ok() {}
+        Duration::from_secs(30),
+    ));
+    assert!(wait_for_change_detected(
+        &notif_rx,
+        game1.id,
+        Duration::from_secs(30),
+    ));
 
     // Now write the state we want to restore to. After this, the watcher will
     // create version id=2 (version_number=1) for Game 2, snapshotting this content.
-    fs::write(game2_dir.path().join("save.dat"), "game2 good save").unwrap();
-    assert_eq!(
-        wait_for_version_count(&core, game2.id, 1, Duration::from_secs(30)),
+    assert!(write_until_version_count(
+        &core,
+        &game2_dir.path().join("save.dat"),
+        "game2 good save",
+        game2.id,
         1,
-        "the watcher must version Game 2's change"
-    );
-    while notif_rx.try_recv().is_ok() {}
+        Duration::from_secs(30),
+    ));
+    assert!(wait_for_change_detected(
+        &notif_rx,
+        game2.id,
+        Duration::from_secs(30),
+    ));
 
     let full_game2 = core.get_game(game2.id).unwrap();
     let version = full_game2
@@ -163,16 +174,8 @@ fn test_restore_uses_version_id_not_version_number() {
         version.version_number
     );
 
-    // The version row appears before the watcher has finished snapshotting: the
-    // handler creates the version, notifies, and only then copies the live dir
-    // into it. Corrupting save.dat while that copy is still in flight lets the
-    // copy pick up "corrupted!" and write it into the very snapshot this test is
-    // about to restore from. Waiting past the debounce window plus the copy makes
-    // the ordering deterministic instead of raced.
-    std::thread::sleep(Duration::from_millis(500));
-
-    // Corrupt the save file and restore. The fresh 0.1s debounce on this write
-    // cannot fire before restore_version pauses the watcher.
+    // ChangeDetected is sent only after the full checkpoint pass completes, so
+    // it is the synchronization point before corrupting and restoring.
     fs::write(game2_dir.path().join("save.dat"), "corrupted!").unwrap();
     core.restore_version(version.id).unwrap();
 
@@ -225,26 +228,29 @@ fn test_version_cooldown_prevents_rapid_second_version() {
         )
         .unwrap();
 
-    // Give the watcher time to register the directory before writing.
-    std::thread::sleep(Duration::from_millis(100));
-
     // Trigger first change and wait for version 1 to be created.
-    fs::write(&save_file, "change 1").unwrap();
-    // Bounded: an unbounded poll loop turns a missed event into a hung test
-    // binary rather than a failure.
-    assert_eq!(
-        wait_for_version_count(&core, game.id, 1, Duration::from_secs(30)),
+    assert!(write_until_version_count(
+        &core,
+        &save_file,
+        "change 1",
+        game.id,
         1,
-        "the watcher must version the first change"
-    );
-    while notif_rx.try_recv().is_ok() {}
+        Duration::from_secs(30),
+    ));
+    assert!(wait_for_change_detected(
+        &notif_rx,
+        game.id,
+        Duration::from_secs(30),
+    ));
 
     // Trigger a second change immediately — still well within the 15-minute cooldown.
-    fs::write(&save_file, "change 2").unwrap();
-
-    // Wait long enough for the debounce to fire (0.1s) plus processing, but not
-    // nearly long enough for the cooldown to expire.
-    std::thread::sleep(Duration::from_millis(800));
+    assert!(write_until_change_detected(
+        &notif_rx,
+        &save_file,
+        "change 2",
+        game.id,
+        Duration::from_secs(30),
+    ));
 
     let full_game = core.get_game(game.id).unwrap();
     assert_eq!(
@@ -462,13 +468,12 @@ fn test_slot_creation_and_switching_preserve_independent_histories() {
         .unwrap();
 
     let game_with_new_slot = core.create_slot(game.id, "Second Slot").unwrap();
+    let initial_second_version_id = game_with_new_slot.versions[0].id;
     assert_eq!(
         game_with_new_slot.active_slot.as_ref().unwrap().name,
         "Second Slot"
     );
     assert_eq!(fs::read_dir(source_dir.path()).unwrap().count(), 0);
-
-    fs::write(&save_file, "slot-two-state").unwrap();
 
     let default_slot_id = game_with_new_slot
         .slots
@@ -485,7 +490,28 @@ fn test_slot_creation_and_switching_preserve_independent_histories() {
     );
     assert_eq!(fs::read_to_string(&save_file).unwrap(), "slot-one-state");
 
+    let second_slot_after_switch = core
+        .get_slots(game.id)
+        .unwrap()
+        .into_iter()
+        .find(|slot| slot.slot.id == second_slot_id)
+        .unwrap();
+    assert_eq!(
+        second_slot_after_switch.versions.len(),
+        1,
+        "switching away from an unchanged empty slot must retain its initial baseline"
+    );
+    assert_eq!(
+        second_slot_after_switch.versions[0].reason, "initial",
+        "the retained version must be the slot's initial baseline"
+    );
+    assert_eq!(
+        second_slot_after_switch.versions[0].id, initial_second_version_id,
+        "switching away must retain the exact initial baseline row"
+    );
+
     let second_game = core.switch_slot(game.id, second_slot_id).unwrap();
+    fs::write(&save_file, "slot-two-state").unwrap();
     assert_eq!(
         second_game.active_slot.as_ref().unwrap().name,
         "Second Slot"
@@ -838,7 +864,7 @@ impl TwoDirHarness {
             .unwrap()
     }
 
-    fn checkpoint(&mut self, reason: VersionReason) -> FullVersion {
+    fn checkpoint(&mut self, reason: VersionReason) -> CheckpointOutcome {
         let outcome = checkpoint::checkpoint_current_state(
             &self.repository_root,
             self.versions_repo.as_ref(),
@@ -846,11 +872,8 @@ impl TwoDirHarness {
             reason,
         )
         .unwrap();
-        let version = match outcome {
-            CheckpointOutcome::Unchanged(version) | CheckpointOutcome::Created(version) => version,
-        };
         self.game = self.core.get_game(self.game.game.id).unwrap();
-        version
+        outcome
     }
 
     fn read_version_metadata(
@@ -1302,21 +1325,79 @@ fn test_exclusions_are_honoured_symmetrically_on_capture_and_restore() {
     );
 }
 
-/// Polls `get_game` until the active slot holds at least `target` versions,
-/// giving up after `timeout`. Returns the count actually observed.
-fn wait_for_version_count(
+/// Repeats a triggering write until the watcher has persisted `target` versions
+/// or the bounded deadline expires. The retry window exceeds the 0.1s test
+/// debounce, so each attempt can produce a distinct notification instead of
+/// continuously resetting one debounce window.
+fn write_until_version_count(
     core: &TimelineCore,
+    path: &Path,
+    content: &str,
     game_id: i32,
     target: usize,
     timeout: Duration,
-) -> usize {
+) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        let count = core.get_game(game_id).unwrap().versions.len();
-        if count >= target || std::time::Instant::now() >= deadline {
-            return count;
+        fs::write(path, content).unwrap();
+        let attempt_deadline = std::cmp::min(
+            deadline,
+            std::time::Instant::now() + Duration::from_millis(250),
+        );
+        while std::time::Instant::now() < attempt_deadline {
+            if core.get_game(game_id).unwrap().versions.len() >= target {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
         }
-        std::thread::sleep(Duration::from_millis(50));
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+    }
+}
+
+fn wait_for_change_detected(
+    rx: &savegame_timeline_core::detection::NotificationReceiver,
+    game_id: i32,
+    timeout: Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return false;
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(savegame_timeline_core::detection::Notification::ChangeDetected {
+                game_id: received_id,
+            }) if received_id == game_id => return true,
+            Ok(savegame_timeline_core::detection::Notification::Error(error)) => {
+                panic!("watcher reported an error: {error}")
+            }
+            Ok(_) => continue,
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Repeats a triggering write until its `ChangeDetected` notification arrives.
+/// This handles asynchronous registration without an arbitrary pre-write sleep.
+fn write_until_change_detected(
+    rx: &savegame_timeline_core::detection::NotificationReceiver,
+    path: &Path,
+    content: &str,
+    game_id: i32,
+    timeout: Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        fs::write(path, content).unwrap();
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return false;
+        };
+        let attempt = remaining.min(Duration::from_millis(250));
+        if wait_for_change_detected(rx, game_id, attempt) {
+            return true;
+        }
     }
 }
 
@@ -1337,17 +1418,21 @@ fn test_restore_does_not_trigger_a_spurious_watcher_version() {
     // having silently killed file watching).
     let h = harness("v1-state");
     let game = h.create_game("Suppression Test");
-    // save_game registers the tracked dir with the watcher asynchronously; give
-    // that registration time to land, or the first write is invisible.
-    std::thread::sleep(Duration::from_millis(300));
 
     // A genuine user write produces a version, proving the watcher is live.
-    fs::write(&h.save_file, "v2-state").unwrap();
-    assert_eq!(
-        wait_for_version_count(&h.core, game.id, 1, Duration::from_secs(5)),
+    assert!(write_until_version_count(
+        &h.core,
+        &h.save_file,
+        "v2-state",
+        game.id,
         1,
-        "a genuine user write must produce a version"
-    );
+        Duration::from_secs(30),
+    ));
+    assert!(wait_for_change_detected(
+        &h._notif_rx,
+        game.id,
+        Duration::from_secs(30),
+    ));
     // Exactly one version exists, so this is unambiguously it — no need to
     // order by the non-unique version_number to pick a target.
     let target = h.core.get_game(game.id).unwrap().versions[0].id;
@@ -1367,8 +1452,17 @@ fn test_restore_does_not_trigger_a_spurious_watcher_version() {
         "the restore must actually have rewritten the tracked directory"
     );
 
-    // Well past the harness's 0.1s debounce window and the settle delay.
-    std::thread::sleep(Duration::from_millis(800));
+    // Rewriting the same bytes is a real filesystem event, but the shared
+    // checkpoint path must recognize it as unchanged. Waiting for its
+    // ChangeDetected notification proves the event pass completed without a
+    // fixed debounce sleep.
+    assert!(write_until_change_detected(
+        &h._notif_rx,
+        &h.save_file,
+        "v2-state",
+        game.id,
+        Duration::from_secs(30),
+    ));
     assert_eq!(
         h.core.get_game(game.id).unwrap().versions.len(),
         1,
@@ -1378,12 +1472,19 @@ fn test_restore_does_not_trigger_a_spurious_watcher_version() {
     // The other half of the contract. This also retroactively proves the
     // assertion above had teeth: the cooldown was open the whole time, so a
     // leaked event would have versioned.
-    fs::write(&h.save_file, "user-write-after-restore").unwrap();
-    assert_eq!(
-        wait_for_version_count(&h.core, game.id, 2, Duration::from_secs(5)),
+    assert!(write_until_version_count(
+        &h.core,
+        &h.save_file,
+        "user-write-after-restore",
+        game.id,
         2,
-        "the watcher must still be live after a restore"
-    );
+        Duration::from_secs(30),
+    ));
+    assert!(wait_for_change_detected(
+        &h._notif_rx,
+        game.id,
+        Duration::from_secs(30),
+    ));
 }
 
 #[test]
@@ -1393,14 +1494,20 @@ fn test_watcher_is_resumed_when_the_paused_operation_fails() {
     // error path too.
     let h = harness("v1-state");
     let game = h.create_game("Resume On Error");
-    std::thread::sleep(Duration::from_millis(300));
 
-    fs::write(&h.save_file, "v2-state").unwrap();
-    assert_eq!(
-        wait_for_version_count(&h.core, game.id, 1, Duration::from_secs(5)),
+    assert!(write_until_version_count(
+        &h.core,
+        &h.save_file,
+        "v2-state",
+        game.id,
         1,
-        "a genuine user write must produce a version"
-    );
+        Duration::from_secs(30),
+    ));
+    assert!(wait_for_change_detected(
+        &h._notif_rx,
+        game.id,
+        Duration::from_secs(30),
+    ));
     h.backdate_versions();
 
     assert!(
@@ -1408,18 +1515,19 @@ fn test_watcher_is_resumed_when_the_paused_operation_fails() {
         "restoring a version that does not exist must fail inside the paused block"
     );
 
-    // Resume/ReregisterGames are processed asynchronously by the watcher thread,
-    // and a failing restore returns almost instantly — give the re-registration
-    // the same grace as the initial one. (A watcher that never resumed would
-    // stay paused forever, so no amount of waiting could rescue this assertion.)
-    std::thread::sleep(Duration::from_millis(300));
-
-    fs::write(&h.save_file, "written-after-the-failure").unwrap();
-    assert_eq!(
-        wait_for_version_count(&h.core, game.id, 2, Duration::from_secs(5)),
+    assert!(write_until_version_count(
+        &h.core,
+        &h.save_file,
+        "written-after-the-failure",
+        game.id,
         2,
-        "the watcher must be resumed even when the paused operation returns Err"
-    );
+        Duration::from_secs(30),
+    ));
+    assert!(wait_for_change_detected(
+        &h._notif_rx,
+        game.id,
+        Duration::from_secs(30),
+    ));
 }
 
 /// Reads a slot's version ids straight from the table.

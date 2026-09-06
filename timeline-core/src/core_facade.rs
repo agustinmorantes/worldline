@@ -132,15 +132,10 @@ impl TimelineCore {
             self.clear_tracked_dirs(&active_game)
                 .context("Failed to clear tracked directories for new slot")?;
 
+            let empty_snapshot = crate::content_store::capture_snapshot(&self.working_base, &[])
+                .context("Failed to capture empty baseline")?;
             self.versions_repo
-                .create_version_from_snapshot(
-                    game_id,
-                    VersionReason::Initial,
-                    crate::content_store::CapturedSnapshot {
-                        content_hash: String::new(),
-                        files: Vec::new(),
-                    },
-                )
+                .create_version_from_snapshot(game_id, VersionReason::Initial, empty_snapshot)
                 .context("Failed to create empty baseline for new slot")?;
 
             self.resync_game_metadata(game_id)
