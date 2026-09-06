@@ -102,6 +102,7 @@ impl Checker<'_> {
                     repository::REPOSITORY_FORMAT_VERSION
                 ),
             );
+            return;
         }
 
         let games_dir = repository::games_dir(self.repository_root);
@@ -579,6 +580,148 @@ mod tests {
         assert!(report.issues.is_empty());
     }
 
+    #[test]
+    fn unsupported_format_stops_descendant_interpretation() {
+        let fixture = IntegrityFixture::valid();
+        fixture.set_format_version(1);
+        fixture.add_version_without_metadata();
+
+        let report = check_repository(fixture.root(), true);
+
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(
+            report.issues[0].kind,
+            RepositoryIssueKind::UnsupportedFormat
+        );
+    }
+
+    #[test]
+    fn reports_remaining_issue_kinds() {
+        type IssueCase = (&'static str, fn(&IntegrityFixture), RepositoryIssueKind);
+        let cases: [IssueCase; 5] = [
+            (
+                "invalid metadata",
+                IntegrityFixture::add_malformed_version_metadata,
+                RepositoryIssueKind::InvalidMetadata,
+            ),
+            (
+                "unsafe relative path",
+                IntegrityFixture::add_unsafe_relative_path,
+                RepositoryIssueKind::UnsafeRelativePath,
+            ),
+            (
+                "missing tracked directory",
+                IntegrityFixture::remove_tracked_directory_reference,
+                RepositoryIssueKind::MissingTrackedDirectory,
+            ),
+            (
+                "missing blob",
+                IntegrityFixture::remove_referenced_blob,
+                RepositoryIssueKind::MissingBlob,
+            ),
+            (
+                "blob size mismatch",
+                IntegrityFixture::write_wrong_size_blob,
+                RepositoryIssueKind::BlobSizeMismatch,
+            ),
+        ];
+
+        for (name, mutate, kind) in cases {
+            let fixture = IntegrityFixture::valid();
+            mutate(&fixture);
+            let report = check_repository(fixture.root(), true);
+            assert!(report.has_kind(kind), "{name}: {report:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_sibling_does_not_hide_valid_sibling_findings() {
+        let fixture = IntegrityFixture::valid();
+        fixture.add_malformed_version_metadata();
+        fixture.corrupt_referenced_blob();
+
+        let report = check_repository(fixture.root(), true);
+
+        assert!(report.has_kind(RepositoryIssueKind::InvalidMetadata));
+        assert!(report.has_kind(RepositoryIssueKind::BlobHashMismatch));
+    }
+
+    #[test]
+    fn rejects_noncanonical_manifest_order() {
+        let fixture = IntegrityFixture::valid();
+        fixture.add_noncanonical_manifest_order();
+
+        let report = check_repository(fixture.root(), true);
+
+        assert!(report.has_kind(RepositoryIssueKind::InvalidMetadata));
+        assert!(!report.has_kind(RepositoryIssueKind::ContentHashMismatch));
+    }
+
+    #[test]
+    fn issues_are_stable_and_sorted_by_path_then_kind() {
+        let fixture = IntegrityFixture::valid();
+        fixture.add_tmp_version_dir();
+        fixture.add_version_without_metadata();
+        fixture.add_malformed_version_metadata();
+        fixture.corrupt_referenced_blob();
+
+        let first = check_repository(fixture.root(), true);
+        let second = check_repository(fixture.root(), true);
+
+        assert_eq!(first, second);
+        assert!(first.issues.windows(2).all(|pair| {
+            pair[0]
+                .path
+                .cmp(&pair[1].path)
+                .then_with(|| pair[0].kind.cmp(&pair[1].kind))
+                .is_le()
+        }));
+    }
+
+    #[test]
+    fn checking_does_not_change_any_repository_bytes() {
+        let fixture = IntegrityFixture::new();
+        fixture.add_tmp_version_dir();
+        fixture.add_version_without_metadata();
+        fixture.add_malformed_version_metadata();
+        fixture.add_noncanonical_manifest_order();
+        fixture.corrupt_referenced_blob();
+        let before = snapshot_tree(fixture.root());
+
+        let _ = check_repository(fixture.root(), true);
+
+        assert_eq!(before, snapshot_tree(fixture.root()));
+    }
+
+    fn snapshot_tree(root: &Path) -> Vec<(String, Vec<u8>)> {
+        fn visit(root: &Path, current: &Path, files: &mut Vec<(String, Vec<u8>)>) {
+            let mut entries = fs::read_dir(current)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.path());
+            for entry in entries {
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    visit(root, &path, files);
+                } else if entry.file_type().unwrap().is_file() {
+                    files.push((
+                        path.strip_prefix(root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                        fs::read(path).unwrap(),
+                    ));
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        visit(root, root, &mut files);
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    }
+
     struct IntegrityFixture {
         root: TempDir,
         version_dir: PathBuf,
@@ -700,6 +843,56 @@ mod tests {
 
         fn root(&self) -> &Path {
             self.root.path()
+        }
+
+        fn set_format_version(&self, format_version: u32) {
+            let mut metadata: RepositoryMetadata =
+                repository::read_metadata_json(self.root()).unwrap();
+            metadata.format_version = format_version;
+            repository::write_metadata_json(self.root(), &metadata).unwrap();
+        }
+
+        fn add_malformed_version_metadata(&self) {
+            let dir = self.version_dir.parent().unwrap().join("v005__v_00000000");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(repository::metadata_path(&dir), b"not json").unwrap();
+        }
+
+        fn rewrite_version_metadata(&self, mutate: impl FnOnce(&mut VersionMetadata)) {
+            let mut metadata: VersionMetadata =
+                repository::read_metadata_json(&self.version_dir).unwrap();
+            mutate(&mut metadata);
+            repository::write_metadata_json(&self.version_dir, &metadata).unwrap();
+        }
+
+        fn add_unsafe_relative_path(&self) {
+            self.rewrite_version_metadata(|metadata| {
+                metadata.files[0].relative_path = "../outside.dat".to_string();
+            });
+        }
+
+        fn remove_tracked_directory_reference(&self) {
+            self.rewrite_version_metadata(|metadata| {
+                metadata.files[0].tracked_dir_uuid = Uuid::from_u128(99);
+            });
+        }
+
+        fn remove_referenced_blob(&self) {
+            fs::remove_file(&self.blob).unwrap();
+        }
+
+        fn write_wrong_size_blob(&self) {
+            fs::write(&self.blob, b"short").unwrap();
+        }
+
+        fn add_noncanonical_manifest_order(&self) {
+            self.rewrite_version_metadata(|metadata| {
+                let mut second = metadata.files[0].clone();
+                second.relative_path = "a.dat".to_string();
+                let first = metadata.files[0].clone();
+                metadata.files = vec![first, second];
+                metadata.content_hash = snapshot_content_hash(&metadata.files).unwrap();
+            });
         }
 
         fn add_tmp_version_dir(&self) {
