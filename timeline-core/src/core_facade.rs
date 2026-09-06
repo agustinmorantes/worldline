@@ -132,13 +132,16 @@ impl TimelineCore {
             self.clear_tracked_dirs(&active_game)
                 .context("Failed to clear tracked directories for new slot")?;
 
-            let baseline = self
-                .versions_repo
-                .create_version(game_id, VersionReason::Initial)
+            self.versions_repo
+                .create_version_from_snapshot(
+                    game_id,
+                    VersionReason::Initial,
+                    crate::content_store::CapturedSnapshot {
+                        content_hash: String::new(),
+                        files: Vec::new(),
+                    },
+                )
                 .context("Failed to create empty baseline for new slot")?;
-
-            self.ensure_empty_snapshot_dirs(&active_game, &baseline)
-                .context("Failed to initialize empty snapshot for new slot")?;
 
             self.resync_game_metadata(game_id)
                 .context("Failed to sync metadata after creating slot")?;
@@ -553,54 +556,16 @@ impl TimelineCore {
             return Ok(None);
         }
 
-        let version = self
-            .versions_repo
-            .create_version(game.game.id, reason)
-            .context("Failed to create checkpoint version")?;
-
-        for dir in &game.tracked_dirs {
-            let source_path = Path::new(&dir.path);
-            let snapshot_dir = crate::repository::game_snapshot_dir(
-                &self.working_base,
-                &version.game,
-                &version.slot,
-                &version.version,
-                dir,
-            )
-            .context("Failed to resolve checkpoint snapshot path")?;
-
-            if snapshot_dir.exists() {
-                std::fs::remove_dir_all(&snapshot_dir).with_context(|| {
-                    format!("Failed to clear snapshot dir {}", snapshot_dir.display())
-                })?;
-            }
-
-            if let Some(parent) = snapshot_dir.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create snapshot parent dir {}", parent.display())
-                })?;
-            }
-
-            if source_path.exists() {
-                crate::fs_utils::copy_dir_filtered(
-                    source_path,
-                    &snapshot_dir,
-                    &crate::exclusions::parse(&dir.exclusions),
-                )
-                .context("Failed to copy tracked dir into checkpoint snapshot")?;
-            } else {
-                std::fs::create_dir_all(&snapshot_dir).with_context(|| {
-                    format!(
-                        "Failed to create empty snapshot dir {}",
-                        snapshot_dir.display()
-                    )
-                })?;
-            }
-        }
-
-        self.resync_game_metadata(game.game.id)
-            .context("Failed to sync metadata after checkpoint")?;
-
+        let outcome = crate::checkpoint::checkpoint_current_state(
+            &self.working_base,
+            self.versions_repo.as_ref(),
+            game,
+            reason,
+        )?;
+        let version = match outcome {
+            crate::checkpoint::CheckpointOutcome::Unchanged(version)
+            | crate::checkpoint::CheckpointOutcome::Created(version) => version,
+        };
         Ok(Some(version))
     }
 
@@ -624,6 +589,70 @@ impl TimelineCore {
     }
 
     fn restore_version_files(&self, game: &FullGame, version: &FullVersion) -> Result<()> {
+        let game_folder_slug = game
+            .game
+            .folder_slug
+            .as_deref()
+            .context("Game is missing a folder slug")?;
+        let version_folder_slug = version
+            .version
+            .folder_slug
+            .as_deref()
+            .context("Version is missing a folder slug")?;
+        let version_dir = crate::repository::version_dir(
+            &crate::repository::slot_dir(
+                &crate::repository::game_dir(&self.working_base, game_folder_slug),
+                &version.slot.folder_slug,
+            ),
+            version_folder_slug,
+        );
+        let metadata: crate::repository::VersionMetadata =
+            crate::repository::read_metadata_json(&version_dir)
+                .context("Failed to read version metadata")?;
+        let mut files = Vec::new();
+        for file in &metadata.files {
+            let tracked_dir = game
+                .tracked_dirs
+                .iter()
+                .find(|dir| {
+                    dir.uuid
+                        .as_deref()
+                        .and_then(|uuid| uuid::Uuid::parse_str(uuid).ok())
+                        == Some(file.tracked_dir_uuid)
+                })
+                .with_context(|| {
+                    format!(
+                        "Version references unknown tracked directory {}",
+                        file.tracked_dir_uuid
+                    )
+                })?;
+            let relative = Path::new(&file.relative_path);
+            if relative.is_absolute()
+                || relative.has_root()
+                || relative
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(anyhow!(
+                    "Version contains unsafe relative path {}",
+                    file.relative_path
+                ));
+            }
+            if crate::exclusions::is_excluded(
+                &crate::exclusions::parse(&tracked_dir.exclusions),
+                relative,
+            ) {
+                continue;
+            }
+            let blob =
+                crate::content_store::verify_blob(&self.working_base, &file.sha256, file.size)?;
+            files.push((
+                PathBuf::from(&tracked_dir.path),
+                relative.to_path_buf(),
+                blob,
+            ));
+        }
+
         for dir in &game.tracked_dirs {
             let live_dir = PathBuf::from(&dir.path);
             let exclusions = crate::exclusions::parse(&dir.exclusions);
@@ -633,52 +662,26 @@ impl TimelineCore {
                 })?;
             }
 
-            let snapshot_dir = crate::repository::game_snapshot_dir(
-                &self.working_base,
-                &game.game,
-                &version.slot,
-                &version.version,
-                dir,
-            )
-            .context("Failed to resolve version snapshot path")?;
-
-            if snapshot_dir.exists() {
-                crate::fs_utils::copy_dir_filtered(&snapshot_dir, &live_dir, &exclusions)
-                    .context("Failed to copy directory")?;
-            } else {
-                std::fs::create_dir_all(&live_dir).with_context(|| {
-                    format!(
-                        "Failed to recreate empty tracked dir {}",
-                        live_dir.display()
-                    )
-                })?;
-            }
+            std::fs::create_dir_all(&live_dir).with_context(|| {
+                format!(
+                    "Failed to recreate empty tracked dir {}",
+                    live_dir.display()
+                )
+            })?;
         }
 
-        Ok(())
-    }
-
-    fn ensure_empty_snapshot_dirs(&self, game: &FullGame, version: &FullVersion) -> Result<()> {
-        for dir in &game.tracked_dirs {
-            let snapshot_dir = crate::repository::game_snapshot_dir(
-                &self.working_base,
-                &version.game,
-                &version.slot,
-                &version.version,
-                dir,
-            )
-            .context("Failed to resolve empty slot snapshot path")?;
-
-            if snapshot_dir.exists() {
-                std::fs::remove_dir_all(&snapshot_dir).with_context(|| {
-                    format!("Failed to clear snapshot dir {}", snapshot_dir.display())
+        for (live_dir, relative, blob) in files {
+            let destination = live_dir.join(relative);
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create restore directory {}", parent.display())
                 })?;
             }
-
-            std::fs::create_dir_all(&snapshot_dir).with_context(|| {
+            std::fs::copy(&blob, &destination).with_context(|| {
                 format!(
-                    "Failed to create empty snapshot dir {}",
-                    snapshot_dir.display()
+                    "Failed to restore blob {} to {}",
+                    blob.display(),
+                    destination.display()
                 )
             })?;
         }

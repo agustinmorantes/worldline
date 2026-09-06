@@ -24,7 +24,6 @@ pub trait GameRepository: Send + Sync {
 
 #[cfg_attr(test, mockall::automock)]
 pub trait VersionRepository: Send + Sync {
-    fn create_version(&self, game_id: i32, reason: VersionReason) -> Result<FullVersion>;
     fn create_version_from_snapshot(
         &self,
         game_id: i32,

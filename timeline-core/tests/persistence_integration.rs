@@ -19,6 +19,13 @@ fn init_db() -> Pool<ConnectionManager<SqliteConnection>> {
     pool
 }
 
+fn empty_snapshot() -> CapturedSnapshot {
+    CapturedSnapshot {
+        content_hash: String::new(),
+        files: Vec::new(),
+    }
+}
+
 #[test]
 fn test_game_crud() {
     let pool = init_db();
@@ -121,7 +128,7 @@ fn test_version_operations() {
     // exercises the repository directly, not any facade operation with
     // real reason semantics)
     let version = versions_repo
-        .create_version(game.id, VersionReason::Manual)
+        .create_version_from_snapshot(game.id, VersionReason::Manual, empty_snapshot())
         .unwrap();
     assert_eq!(version.version.version_number, 1);
     assert!(
@@ -180,10 +187,10 @@ fn test_dangling_parent_id_errors_instead_of_silent_none() {
     let game = games_repo.save_game(form, None).unwrap();
 
     let parent = versions_repo
-        .create_version(game.id, VersionReason::Manual)
+        .create_version_from_snapshot(game.id, VersionReason::Manual, empty_snapshot())
         .unwrap();
     let child = versions_repo
-        .create_version(game.id, VersionReason::Manual)
+        .create_version_from_snapshot(game.id, VersionReason::Manual, empty_snapshot())
         .unwrap();
     assert_eq!(
         child.version.parent_id,
@@ -288,7 +295,7 @@ fn test_repository_metadata_is_written_for_game_and_version() {
     // Manual is an arbitrary placeholder here too — no facade operation is
     // involved, so the specific reason carries no meaning beyond round-tripping.
     let version = versions_repo
-        .create_version(game.id, VersionReason::Manual)
+        .create_version_from_snapshot(game.id, VersionReason::Manual, empty_snapshot())
         .unwrap();
     let version_dir =
         repository::version_dir(&slot_dir, version.version.folder_slug.as_deref().unwrap());

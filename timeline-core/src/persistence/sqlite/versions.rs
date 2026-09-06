@@ -38,17 +38,6 @@ fn resolve_parent_uuid(
 }
 
 impl VersionRepository for SqliteVersionRepository {
-    fn create_version(&self, game_id_param: i32, reason: VersionReason) -> Result<FullVersion> {
-        self.create_version_from_snapshot(
-            game_id_param,
-            reason,
-            CapturedSnapshot {
-                content_hash: String::new(),
-                files: Vec::new(),
-            },
-        )
-    }
-
     fn create_version_from_snapshot(
         &self,
         game_id_param: i32,

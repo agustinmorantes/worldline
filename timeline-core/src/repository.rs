@@ -225,15 +225,6 @@ pub fn version_dir(slot_dir: &Path, folder_slug: &str) -> PathBuf {
     versions_dir(slot_dir).join(folder_slug)
 }
 
-// Task 3 removes these legacy snapshot-tree helpers after facade and watcher callers migrate.
-pub fn version_snapshot_dirs_dir(version_dir: &Path) -> PathBuf {
-    version_dir.join("dirs")
-}
-
-pub fn version_tracked_dir_snapshot_dir(version_dir: &Path, folder_slug: &str) -> PathBuf {
-    version_snapshot_dirs_dir(version_dir).join(folder_slug)
-}
-
 pub fn read_metadata_json<T>(entity_dir: &Path) -> Result<T>
 where
     T: DeserializeOwned,
@@ -344,30 +335,6 @@ pub fn ensure_repository_root(repository_root: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-pub fn game_snapshot_dir(
-    repository_root: &Path,
-    game: &crate::models::Game,
-    slot: &crate::models::Slot,
-    version: &crate::models::Version,
-    tracked_dir: &crate::models::TrackedDir,
-) -> Result<PathBuf> {
-    let game_folder_slug = validate_folder_slug(game.folder_slug.as_deref(), "game.folder_slug")?;
-    let slot_folder_slug = validate_folder_slug(Some(&slot.folder_slug), "slot.folder_slug")?;
-    let version_folder_slug =
-        validate_folder_slug(version.folder_slug.as_deref(), "version.folder_slug")?;
-    let tracked_dir_folder_slug = validate_folder_slug(
-        tracked_dir.folder_slug.as_deref(),
-        "tracked_dir.folder_slug",
-    )?;
-    let game_dir = game_dir(repository_root, game_folder_slug);
-    let slot_dir = slot_dir(&game_dir, slot_folder_slug);
-    let version_dir = version_dir(&slot_dir, version_folder_slug);
-    Ok(version_tracked_dir_snapshot_dir(
-        &version_dir,
-        tracked_dir_folder_slug,
-    ))
 }
 
 pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame) -> Result<()> {
@@ -762,12 +729,11 @@ mod tests {
         let game = game_dir(root, "hollow-knight__g_8f3a2c9d");
         let slot = slot_dir(&game, "default-slot__s_27b91a04");
         let version = version_dir(&slot, "v001__v_91ac4e2a");
-        let snapshot = version_tracked_dir_snapshot_dir(&version, "saves__d_12ab99ef");
 
         assert_eq!(
-            snapshot,
+            version,
             Path::new(
-                "/repo/games/hollow-knight__g_8f3a2c9d/slots/default-slot__s_27b91a04/versions/v001__v_91ac4e2a/dirs/saves__d_12ab99ef"
+                "/repo/games/hollow-knight__g_8f3a2c9d/slots/default-slot__s_27b91a04/versions/v001__v_91ac4e2a"
             )
         );
         assert_eq!(

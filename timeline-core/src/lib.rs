@@ -1,6 +1,7 @@
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 compile_error!("savegame-timeline-core supports Windows and Linux only");
 
+pub mod checkpoint;
 pub mod content_store;
 pub mod core_facade;
 pub mod detection;

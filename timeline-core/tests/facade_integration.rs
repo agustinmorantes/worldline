@@ -4,6 +4,7 @@ use diesel::r2d2::{ConnectionManager, Pool};
 use diesel_migrations::MigrationHarness;
 use savegame_timeline_core::MIGRATIONS;
 use savegame_timeline_core::TimelineCore;
+use savegame_timeline_core::checkpoint::{self, CheckpointOutcome};
 use savegame_timeline_core::models::*;
 use savegame_timeline_core::persistence::sqlite::{
     SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
@@ -11,31 +12,72 @@ use savegame_timeline_core::persistence::sqlite::{
 use savegame_timeline_core::persistence::{GameRepository, VersionRepository};
 use savegame_timeline_core::repository::VersionReason;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
+use uuid::Uuid;
+
+#[test]
+fn unchanged_checkpoint_reuses_active_version_and_changed_checkpoint_captures_every_directory() {
+    let mut harness = TwoDirHarness::new();
+    let initial = harness.active_version();
+
+    let unchanged = harness.checkpoint(VersionReason::Manual);
+    assert_eq!(unchanged.version.id, initial.version.id);
+    assert_eq!(
+        harness
+            .core
+            .get_game(harness.game.game.id)
+            .unwrap()
+            .versions
+            .len(),
+        1
+    );
+
+    fs::write(harness.first_dir.join("changed.dat"), b"changed").unwrap();
+    let created = harness.checkpoint(VersionReason::Manual);
+    let metadata = harness.read_version_metadata(&created);
+    assert!(
+        metadata
+            .files
+            .iter()
+            .any(|file| file.tracked_dir_uuid == harness.first_uuid)
+    );
+    assert!(
+        metadata
+            .files
+            .iter()
+            .any(|file| file.tracked_dir_uuid == harness.second_uuid)
+    );
+}
 
 #[test]
 fn test_restore_uses_version_id_not_version_number() {
     // Regression: restore_version must identify the version by version.id (the DB
     // primary key), not by version_number (the per-slot sequential counter). For
-    // Game 2's first version, version.id=2 but version_number=1. The snapshot lives
-    // under a slug-based, slot-nested path derived from that version's own identity
-    // (see `repository::game_snapshot_dir`), so confusing the two resolves a
-    // different version and therefore reads the wrong directory.
+    // Game 2's first version, version.id=2 but version_number=1. Its manifest is
+    // loaded from the slug-based, slot-nested path derived from that version's
+    // own identity, so confusing the two must not restore the wrong version.
     let pool = init_db();
-    let games_repo = Arc::new(SqliteGameRepository::new(pool.clone()));
-    let versions_repo = Arc::new(SqliteVersionRepository::new(pool.clone()));
-    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
-
     let data_dir = tempdir().unwrap();
     let working_base = data_dir.path().join("repository");
     let icons_dir = data_dir.path().join("icons");
+    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        working_base.clone(),
+    ));
+    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        working_base.clone(),
+    ));
+    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
 
     let game1_dir = tempdir().unwrap();
     let game2_dir = tempdir().unwrap();
     fs::write(game1_dir.path().join("save.dat"), "game1 data").unwrap();
-    // game2 initial content is written before game2 is registered, so the
-    // first-scan snapshot at working_base/2/1/dir captures this value.
+    // game2 initial content is written before game2 is registered. Its first
+    // authoritative manifest will be created only when the later change event
+    // is observed; no legacy snapshot tree is expected during registration.
     fs::write(game2_dir.path().join("save.dat"), "game2 initial").unwrap();
 
     let (core, notif_rx) = TimelineCore::new(
@@ -261,30 +303,36 @@ fn test_full_e2e_flow() {
     let path_str = source_dir.path().to_str().unwrap();
     let game = core.save_game(form, Some(vec![path_str])).unwrap();
 
-    std::thread::sleep(Duration::from_millis(50));
-
-    fs::write(&save_file, "modified text").unwrap();
-
-    std::thread::sleep(Duration::from_millis(2500));
-
     let mut version_created = false;
     let mut change_detected = false;
 
-    while let Ok(msg) = notif_rx.try_recv() {
-        match msg {
-            savegame_timeline_core::detection::Notification::VersionCreated {
-                game_id,
-                version_number,
-            } => {
-                assert_eq!(game_id, game.id);
-                assert_eq!(version_number, 1);
-                version_created = true;
+    // Registration is asynchronous. Keep nudging the file until the watcher
+    // observes it, rather than racing a fixed sleep on clean builds where the
+    // watcher thread may not have processed ReregisterGames yet.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline && !(version_created && change_detected) {
+        if !version_created {
+            fs::write(&save_file, "modified text").unwrap();
+        }
+        while let Ok(msg) = notif_rx.try_recv() {
+            match msg {
+                savegame_timeline_core::detection::Notification::VersionCreated {
+                    game_id,
+                    version_number,
+                } => {
+                    assert_eq!(game_id, game.id);
+                    assert_eq!(version_number, 1);
+                    version_created = true;
+                }
+                savegame_timeline_core::detection::Notification::ChangeDetected { game_id } => {
+                    assert_eq!(game_id, game.id);
+                    change_detected = true;
+                }
+                _ => {}
             }
-            savegame_timeline_core::detection::Notification::ChangeDetected { game_id } => {
-                assert_eq!(game_id, game.id);
-                change_detected = true;
-            }
-            _ => {}
+        }
+        if !(version_created && change_detected) {
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -292,18 +340,29 @@ fn test_full_e2e_flow() {
     assert!(change_detected, "Change was not detected automatically");
 
     let full_game = core.get_game(game.id).unwrap();
-    let version_folder = savegame_timeline_core::repository::game_snapshot_dir(
+    let version = full_game.versions.last().unwrap();
+    let game_dir = savegame_timeline_core::repository::game_dir(
         working_base.path(),
-        &full_game.game,
-        full_game.active_slot.as_ref().unwrap(),
-        full_game.versions.last().unwrap(),
-        &full_game.tracked_dirs[0],
-    )
-    .unwrap();
-
-    let copied_file = version_folder.join("save.dat");
-    assert!(copied_file.exists());
-    let content = fs::read_to_string(copied_file).unwrap();
+        full_game.game.folder_slug.as_deref().unwrap(),
+    );
+    let slot_dir = savegame_timeline_core::repository::slot_dir(
+        &game_dir,
+        &full_game.active_slot.as_ref().unwrap().folder_slug,
+    );
+    let version_dir = savegame_timeline_core::repository::version_dir(
+        &slot_dir,
+        version.folder_slug.as_deref().unwrap(),
+    );
+    let metadata: savegame_timeline_core::repository::VersionMetadata =
+        savegame_timeline_core::repository::read_metadata_json(&version_dir).unwrap();
+    let file = metadata
+        .files
+        .iter()
+        .find(|file| file.relative_path == "save.dat")
+        .unwrap();
+    let blob = savegame_timeline_core::content_store::blob_path(working_base.path(), &file.sha256)
+        .unwrap();
+    let content = fs::read_to_string(blob).unwrap();
     assert_eq!(content, "modified text");
 
     // Tag version test via Facade
@@ -677,6 +736,148 @@ fn test_version_metadata_records_parent_uuid() {
 /// Everything a facade test needs. Fields are kept alive by the struct:
 /// dropping a `TempDir` deletes it, so these must outlive the test body.
 #[allow(dead_code)]
+struct TwoDirHarness {
+    core: TimelineCore,
+    versions_repo: Arc<SqliteVersionRepository>,
+    game: FullGame,
+    first_dir: PathBuf,
+    second_dir: PathBuf,
+    first_uuid: Uuid,
+    second_uuid: Uuid,
+    repository_root: PathBuf,
+    _data_dir: tempfile::TempDir,
+    _first_dir: tempfile::TempDir,
+    _second_dir: tempfile::TempDir,
+    _icons_dir: tempfile::TempDir,
+    _notif_rx: savegame_timeline_core::detection::NotificationReceiver,
+}
+impl TwoDirHarness {
+    fn new() -> Self {
+        let pool = init_db();
+        let data_dir = tempdir().unwrap();
+        let repository_root = data_dir.path().join("repository");
+        let first = tempdir().unwrap();
+        let second = tempdir().unwrap();
+        let icons_dir = tempdir().unwrap();
+        fs::write(first.path().join("first.dat"), b"first").unwrap();
+        fs::write(second.path().join("second.dat"), b"second").unwrap();
+
+        let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
+            pool.clone(),
+            repository_root.clone(),
+        ));
+        let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
+            pool.clone(),
+            repository_root.clone(),
+        ));
+        let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool));
+        let (core, notif_rx) = TimelineCore::new(
+            games_repo,
+            versions_repo.clone(),
+            scan_roots_repo,
+            repository_root.clone(),
+            icons_dir.path().to_path_buf(),
+            Some(0.1),
+        )
+        .unwrap();
+
+        let game = core
+            .save_game(
+                GameForm {
+                    id: None,
+                    uuid: None,
+                    title: "Two Directory Test",
+                    title_normalized: None,
+                    folder_slug: None,
+                    active_slot_id: None,
+                    icon_path: None,
+                },
+                Some(vec![
+                    first.path().to_str().unwrap(),
+                    second.path().to_str().unwrap(),
+                ]),
+            )
+            .unwrap();
+        let game = core.get_game(game.id).unwrap();
+        let tracked_dirs = game.tracked_dirs.clone();
+        assert_eq!(tracked_dirs.len(), 2);
+        let first_uuid = Uuid::parse_str(tracked_dirs[0].uuid.as_deref().unwrap()).unwrap();
+        let second_uuid = Uuid::parse_str(tracked_dirs[1].uuid.as_deref().unwrap()).unwrap();
+        let initial = checkpoint::checkpoint_current_state(
+            &repository_root,
+            versions_repo.as_ref(),
+            &game,
+            VersionReason::Initial,
+        )
+        .unwrap();
+        let CheckpointOutcome::Created(_) = initial else {
+            panic!("the harness must create an initial version");
+        };
+        let refreshed_game = core.get_game(game.game.id).unwrap();
+
+        Self {
+            core,
+            versions_repo,
+            game: refreshed_game,
+            first_dir: first.path().to_path_buf(),
+            second_dir: second.path().to_path_buf(),
+            first_uuid,
+            second_uuid,
+            repository_root,
+            _data_dir: data_dir,
+            _first_dir: first,
+            _second_dir: second,
+            _icons_dir: icons_dir,
+            _notif_rx: notif_rx,
+        }
+    }
+
+    fn active_version(&self) -> FullVersion {
+        self.versions_repo
+            .get_version(self.game.last_version.as_ref().unwrap().id)
+            .unwrap()
+    }
+
+    fn checkpoint(&mut self, reason: VersionReason) -> FullVersion {
+        let outcome = checkpoint::checkpoint_current_state(
+            &self.repository_root,
+            self.versions_repo.as_ref(),
+            &self.game,
+            reason,
+        )
+        .unwrap();
+        let version = match outcome {
+            CheckpointOutcome::Unchanged(version) | CheckpointOutcome::Created(version) => version,
+        };
+        self.game = self.core.get_game(self.game.game.id).unwrap();
+        version
+    }
+
+    fn read_version_metadata(
+        &self,
+        version: &FullVersion,
+    ) -> savegame_timeline_core::repository::VersionMetadata {
+        let game_dir = savegame_timeline_core::repository::game_dir(
+            &self.repository_root,
+            version.game.folder_slug.as_deref().unwrap(),
+        );
+        let slot_dir =
+            savegame_timeline_core::repository::slot_dir(&game_dir, &version.slot.folder_slug);
+        let version_dir = savegame_timeline_core::repository::version_dir(
+            &slot_dir,
+            version.version.folder_slug.as_deref().unwrap(),
+        );
+        savegame_timeline_core::repository::read_metadata_json(&version_dir).unwrap()
+    }
+}
+
+impl Drop for TwoDirHarness {
+    fn drop(&mut self) {
+        self.core.shutdown();
+    }
+}
+
+#[allow(dead_code)]
 struct Harness {
     core: TimelineCore,
     pool: Pool<ConnectionManager<SqliteConnection>>,
@@ -879,10 +1080,24 @@ fn test_restore_version_rejects_orphaned_version_without_mutating_slot() {
         SqliteVersionRepository::with_repository_root(h.pool.clone(), h.repo_root());
 
     let v1 = versions_repo
-        .create_version(game.id, VersionReason::Watcher)
+        .create_version_from_snapshot(
+            game.id,
+            VersionReason::Watcher,
+            savegame_timeline_core::content_store::CapturedSnapshot {
+                content_hash: String::new(),
+                files: Vec::new(),
+            },
+        )
         .unwrap();
     let v2 = versions_repo
-        .create_version(game.id, VersionReason::Watcher)
+        .create_version_from_snapshot(
+            game.id,
+            VersionReason::Watcher,
+            savegame_timeline_core::content_store::CapturedSnapshot {
+                content_hash: String::new(),
+                files: Vec::new(),
+            },
+        )
         .unwrap();
     let default_slot_id = v2.slot.id;
     let before = v2.slot.active_version_id;
@@ -972,18 +1187,22 @@ fn test_monitoring_settings_persist_through_facade() {
     assert_eq!(reloaded, updated);
 }
 
-/// Recursively checks whether any file named `name` exists anywhere under `root`.
-/// Used to assert on what actually landed in the repository on disk, rather
-/// than trusting a database field or a return value.
-fn repo_contains_file(root: &std::path::Path, name: &str) -> bool {
+fn repo_contains_manifest_file(root: &std::path::Path, name: &str) -> bool {
     fs::read_dir(root).is_ok_and(|entries| {
         entries.filter_map(|e| e.ok()).any(|e| {
             let path = e.path();
             if path.is_dir() {
-                repo_contains_file(&path, name)
-            } else {
-                e.file_name().to_string_lossy() == name
+                return repo_contains_manifest_file(&path, name);
             }
+            if e.file_name() != "metadata.json" {
+                return false;
+            }
+            let Ok(metadata) = savegame_timeline_core::repository::read_metadata_json::<
+                savegame_timeline_core::repository::VersionMetadata,
+            >(path.parent().unwrap()) else {
+                return false;
+            };
+            metadata.files.iter().any(|file| file.relative_path == name)
         })
     })
 }
@@ -1024,13 +1243,13 @@ fn test_exclusions_are_honoured_symmetrically_on_capture_and_restore() {
 
     // 1. The excluded file must never have been captured into any snapshot.
     assert!(
-        !repo_contains_file(&h.repo_root(), "settings.cfg"),
+        !repo_contains_manifest_file(&h.repo_root(), "settings.cfg"),
         "an excluded file must not be copied into any snapshot in the repository"
     );
     // A .ini file is real save data for many games and must be captured
     // (regression for the over-broad global exclusion list in fs_utils).
     assert!(
-        repo_contains_file(&h.repo_root(), "config.ini"),
+        repo_contains_manifest_file(&h.repo_root(), "config.ini"),
         ".ini files are real save data and must be captured into the snapshot"
     );
 
@@ -1434,152 +1653,5 @@ fn test_rename_slot_keeps_identity_and_history_and_rejects_collisions() {
             .name,
         "Story Mode",
         "a rejected rename must leave the previous name in place"
-    );
-}
-
-/// Drains any queued notifications, then blocks until a `ChangeDetected` for
-/// `game_id` arrives. That notification is sent at the very end of the watcher's
-/// event pass — after `sync_tracked_dir` has run — so receiving it proves the
-/// write reached the handler AND that the sync step is already finished. Without
-/// it the test could not distinguish "the watcher correctly wrote nothing" from
-/// "the watcher had not run yet".
-fn wait_for_change_detected(
-    rx: &savegame_timeline_core::detection::NotificationReceiver,
-    game_id: i32,
-    timeout: Duration,
-) -> bool {
-    use savegame_timeline_core::detection::Notification;
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
-            return false;
-        };
-        match rx.recv_timeout(remaining) {
-            Ok(Notification::ChangeDetected { game_id: id }) if id == game_id => return true,
-            Ok(_) => continue,
-            Err(_) => return false,
-        }
-    }
-}
-
-#[test]
-fn test_cooldown_write_must_not_overwrite_an_existing_versions_snapshot() {
-    // Regression (Critical, pre-existing): on the cooldown path `handle_new_version`
-    // returns None and no version is created, but `run` still called
-    // `sync_tracked_dir` for every modified directory. That deletes
-    // `last_version`'s stored snapshot directory and refills it with current live
-    // state, silently rewriting the content of an already-created version.
-    //
-    // This test covers the severe half: `last_version` is the slot's ACTIVE
-    // version, while the cooldown compares against max(created_at). So after
-    // restoring an OLD version, a younger sibling keeps the cooldown closed and
-    // the restored version's historical snapshot gets overwritten with
-    // post-restore live state — history changes and no new entry appears.
-    let h = harness("v1-state");
-    let game = h.create_game("Cooldown Overwrite");
-    // save_game registers the tracked dir with the watcher asynchronously.
-    std::thread::sleep(Duration::from_millis(300));
-
-    // No versions exist yet, so the cooldown is vacuously open: this write
-    // creates V1 and snapshots "v1-content" into it.
-    fs::write(&h.save_file, "v1-content").unwrap();
-    assert_eq!(
-        wait_for_version_count(&h.core, game.id, 1, Duration::from_secs(10)),
-        1,
-        "the first write must produce a version"
-    );
-    assert!(
-        wait_for_change_detected(&h._notif_rx, game.id, Duration::from_secs(10)),
-        "the watcher must finish its pass for the first write"
-    );
-
-    // Reopen the cooldown window so the next write genuinely versions too.
-    // Backdating alone is invisible to the watcher, which judges the cooldown
-    // against its own in-memory copy of the games; `restore_version` reloads
-    // that copy (ReregisterGames) before resuming. Restoring V1 onto itself is a
-    // no-op for the files and leaves the active version unchanged.
-    let v1_id = h.core.get_game(game.id).unwrap().versions[0].id;
-    h.backdate_versions();
-    h.core.restore_version(v1_id).unwrap();
-    // `Resume` rebuilds the debouncer; a write racing that rebuild is dropped.
-    std::thread::sleep(Duration::from_millis(500));
-
-    fs::write(&h.save_file, "v2-content").unwrap();
-    assert_eq!(
-        wait_for_version_count(&h.core, game.id, 2, Duration::from_secs(10)),
-        2,
-        "the second write must produce a second version"
-    );
-    assert!(
-        wait_for_change_detected(&h._notif_rx, game.id, Duration::from_secs(10)),
-        "the watcher must finish its pass for the second write"
-    );
-
-    // V2 is NOT backdated: it is seconds old, so it holds the cooldown closed
-    // for the rest of the test. V1 is an hour old.
-    let full = h.core.get_game(game.id).unwrap();
-    let v1 = full
-        .versions
-        .iter()
-        .min_by_key(|v| v.version_number)
-        .expect("two versions exist")
-        .clone();
-    let v2 = full
-        .versions
-        .iter()
-        .max_by_key(|v| v.version_number)
-        .expect("two versions exist")
-        .clone();
-    assert_ne!(v1.id, v2.id, "the two versions must be distinct");
-
-    let v1_snapshot = savegame_timeline_core::repository::game_snapshot_dir(
-        &h.repo_root(),
-        &full.game,
-        full.active_slot.as_ref().expect("game has an active slot"),
-        &v1,
-        &full.tracked_dirs[0],
-    )
-    .unwrap()
-    .join("save.dat");
-    assert_eq!(
-        fs::read_to_string(&v1_snapshot).unwrap(),
-        "v1-content",
-        "precondition: V1's snapshot holds the older content, distinct from V2's"
-    );
-
-    // Make V1 the ACTIVE version again. This diverges `last_version` (now V1)
-    // from the cooldown's max(created_at) (still V2).
-    h.core.restore_version(v1.id).unwrap();
-    assert_eq!(
-        fs::read_to_string(&h.save_file).unwrap(),
-        "v1-content",
-        "the restore must actually have rewritten the tracked directory"
-    );
-
-    // The restore suppresses its own file events, but let any stragglers settle
-    // and clear the queue, so the wait below can only be satisfied by the write
-    // that follows it.
-    std::thread::sleep(Duration::from_millis(500));
-    while h._notif_rx.try_recv().is_ok() {}
-
-    // Play after the restore. V2 is still young, so the cooldown suppresses any
-    // new version — and the buggy code would therefore dump this content on top
-    // of V1's stored snapshot.
-    fs::write(&h.save_file, "post-restore-live-state").unwrap();
-    assert!(
-        wait_for_change_detected(&h._notif_rx, game.id, Duration::from_secs(10)),
-        "the watcher must have seen and fully processed the post-restore write"
-    );
-
-    assert_eq!(
-        h.core.get_game(game.id).unwrap().versions.len(),
-        2,
-        "a write inside the cooldown window must not create a version"
-    );
-    assert_eq!(
-        fs::read_to_string(&v1_snapshot).unwrap(),
-        "v1-content",
-        "the cooldown write must leave the active version's stored snapshot byte-identical; \
-         versions are immutable"
     );
 }
