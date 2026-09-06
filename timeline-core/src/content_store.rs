@@ -239,6 +239,16 @@ fn hash_file(path: &Path) -> Result<([u8; 32], u64)> {
     Ok((hasher.finalize().into(), size))
 }
 
+#[cfg(target_os = "linux")]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sync_directory(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 fn write_blob(source: &Path, destination: &Path, hash: &str, expected_size: u64) -> Result<()> {
     if destination.exists() {
         verify_existing_blob(destination, hash, expected_size)?;
@@ -248,8 +258,20 @@ fn write_blob(source: &Path, destination: &Path, hash: &str, expected_size: u64)
     let parent = destination
         .parent()
         .ok_or_else(|| anyhow!("blob path has no parent: {}", destination.display()))?;
+    let shard_existed = parent.exists();
     fs::create_dir_all(parent)
         .with_context(|| format!("failed to create blob shard {}", parent.display()))?;
+    if !shard_existed {
+        let blobs_root = parent
+            .parent()
+            .ok_or_else(|| anyhow!("blob shard has no parent: {}", parent.display()))?;
+        sync_directory(blobs_root).with_context(|| {
+            format!(
+                "failed to sync blob directory after creating shard {}",
+                parent.display()
+            )
+        })?;
+    }
     let temp = parent.join(format!(
         ".{}.tmp-{}",
         destination.file_name().unwrap().to_string_lossy(),
@@ -300,7 +322,18 @@ fn publish_blob_no_replace(
     expected_size: u64,
 ) -> Result<()> {
     match atomic_rename_no_replace(temp, destination) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            let shard = destination
+                .parent()
+                .ok_or_else(|| anyhow!("blob path has no parent: {}", destination.display()))?;
+            sync_directory(shard).with_context(|| {
+                format!(
+                    "failed to sync blob shard after publishing {}",
+                    shard.display()
+                )
+            })?;
+            Ok(())
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let verification = verify_existing_blob(destination, hash, expected_size);
             let _ = fs::remove_file(temp);
@@ -552,6 +585,17 @@ mod tests {
 
         assert!(!temp.exists());
         assert_eq!(fs::read(destination).unwrap(), b"complete bytes");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sync_directory_succeeds_for_shard_and_parent() {
+        let blobs = tempdir().unwrap();
+        let shard = blobs.path().join("ab");
+        fs::create_dir(&shard).unwrap();
+
+        sync_directory(&shard).unwrap();
+        sync_directory(blobs.path()).unwrap();
     }
 
     #[cfg(unix)]
