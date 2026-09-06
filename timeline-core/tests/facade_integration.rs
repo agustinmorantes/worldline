@@ -98,6 +98,47 @@ fn corrupt_blob_aborts_before_live_files_are_cleared() {
 }
 
 #[test]
+fn corrupt_target_leaves_active_version_and_live_files_unchanged() {
+    let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
+    let before = harness
+        .core
+        .get_games()
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let before_active_slot_id = before.game.active_slot_id;
+    let before_active_version_id = before
+        .active_slot
+        .as_ref()
+        .and_then(|slot| slot.active_version_id);
+    fs::write(harness.blob_for("save.dat"), b"corrupt").unwrap();
+    fs::write(harness.live_dir.join("save.dat"), b"current progress").unwrap();
+
+    assert!(harness.core.restore_version(harness.version.id).is_err());
+
+    let after = harness
+        .core
+        .get_games()
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(after.game.active_slot_id, before_active_slot_id);
+    assert_eq!(
+        after
+            .active_slot
+            .as_ref()
+            .and_then(|slot| slot.active_version_id),
+        before_active_version_id
+    );
+    assert_eq!(
+        fs::read(harness.live_dir.join("save.dat")).unwrap(),
+        b"current progress"
+    );
+}
+
+#[test]
 fn content_hash_mismatch_aborts_before_live_files_are_cleared() {
     let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
     let metadata_path = harness.version_dir.join("metadata.json");

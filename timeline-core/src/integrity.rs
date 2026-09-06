@@ -340,7 +340,7 @@ impl Checker<'_> {
                 return;
             }
         };
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
+        if !metadata.is_file() || crate::fs_utils::is_link_or_reparse(&metadata) {
             self.issue(
                 RepositoryIssueKind::MissingBlob,
                 blob.to_path_buf(),

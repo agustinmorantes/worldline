@@ -315,11 +315,11 @@ impl TimelineCore {
                 ));
             }
 
+            self.restore_version_files(&game, &version)
+                .context("Failed to restore version files")?;
             self.versions_repo
                 .set_active_version(version_id)
                 .context("Failed to activate version for restoration")?;
-            self.restore_version_files(&game, &version)
-                .context("Failed to restore version files")?;
             self.resync_game_metadata(game.game.id)
                 .context("Failed to sync metadata after restoration")?;
 

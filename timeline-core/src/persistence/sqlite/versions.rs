@@ -5,6 +5,7 @@ use crate::persistence::VersionRepository;
 use crate::repository::VersionReason;
 use anyhow::{Context, Result, anyhow};
 use diesel::prelude::*;
+use std::fs;
 use uuid::Uuid;
 
 /// Resolves a version's parent's UUID from its local `parent_id`, so the
@@ -50,7 +51,8 @@ impl VersionRepository for SqliteVersionRepository {
 
         let conn = &mut self.pool.get().context("Error getting db connection")?;
 
-        conn.transaction::<FullVersion, anyhow::Error, _>(|conn| {
+        let mut published_version_dir = None;
+        let result = conn.transaction::<FullVersion, anyhow::Error, _>(|conn| {
             let game_model: Game = games::dsl::games
                 .filter(games::dsl::id.eq(game_id_param))
                 .select(Game::as_select())
@@ -114,12 +116,31 @@ impl VersionRepository for SqliteVersionRepository {
                     slot: slot_model.clone(),
                     parent_uuid: parent_uuid.clone(),
                 };
+                let final_dir = crate::repository::version_dir(
+                    &crate::repository::slot_dir(
+                        &crate::repository::game_dir(
+                            repository_root,
+                            metadata_version
+                                .game
+                                .folder_slug
+                                .as_deref()
+                                .context("Game is missing a folder slug")?,
+                        ),
+                        &metadata_version.slot.folder_slug,
+                    ),
+                    metadata_version
+                        .version
+                        .folder_slug
+                        .as_deref()
+                        .context("Version is missing a folder slug")?,
+                );
                 crate::repository::commit_version_metadata(
                     repository_root,
                     &metadata_version,
                     &snapshot,
                 )
                 .context("Error writing version metadata")?;
+                published_version_dir = Some(final_dir);
             }
 
             let updated_slot: Slot =
@@ -150,8 +171,26 @@ impl VersionRepository for SqliteVersionRepository {
             }
 
             Ok(full_version)
-        })
-        .context("Error creating version transaction")
+        });
+
+        if let Err(error) = result {
+            if let Some(version_dir) = published_version_dir {
+                match fs::remove_dir_all(&version_dir) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(cleanup_error) => {
+                        return Err(anyhow!(
+                            "{error}; failed to remove published version metadata at {}: {cleanup_error}",
+                            version_dir.display()
+                        ))
+                        .context("Error creating version transaction");
+                    }
+                }
+            }
+            return Err(error).context("Error creating version transaction");
+        }
+
+        result.context("Error creating version transaction")
     }
 
     fn set_active_version(&self, version_id: i32) -> Result<FullVersion> {

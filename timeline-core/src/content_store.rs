@@ -138,9 +138,9 @@ pub fn blob_path(repository_root: &Path, hash: &str) -> Result<PathBuf> {
 
 pub fn verify_blob(repository_root: &Path, hash: &str, expected_size: u64) -> Result<PathBuf> {
     let path = blob_path(repository_root, hash)?;
-    let metadata = fs::metadata(&path)
+    let metadata = fs::symlink_metadata(&path)
         .with_context(|| format!("failed to stat blob at {}", path.display()))?;
-    if !metadata.is_file() {
+    if !metadata.is_file() || crate::fs_utils::is_link_or_reparse(&metadata) {
         return Err(anyhow!(
             "blob path is not a regular file: {}",
             path.display()
@@ -356,7 +356,13 @@ pub(crate) fn atomic_rename_no_replace(_: &Path, _: &Path) -> io::Result<()> {
 }
 
 fn verify_existing_blob(path: &Path, hash: &str, expected_size: u64) -> Result<()> {
-    let metadata = fs::metadata(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || crate::fs_utils::is_link_or_reparse(&metadata) {
+        return Err(anyhow!(
+            "existing blob is not a regular file: {}",
+            path.display()
+        ));
+    }
     if metadata.len() != expected_size {
         return Err(anyhow!(
             "existing blob has unexpected size: {}",
@@ -546,5 +552,45 @@ mod tests {
 
         assert!(!temp.exists());
         assert_eq!(fs::read(destination).unwrap(), b"complete bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_blob_rejects_symlink_to_external_regular_file() {
+        let repo = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        let bytes = b"external bytes";
+        let hash = format_hash(&Sha256::digest(bytes));
+        let blob = blob_path(repo.path(), &hash).unwrap();
+        fs::create_dir_all(blob.parent().unwrap()).unwrap();
+        let external_file = external.path().join("save.dat");
+        fs::write(&external_file, bytes).unwrap();
+        std::os::unix::fs::symlink(&external_file, &blob).unwrap();
+
+        let error = verify_blob(repo.path(), &hash, bytes.len() as u64).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verify_blob_rejects_symlink_to_external_regular_file() {
+        let repo = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        let bytes = b"external bytes";
+        let hash = format_hash(&Sha256::digest(bytes));
+        let blob = blob_path(repo.path(), &hash).unwrap();
+        fs::create_dir_all(blob.parent().unwrap()).unwrap();
+        let external_file = external.path().join("save.dat");
+        fs::write(&external_file, bytes).unwrap();
+        if let Err(error) = std::os::windows::fs::symlink_file(&external_file, &blob) {
+            if error.raw_os_error() == Some(1314) {
+                eprintln!("skipping symlink regression: symlink privilege is unavailable");
+                return;
+            }
+            panic!("failed to create test symlink: {error}");
+        }
+
+        let error = verify_blob(repo.path(), &hash, bytes.len() as u64).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"));
     }
 }

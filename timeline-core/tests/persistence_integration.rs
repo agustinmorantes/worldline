@@ -366,6 +366,74 @@ fn snapshot_metadata_failure_rolls_back_version_row_and_slot_pointer() {
 }
 
 #[test]
+fn later_metadata_sync_failure_rolls_back_sqlite_and_removes_published_version_metadata() {
+    let pool = init_db();
+    let repository_root = tempdir().unwrap();
+    let games_repo = SqliteGameRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let versions_repo = SqliteVersionRepository::with_repository_root(
+        pool.clone(),
+        repository_root.path().to_path_buf(),
+    );
+    let game = games_repo
+        .save_game(
+            GameForm {
+                id: None,
+                uuid: None,
+                title: "Late Failure Test",
+                title_normalized: None,
+                folder_slug: None,
+                active_slot_id: None,
+                icon_path: None,
+            },
+            None,
+        )
+        .unwrap();
+    let full_game = games_repo.get_game(game.id).unwrap();
+    let slot = full_game.active_slot.as_ref().unwrap();
+    let game_dir = repository::game_dir(
+        repository_root.path(),
+        full_game.game.folder_slug.as_deref().unwrap(),
+    );
+    let slot_dir = repository::slot_dir(&game_dir, &slot.folder_slug);
+    let versions_path = repository::versions_dir(&slot_dir);
+
+    // Let version publication succeed, then make the later game metadata sync
+    // fail at the slot metadata write.
+    let slot_metadata_path = repository::metadata_path(&slot_dir);
+    std::fs::remove_file(&slot_metadata_path).unwrap();
+    std::fs::create_dir(&slot_metadata_path).unwrap();
+
+    let result = versions_repo.create_version_from_snapshot(
+        game.id,
+        VersionReason::Manual,
+        empty_snapshot(),
+    );
+
+    assert!(result.is_err());
+    let unchanged = games_repo.get_game(game.id).unwrap();
+    assert!(unchanged.versions.is_empty());
+    assert_eq!(
+        unchanged
+            .active_slot
+            .as_ref()
+            .and_then(|active_slot| active_slot.active_version_id),
+        None
+    );
+    assert!(versions_path.exists());
+    assert_eq!(
+        std::fs::read_dir(&versions_path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .count(),
+        0,
+        "a rolled-back transaction must not leave a published version directory"
+    );
+}
+
+#[test]
 fn snapshot_metadata_survives_tagging_and_activation() {
     let pool = init_db();
     let repository_root = tempdir().unwrap();
