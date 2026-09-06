@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{BufReader, Write};
+use std::io::{self, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -278,17 +278,7 @@ where
 
     sync_parent_dir(&tmp_path);
 
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(&path).with_context(|| {
-            format!(
-                "failed to remove previous metadata file before replace at {}",
-                path.display()
-            )
-        })?;
-    }
-
-    fs::rename(&tmp_path, &path).with_context(|| {
+    atomic_replace(&tmp_path, &path).with_context(|| {
         format!(
             "failed to atomically move metadata into place from {} to {}",
             tmp_path.display(),
@@ -298,6 +288,43 @@ where
 
     sync_parent_dir(&path);
     Ok(())
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
 }
 
 pub fn ensure_repository_root(repository_root: &Path) -> Result<()> {
@@ -779,6 +806,36 @@ mod tests {
 
         let loaded: RepositoryMetadata = read_metadata_json(&entity_dir).expect("read metadata");
         assert_eq!(loaded, second);
+    }
+
+    #[test]
+    fn replaces_existing_metadata_without_a_delete_gap() {
+        let dir = tempdir().expect("temp dir");
+        let entity_dir = version_dir(dir.path(), "v001__v_91ac4e2a");
+        let first = RepositoryMetadata {
+            format_version: 1,
+            created_at: Utc::now(),
+            app: "savegame-timeline-first".to_string(),
+        };
+        let second = RepositoryMetadata {
+            format_version: 2,
+            created_at: Utc::now(),
+            app: "savegame-timeline-second".to_string(),
+        };
+
+        write_metadata_json(&entity_dir, &first).expect("write first metadata");
+        write_metadata_json(&entity_dir, &second).expect("write second metadata");
+
+        let loaded: RepositoryMetadata = read_metadata_json(&entity_dir).expect("read metadata");
+        assert_eq!(loaded, second);
+        assert_ne!(loaded, first);
+        assert!(fs::read_dir(&entity_dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("metadata.json.tmp-")
+        }));
     }
 
     #[test]
