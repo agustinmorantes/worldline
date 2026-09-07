@@ -133,8 +133,7 @@ pub fn watch(mut ctx: WatcherContext) {
                         monitoring_settings,
                     ) {
                         Ok(result) => {
-                            deadlines.remove(&id);
-                            merge_deferred(&mut deadlines, result.deferred);
+                            update_deadlines(&mut deadlines, &result.completed, result.deferred);
                             ctx.games = result.games;
                         }
                         Err(err) => {
@@ -224,7 +223,11 @@ pub fn watch(mut ctx: WatcherContext) {
                         monitoring_settings,
                     ) {
                         Ok(updated_games) => {
-                            merge_deferred(&mut deadlines, updated_games.deferred);
+                            update_deadlines(
+                                &mut deadlines,
+                                &updated_games.completed,
+                                updated_games.deferred,
+                            );
                             ctx.games = updated_games.games;
                         }
                         Err(err) => {
@@ -262,6 +265,17 @@ fn merge_deferred(
             .and_modify(|deadline| *deadline = (*deadline).max(eligible_at))
             .or_insert(eligible_at);
     }
+}
+
+fn update_deadlines(
+    deadlines: &mut HashMap<i32, NaiveDateTime>,
+    completed: &[i32],
+    deferred: Vec<(i32, NaiveDateTime)>,
+) {
+    for id in completed {
+        deadlines.remove(id);
+    }
+    merge_deferred(deadlines, deferred);
 }
 
 fn recheck_deferred(deadlines: &mut HashMap<i32, NaiveDateTime>, games: &[FullGame]) {
@@ -334,6 +348,8 @@ mod tests {
             Some(Duration::ZERO)
         );
         assert_eq!(next_timeout(&HashMap::new(), false, now), None);
+        update_deadlines(&mut deadlines, &[1], vec![]);
+        assert!(!deadlines.contains_key(&1));
         recheck_deferred(&mut deadlines, &[]);
         assert!(
             deadlines.is_empty(),

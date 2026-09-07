@@ -19,6 +19,7 @@ pub struct FsEventHandler {
 pub(super) struct FsRunResult {
     pub games: Vec<FullGame>,
     pub deferred: Vec<(i32, NaiveDateTime)>,
+    pub completed: Vec<i32>,
 }
 
 impl FsEventHandler {
@@ -143,6 +144,7 @@ impl FsEventHandler {
         // needed. The manifest, not the event path, is authoritative.
         let mut created_games: HashSet<i32> = HashSet::new();
         let mut deferred = Vec::new();
+        let mut completed = Vec::new();
         for game_id in modified_games {
             let game = games
                 .iter()
@@ -176,6 +178,7 @@ impl FsEventHandler {
                     version_number: version.version.version_number,
                 })?;
             }
+            completed.push(*game_id);
         }
 
         // Reload games if new versions were created to get updated active_version_id
@@ -185,7 +188,11 @@ impl FsEventHandler {
             games.to_vec()
         };
 
-        Ok(FsRunResult { games, deferred })
+        Ok(FsRunResult {
+            games,
+            deferred,
+            completed,
+        })
     }
 
     fn reload_games(&self, _old_games: &[FullGame]) -> Result<Vec<FullGame>> {
