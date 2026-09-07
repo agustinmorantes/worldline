@@ -149,6 +149,20 @@ fn restore_uses_manifest_as_the_complete_listing() {
 }
 
 #[test]
+fn restore_replaces_file_with_snapshot_directory() {
+    let harness = RestoreHarness::version_with_files(&[("a/save.dat", b"snapshotted")]);
+    let nested = harness.live_dir.join("a");
+    fs::create_dir(&nested).unwrap();
+    fs::remove_dir(&nested).unwrap();
+    fs::write(&nested, b"blocking file").unwrap();
+
+    harness.core.restore_version(harness.version.id).unwrap();
+
+    assert!(nested.is_dir());
+    assert_eq!(fs::read(nested.join("save.dat")).unwrap(), b"snapshotted");
+}
+
+#[test]
 fn corrupt_blob_aborts_before_live_files_are_cleared() {
     let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
     fs::write(harness.blob_for("save.dat"), b"corrupt").unwrap();

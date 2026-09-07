@@ -66,20 +66,12 @@ pub fn clear_dir_except(dir: &Path, exclusions: &[Pattern]) -> Result<()> {
 /// parent of a restore destination. Missing tail components are safe because
 /// restore creates them only after every tracked directory passes this check.
 pub fn validate_restore_path(root: &Path, relative_path: &Path) -> Result<()> {
-    let path = if relative_path.as_os_str().is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(relative_path)
-            .parent()
-            .unwrap_or(root)
-            .to_path_buf()
-    };
     let mut current = PathBuf::new();
-    for component in path.components() {
+    for component in root.components() {
         current.push(component.as_os_str());
         let metadata = match std::fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!("failed to inspect restore path {}", current.display())
@@ -99,6 +91,34 @@ pub fn validate_restore_path(root: &Path, relative_path: &Path) -> Result<()> {
             ));
         }
     }
+
+    if relative_path.as_os_str().is_empty() {
+        return Ok(());
+    }
+
+    let relative_parent = relative_path.parent().unwrap_or(Path::new(""));
+    for component in relative_parent.components() {
+        current.push(component.as_os_str());
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect restore path {}", current.display())
+                });
+            }
+        };
+        if is_link_or_reparse(&metadata) {
+            return Err(anyhow!(
+                "restore path contains a link or reparse point: {}",
+                current.display()
+            ));
+        }
+        if !metadata.is_dir() {
+            return Ok(());
+        }
+    }
+
     Ok(())
 }
 
@@ -237,5 +257,32 @@ mod tests {
 
         assert_eq!(std::fs::read(&external_file).unwrap(), b"external progress");
         assert!(std::fs::symlink_metadata(&link).is_err());
+    }
+
+    #[test]
+    fn restore_allows_replaceable_file_below_safe_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a"), b"replace me").unwrap();
+
+        validate_restore_path(root.path(), Path::new("a/save.dat")).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn restore_rejects_link_below_safe_root() {
+        let root = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        create_directory_link(external.path(), &root.path().join("a"));
+
+        assert!(validate_restore_path(root.path(), Path::new("a/save.dat")).is_err());
+    }
+
+    #[test]
+    fn restore_rejects_regular_file_ancestor_above_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let file = parent.path().join("not-a-directory");
+        std::fs::write(&file, b"blocking file").unwrap();
+
+        assert!(validate_restore_path(&file.join("root"), Path::new("a/save.dat")).is_err());
     }
 }
