@@ -163,6 +163,42 @@ fn restore_replaces_file_with_snapshot_directory() {
 }
 
 #[test]
+fn restore_preserves_excluded_file_ancestor_and_restores_other_root() {
+    let harness = RestoreHarness::version_with_directories(&[
+        &[("a/save.dat", b"blocked snapshot")],
+        &[("other/save.dat", b"other snapshot")],
+    ]);
+    let game_id = harness.core.get_games().unwrap().first().unwrap().game.id;
+
+    {
+        use diesel::prelude::*;
+        use savegame_timeline_core::schema::tracked_dirs;
+        let conn = &mut harness.pool.get().unwrap();
+        diesel::update(
+            tracked_dirs::table
+                .filter(tracked_dirs::game_id.eq(game_id))
+                .filter(tracked_dirs::path.eq(harness.live_dir.to_str().unwrap())),
+        )
+        .set(tracked_dirs::exclusions.eq(r#"["a"]"#))
+        .execute(conn)
+        .unwrap();
+    }
+
+    let blocked = harness.live_dir.join("a");
+    fs::create_dir(&blocked).unwrap();
+    fs::remove_dir(&blocked).unwrap();
+    fs::write(&blocked, b"keep this file").unwrap();
+    let other = harness._live_dirs[1].path().join("other/save.dat");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    fs::write(&other, b"changed other").unwrap();
+
+    harness.core.restore_version(harness.version.id).unwrap();
+
+    assert_eq!(fs::read(&blocked).unwrap(), b"keep this file");
+    assert_eq!(fs::read(&other).unwrap(), b"other snapshot");
+}
+
+#[test]
 fn corrupt_blob_aborts_before_live_files_are_cleared() {
     let harness = RestoreHarness::version_with_files(&[("save.dat", b"known good")]);
     fs::write(harness.blob_for("save.dat"), b"corrupt").unwrap();
@@ -1054,6 +1090,7 @@ fn test_version_metadata_records_parent_uuid() {
 /// dropping a `TempDir` deletes it, so these must outlive the test body.
 struct RestoreHarness {
     core: TimelineCore,
+    pool: Pool<ConnectionManager<SqliteConnection>>,
     version: Version,
     live_dir: PathBuf,
     repository_root: PathBuf,
@@ -1095,7 +1132,7 @@ impl RestoreHarness {
             pool.clone(),
             repository_root.clone(),
         ));
-        let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool));
+        let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
         let (core, notif_rx) = TimelineCore::new(
             games_repo,
             versions_repo,
@@ -1151,6 +1188,7 @@ impl RestoreHarness {
 
         Self {
             core,
+            pool,
             version,
             live_dir: live_dirs[0].path().to_path_buf(),
             repository_root,

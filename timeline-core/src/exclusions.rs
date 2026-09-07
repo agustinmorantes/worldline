@@ -21,21 +21,24 @@ pub fn parse(raw: &str) -> Vec<Pattern> {
         .collect()
 }
 
-/// True if `relative_path` (relative to the tracked dir root) matches any pattern,
-/// as a whole path or by file name alone. The file-name fallback is what makes a
-/// literal, wildcard-free pattern such as `quicksave.dat` match at any depth; patterns
-/// containing `*` already span separators, because `require_literal_separator` is off.
+/// True if `relative_path` or one of its ancestors (relative to the tracked dir root)
+/// matches any pattern, as a whole path or by file name alone. The file-name fallback
+/// is what makes a literal, wildcard-free pattern such as `quicksave.dat` match at any
+/// depth; patterns containing `*` already span separators, because
+/// `require_literal_separator` is off.
 pub fn is_excluded(patterns: &[Pattern], relative_path: &Path) -> bool {
     if patterns.is_empty() {
         return false;
     }
-    let as_str = relative_path.to_string_lossy().replace('\\', "/");
-    let file_name = relative_path.file_name().map(|n| n.to_string_lossy());
-    patterns.iter().any(|pattern| {
-        pattern.matches_with(&as_str, MATCH_OPTIONS)
-            || file_name
-                .as_ref()
-                .is_some_and(|name| pattern.matches_with(name, MATCH_OPTIONS))
+    relative_path.ancestors().any(|ancestor| {
+        let as_str = ancestor.to_string_lossy().replace('\\', "/");
+        let file_name = ancestor.file_name().map(|n| n.to_string_lossy());
+        patterns.iter().any(|pattern| {
+            pattern.matches_with(&as_str, MATCH_OPTIONS)
+                || file_name
+                    .as_ref()
+                    .is_some_and(|name| pattern.matches_with(name, MATCH_OPTIONS))
+        })
     })
 }
 
@@ -64,5 +67,13 @@ mod tests {
         assert!(parse("not json").is_empty());
         assert!(!is_excluded(&parse("not json"), Path::new("save.dat")));
         assert!(parse(r#"["["]"#).is_empty(), "invalid globs are dropped");
+    }
+
+    #[test]
+    fn directory_exclusions_cover_descendants() {
+        let patterns = parse(r#"["a"]"#);
+
+        assert!(is_excluded(&patterns, Path::new("a/save.dat")));
+        assert!(!is_excluded(&patterns, Path::new("other/save.dat")));
     }
 }

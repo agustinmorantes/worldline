@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use glob::Pattern;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Global exclusions: this is a pure name test with no knowledge of which game or
 /// directory it is filtering for, so it may only encode what is *never* save data.
@@ -66,6 +66,16 @@ pub fn clear_dir_except(dir: &Path, exclusions: &[Pattern]) -> Result<()> {
 /// parent of a restore destination. Missing tail components are safe because
 /// restore creates them only after every tracked directory passes this check.
 pub fn validate_restore_path(root: &Path, relative_path: &Path) -> Result<()> {
+    if root
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(anyhow!(
+            "restore root contains parent traversal: {}",
+            root.display()
+        ));
+    }
+
     let mut current = PathBuf::new();
     for component in root.components() {
         current.push(component.as_os_str());
@@ -284,5 +294,17 @@ mod tests {
         std::fs::write(&file, b"blocking file").unwrap();
 
         assert!(validate_restore_path(&file.join("root"), Path::new("a/save.dat")).is_err());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn restore_rejects_parent_traversal_after_missing_root_component() {
+        let parent = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let link = parent.path().join("link");
+        create_directory_link(external.path(), &link);
+        let root = parent.path().join("missing").join("..").join("link");
+
+        assert!(validate_restore_path(&root, Path::new("")).is_err());
     }
 }
