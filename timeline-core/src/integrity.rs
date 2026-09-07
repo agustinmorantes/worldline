@@ -2,8 +2,9 @@ use crate::content_store::{blob_path, snapshot_content_hash, verify_blob};
 use crate::repository::{
     self, GameMetadata, RepositoryMetadata, SlotMetadata, TrackedDirMetadata, VersionMetadata,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -39,6 +40,11 @@ pub fn check_repository(repository_root: &Path, deep: bool) -> RepositoryIntegri
         deep,
         issues: Vec::new(),
         tracked_dirs: HashSet::new(),
+        slot_games: HashMap::new(),
+        version_slots: HashMap::new(),
+        active_slots: Vec::new(),
+        active_versions: Vec::new(),
+        parent_versions: Vec::new(),
     };
     checker.check();
     checker.issues.sort_by(|left, right| {
@@ -57,6 +63,11 @@ struct Checker<'a> {
     deep: bool,
     issues: Vec<RepositoryIssue>,
     tracked_dirs: HashSet<(Uuid, Uuid)>,
+    slot_games: HashMap<Uuid, Uuid>,
+    version_slots: HashMap<Uuid, Uuid>,
+    active_slots: Vec<PendingReference>,
+    active_versions: Vec<PendingReference>,
+    parent_versions: Vec<PendingReference>,
 }
 
 impl Checker<'_> {
@@ -115,6 +126,7 @@ impl Checker<'_> {
         for game_dir in games {
             self.check_game(&game_dir);
         }
+        self.validate_relationships();
     }
 
     fn check_game(&mut self, game_dir: &Path) {
@@ -131,6 +143,13 @@ impl Checker<'_> {
                 "game metadata does not match its repository entry",
             );
             return;
+        }
+        if let Some(target_uuid) = game.active_slot_uuid {
+            self.active_slots.push(PendingReference {
+                owner_uuid: game.uuid,
+                target_uuid,
+                source_path: repository::metadata_path(game_dir),
+            });
         }
 
         let tracked_root = repository::tracked_dirs_dir(game_dir);
@@ -190,6 +209,14 @@ impl Checker<'_> {
             );
             return;
         }
+        self.slot_games.insert(slot.uuid, game_uuid);
+        if let Some(target_uuid) = slot.active_version_uuid {
+            self.active_versions.push(PendingReference {
+                owner_uuid: slot.uuid,
+                target_uuid,
+                source_path: repository::metadata_path(slot_dir),
+            });
+        }
 
         let versions_root = repository::versions_dir(slot_dir);
         if !self.is_directory_or_absent(&versions_root, "versions directory") {
@@ -248,6 +275,14 @@ impl Checker<'_> {
                 "version metadata does not match its repository entry",
             );
             return;
+        }
+        self.version_slots.insert(metadata.uuid, slot_uuid);
+        if let Some(target_uuid) = metadata.parent_version_uuid {
+            self.parent_versions.push(PendingReference {
+                owner_uuid: metadata.uuid,
+                target_uuid,
+                source_path: metadata_path.clone(),
+            });
         }
 
         let mut canonical_files = metadata.files.clone();
@@ -476,9 +511,26 @@ impl Checker<'_> {
                 return None;
             }
         };
-        let mut entries = entries.flatten().collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.path());
-        Some(entries)
+        Some(self.collect_child_entries(parent, entries))
+    }
+
+    fn collect_child_entries<I>(&mut self, parent: &Path, entries: I) -> Vec<fs::DirEntry>
+    where
+        I: Iterator<Item = io::Result<fs::DirEntry>>,
+    {
+        let mut collected = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => collected.push(entry),
+                Err(error) => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    parent.to_path_buf(),
+                    format!("failed to read repository directory: {error}"),
+                ),
+            }
+        }
+        collected.sort_by_key(|entry| entry.path());
+        collected
     }
 
     fn issue(&mut self, kind: RepositoryIssueKind, path: PathBuf, detail: impl Into<String>) {
@@ -488,6 +540,90 @@ impl Checker<'_> {
             detail: detail.into(),
         });
     }
+
+    fn validate_relationships(&mut self) {
+        for reference in std::mem::take(&mut self.active_slots) {
+            match self.slot_games.get(&reference.target_uuid).copied() {
+                None => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "game references missing active slot {}",
+                        reference.target_uuid
+                    ),
+                ),
+                Some(game_uuid) if game_uuid != reference.owner_uuid => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "game active slot {} belongs to another game",
+                        reference.target_uuid
+                    ),
+                ),
+                Some(_) => {}
+            }
+        }
+        for reference in std::mem::take(&mut self.active_versions) {
+            match self.version_slots.get(&reference.target_uuid).copied() {
+                None => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "slot references missing active version {}",
+                        reference.target_uuid
+                    ),
+                ),
+                Some(slot_uuid) if slot_uuid != reference.owner_uuid => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "slot active version {} belongs to another slot",
+                        reference.target_uuid
+                    ),
+                ),
+                Some(_) => {}
+            }
+        }
+        for reference in std::mem::take(&mut self.parent_versions) {
+            let Some(child_slot_uuid) = self.version_slots.get(&reference.owner_uuid).copied()
+            else {
+                continue;
+            };
+            if reference.target_uuid == reference.owner_uuid {
+                self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    "version cannot be its own parent",
+                );
+                continue;
+            }
+            match self.version_slots.get(&reference.target_uuid).copied() {
+                None => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "version references missing parent version {}",
+                        reference.target_uuid
+                    ),
+                ),
+                Some(parent_slot_uuid) if parent_slot_uuid != child_slot_uuid => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "version parent {} belongs to another slot",
+                        reference.target_uuid
+                    ),
+                ),
+                Some(_) => {}
+            }
+        }
+    }
+}
+
+struct PendingReference {
+    owner_uuid: Uuid,
+    target_uuid: Uuid,
+    source_path: PathBuf,
 }
 
 fn file_name(path: &Path) -> String {
@@ -643,6 +779,97 @@ mod tests {
             let report = check_repository(fixture.root(), true);
             assert!(report.has_kind(kind), "{name}: {report:?}");
         }
+    }
+
+    #[test]
+    fn reports_broken_history_and_active_pointers() {
+        type RelationshipCase = (
+            &'static str,
+            fn(&IntegrityFixture),
+            fn(&IntegrityFixture) -> PathBuf,
+        );
+        let cases: [RelationshipCase; 7] = [
+            (
+                "missing active slot",
+                IntegrityFixture::remove_active_slot,
+                IntegrityFixture::game_metadata_path,
+            ),
+            (
+                "active slot belongs to another game",
+                IntegrityFixture::point_to_slot_from_another_game,
+                IntegrityFixture::game_metadata_path,
+            ),
+            (
+                "missing active version",
+                IntegrityFixture::remove_active_version,
+                IntegrityFixture::slot_metadata_path,
+            ),
+            (
+                "active version belongs to another slot",
+                IntegrityFixture::point_to_version_from_another_slot,
+                IntegrityFixture::slot_metadata_path,
+            ),
+            (
+                "missing parent",
+                IntegrityFixture::point_to_missing_parent,
+                IntegrityFixture::version_metadata_path,
+            ),
+            (
+                "parent belongs to another slot",
+                IntegrityFixture::point_to_parent_from_another_slot,
+                IntegrityFixture::version_metadata_path,
+            ),
+            (
+                "self-parent",
+                IntegrityFixture::point_to_self,
+                IntegrityFixture::version_metadata_path,
+            ),
+        ];
+
+        for (name, mutate, source_path) in cases {
+            let fixture = IntegrityFixture::valid();
+            mutate(&fixture);
+            let source_path = source_path(&fixture);
+            let report = check_repository(fixture.root(), true);
+            assert!(
+                report.issues.iter().any(|issue| {
+                    issue.kind == RepositoryIssueKind::InvalidMetadata && issue.path == source_path
+                }),
+                "{name}: {report:?}"
+            );
+        }
+
+        let fixture = IntegrityFixture::valid();
+        fixture.add_valid_parent_chain();
+        assert!(check_repository(fixture.root(), true).issues.is_empty());
+    }
+
+    #[test]
+    fn reports_directory_entry_errors() {
+        let fixture = IntegrityFixture::valid();
+        let parent = fixture.root().join("games");
+        let mut checker = Checker {
+            repository_root: fixture.root(),
+            deep: false,
+            issues: Vec::new(),
+            tracked_dirs: HashSet::new(),
+            slot_games: HashMap::new(),
+            version_slots: HashMap::new(),
+            active_slots: Vec::new(),
+            active_versions: Vec::new(),
+            parent_versions: Vec::new(),
+        };
+
+        checker.collect_child_entries(
+            &parent,
+            std::iter::once(Err(std::io::Error::other("fixture entry failure"))),
+        );
+
+        assert!(checker.issues.iter().any(|issue| {
+            issue.kind == RepositoryIssueKind::InvalidMetadata
+                && issue.path == parent
+                && issue.detail.contains("fixture entry failure")
+        }));
     }
 
     #[test]
@@ -856,6 +1083,36 @@ mod tests {
             self.root.path()
         }
 
+        fn slot_dir(&self) -> PathBuf {
+            self.version_dir
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf()
+        }
+
+        fn game_dir(&self) -> PathBuf {
+            self.slot_dir()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf()
+        }
+
+        fn game_metadata_path(&self) -> PathBuf {
+            repository::metadata_path(&self.game_dir())
+        }
+
+        fn slot_metadata_path(&self) -> PathBuf {
+            repository::metadata_path(&self.slot_dir())
+        }
+
+        fn version_metadata_path(&self) -> PathBuf {
+            repository::metadata_path(&self.version_dir)
+        }
+
         fn set_format_version(&self, format_version: u32) {
             let mut metadata: RepositoryMetadata =
                 repository::read_metadata_json(self.root()).unwrap();
@@ -874,6 +1131,152 @@ mod tests {
                 repository::read_metadata_json(&self.version_dir).unwrap();
             mutate(&mut metadata);
             repository::write_metadata_json(&self.version_dir, &metadata).unwrap();
+        }
+
+        fn rewrite_game_metadata(&self, mutate: impl FnOnce(&mut GameMetadata)) {
+            let mut metadata: GameMetadata =
+                repository::read_metadata_json(&self.game_dir()).unwrap();
+            mutate(&mut metadata);
+            repository::write_metadata_json(&self.game_dir(), &metadata).unwrap();
+        }
+
+        fn rewrite_slot_metadata(&self, mutate: impl FnOnce(&mut SlotMetadata)) {
+            let mut metadata: SlotMetadata =
+                repository::read_metadata_json(&self.slot_dir()).unwrap();
+            mutate(&mut metadata);
+            repository::write_metadata_json(&self.slot_dir(), &metadata).unwrap();
+        }
+
+        fn remove_active_slot(&self) {
+            self.rewrite_game_metadata(|metadata| {
+                metadata.active_slot_uuid = Some(Uuid::from_u128(99))
+            });
+        }
+
+        fn point_to_slot_from_another_game(&self) {
+            let other_game_uuid = Uuid::from_u128(10);
+            let other_slot_uuid = Uuid::from_u128(11);
+            let other_game_slug = "other__g_00000000";
+            let other_slot_slug = "other__s_00000000";
+            let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+            let other_game_dir = repository::game_dir(self.root(), other_game_slug);
+            repository::write_metadata_json(
+                &other_game_dir,
+                &GameMetadata {
+                    entity: "game".to_string(),
+                    uuid: other_game_uuid,
+                    title: "Other".to_string(),
+                    folder_slug: other_game_slug.to_string(),
+                    active_slot_uuid: None,
+                    icon: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+            repository::write_metadata_json(
+                &repository::slot_dir(&other_game_dir, other_slot_slug),
+                &SlotMetadata {
+                    entity: "slot".to_string(),
+                    uuid: other_slot_uuid,
+                    game_uuid: other_game_uuid,
+                    name: "Other".to_string(),
+                    folder_slug: other_slot_slug.to_string(),
+                    active_version_uuid: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+            self.rewrite_game_metadata(|metadata| {
+                metadata.active_slot_uuid = Some(other_slot_uuid)
+            });
+        }
+
+        fn remove_active_version(&self) {
+            self.rewrite_slot_metadata(|metadata| {
+                metadata.active_version_uuid = Some(Uuid::from_u128(99))
+            });
+        }
+
+        fn point_to_version_from_another_slot(&self) {
+            let other_version_uuid = self.add_other_slot_and_version();
+            self.rewrite_slot_metadata(|metadata| {
+                metadata.active_version_uuid = Some(other_version_uuid)
+            });
+        }
+
+        fn point_to_missing_parent(&self) {
+            self.rewrite_version_metadata(|metadata| {
+                metadata.parent_version_uuid = Some(Uuid::from_u128(99))
+            });
+        }
+
+        fn point_to_parent_from_another_slot(&self) {
+            let other_version_uuid = self.add_other_slot_and_version();
+            self.rewrite_version_metadata(|metadata| {
+                metadata.parent_version_uuid = Some(other_version_uuid)
+            });
+        }
+
+        fn point_to_self(&self) {
+            self.rewrite_version_metadata(|metadata| {
+                metadata.parent_version_uuid = Some(metadata.uuid)
+            });
+        }
+
+        fn add_other_slot_and_version(&self) -> Uuid {
+            let slot_uuid = Uuid::from_u128(6);
+            let version_uuid = Uuid::from_u128(7);
+            let slot_slug = "other__s_00000000";
+            let version_slug = "v002__v_00000000";
+            let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+            let slot_dir = repository::slot_dir(&self.game_dir(), slot_slug);
+            repository::write_metadata_json(
+                &slot_dir,
+                &SlotMetadata {
+                    entity: "slot".to_string(),
+                    uuid: slot_uuid,
+                    game_uuid: Uuid::from_u128(1),
+                    name: "Other".to_string(),
+                    folder_slug: slot_slug.to_string(),
+                    active_version_uuid: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+            let mut version: VersionMetadata =
+                repository::read_metadata_json(&self.version_dir).unwrap();
+            version.uuid = version_uuid;
+            version.slot_uuid = Some(slot_uuid);
+            version.folder_slug = version_slug.to_string();
+            version.parent_version_uuid = None;
+            repository::write_metadata_json(
+                &repository::version_dir(&slot_dir, version_slug),
+                &version,
+            )
+            .unwrap();
+            version_uuid
+        }
+
+        fn add_valid_parent_chain(&self) {
+            let version_uuid = Uuid::from_u128(5);
+            let version_slug = "v002__v_00000000";
+            let mut version: VersionMetadata =
+                repository::read_metadata_json(&self.version_dir).unwrap();
+            version.uuid = version_uuid;
+            version.folder_slug = version_slug.to_string();
+            version.version_number = 2;
+            version.parent_version_uuid = Some(Uuid::from_u128(4));
+            repository::write_metadata_json(
+                &repository::version_dir(&self.slot_dir(), version_slug),
+                &version,
+            )
+            .unwrap();
+            self.rewrite_slot_metadata(|metadata| {
+                metadata.active_version_uuid = Some(version_uuid)
+            });
         }
 
         fn add_unsafe_relative_path(&self) {
