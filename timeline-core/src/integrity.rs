@@ -63,11 +63,11 @@ struct Checker<'a> {
     deep: bool,
     issues: Vec<RepositoryIssue>,
     tracked_dirs: HashSet<(Uuid, Uuid)>,
-    slot_games: HashMap<Uuid, Uuid>,
-    version_slots: HashMap<Uuid, Uuid>,
+    slot_games: HashMap<Uuid, Vec<EntityOwner>>,
+    version_slots: HashMap<Uuid, Vec<EntityOwner>>,
     active_slots: Vec<PendingReference>,
     active_versions: Vec<PendingReference>,
-    parent_versions: Vec<PendingReference>,
+    parent_versions: Vec<PendingParentReference>,
 }
 
 impl Checker<'_> {
@@ -209,7 +209,13 @@ impl Checker<'_> {
             );
             return;
         }
-        self.slot_games.insert(slot.uuid, game_uuid);
+        self.slot_games
+            .entry(slot.uuid)
+            .or_default()
+            .push(EntityOwner {
+                owner_uuid: game_uuid,
+                metadata_path: repository::metadata_path(slot_dir),
+            });
         if let Some(target_uuid) = slot.active_version_uuid {
             self.active_versions.push(PendingReference {
                 owner_uuid: slot.uuid,
@@ -276,11 +282,18 @@ impl Checker<'_> {
             );
             return;
         }
-        self.version_slots.insert(metadata.uuid, slot_uuid);
+        self.version_slots
+            .entry(metadata.uuid)
+            .or_default()
+            .push(EntityOwner {
+                owner_uuid: slot_uuid,
+                metadata_path: metadata_path.clone(),
+            });
         if let Some(target_uuid) = metadata.parent_version_uuid {
-            self.parent_versions.push(PendingReference {
-                owner_uuid: metadata.uuid,
-                target_uuid,
+            self.parent_versions.push(PendingParentReference {
+                child_uuid: metadata.uuid,
+                parent_uuid: target_uuid,
+                child_slot_uuid: slot_uuid,
                 source_path: metadata_path.clone(),
             });
         }
@@ -542,9 +555,10 @@ impl Checker<'_> {
     }
 
     fn validate_relationships(&mut self) {
+        self.report_duplicate_entities();
         for reference in std::mem::take(&mut self.active_slots) {
-            match self.slot_games.get(&reference.target_uuid).copied() {
-                None => self.issue(
+            match ownership(&self.slot_games, reference.target_uuid) {
+                Ownership::Missing => self.issue(
                     RepositoryIssueKind::InvalidMetadata,
                     reference.source_path,
                     format!(
@@ -552,7 +566,15 @@ impl Checker<'_> {
                         reference.target_uuid
                     ),
                 ),
-                Some(game_uuid) if game_uuid != reference.owner_uuid => self.issue(
+                Ownership::Ambiguous => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "game references ambiguous active slot {}",
+                        reference.target_uuid
+                    ),
+                ),
+                Ownership::Unique(game_uuid) if game_uuid != reference.owner_uuid => self.issue(
                     RepositoryIssueKind::InvalidMetadata,
                     reference.source_path,
                     format!(
@@ -560,12 +582,12 @@ impl Checker<'_> {
                         reference.target_uuid
                     ),
                 ),
-                Some(_) => {}
+                Ownership::Unique(_) => {}
             }
         }
         for reference in std::mem::take(&mut self.active_versions) {
-            match self.version_slots.get(&reference.target_uuid).copied() {
-                None => self.issue(
+            match ownership(&self.version_slots, reference.target_uuid) {
+                Ownership::Missing => self.issue(
                     RepositoryIssueKind::InvalidMetadata,
                     reference.source_path,
                     format!(
@@ -573,7 +595,15 @@ impl Checker<'_> {
                         reference.target_uuid
                     ),
                 ),
-                Some(slot_uuid) if slot_uuid != reference.owner_uuid => self.issue(
+                Ownership::Ambiguous => self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "slot references ambiguous active version {}",
+                        reference.target_uuid
+                    ),
+                ),
+                Ownership::Unique(slot_uuid) if slot_uuid != reference.owner_uuid => self.issue(
                     RepositoryIssueKind::InvalidMetadata,
                     reference.source_path,
                     format!(
@@ -581,15 +611,11 @@ impl Checker<'_> {
                         reference.target_uuid
                     ),
                 ),
-                Some(_) => {}
+                Ownership::Unique(_) => {}
             }
         }
         for reference in std::mem::take(&mut self.parent_versions) {
-            let Some(child_slot_uuid) = self.version_slots.get(&reference.owner_uuid).copied()
-            else {
-                continue;
-            };
-            if reference.target_uuid == reference.owner_uuid {
+            if reference.parent_uuid == reference.child_uuid {
                 self.issue(
                     RepositoryIssueKind::InvalidMetadata,
                     reference.source_path,
@@ -597,32 +623,97 @@ impl Checker<'_> {
                 );
                 continue;
             }
-            match self.version_slots.get(&reference.target_uuid).copied() {
-                None => self.issue(
+            match ownership(&self.version_slots, reference.parent_uuid) {
+                Ownership::Missing => self.issue(
                     RepositoryIssueKind::InvalidMetadata,
                     reference.source_path,
                     format!(
                         "version references missing parent version {}",
-                        reference.target_uuid
+                        reference.parent_uuid
                     ),
                 ),
-                Some(parent_slot_uuid) if parent_slot_uuid != child_slot_uuid => self.issue(
+                Ownership::Ambiguous => self.issue(
                     RepositoryIssueKind::InvalidMetadata,
                     reference.source_path,
                     format!(
-                        "version parent {} belongs to another slot",
-                        reference.target_uuid
+                        "version references ambiguous parent version {}",
+                        reference.parent_uuid
                     ),
                 ),
-                Some(_) => {}
+                Ownership::Unique(parent_slot_uuid)
+                    if parent_slot_uuid != reference.child_slot_uuid =>
+                {
+                    self.issue(
+                        RepositoryIssueKind::InvalidMetadata,
+                        reference.source_path,
+                        format!(
+                            "version parent {} belongs to another slot",
+                            reference.parent_uuid
+                        ),
+                    )
+                }
+                Ownership::Unique(_) => {}
             }
         }
+    }
+
+    fn report_duplicate_entities(&mut self) {
+        let mut duplicates = Vec::new();
+        for (uuid, owners) in &self.slot_games {
+            if owners.len() > 1 {
+                for owner in owners {
+                    duplicates.push((
+                        owner.metadata_path.clone(),
+                        format!("duplicate slot UUID {uuid}"),
+                    ));
+                }
+            }
+        }
+        for (uuid, owners) in &self.version_slots {
+            if owners.len() > 1 {
+                for owner in owners {
+                    duplicates.push((
+                        owner.metadata_path.clone(),
+                        format!("duplicate version UUID {uuid}"),
+                    ));
+                }
+            }
+        }
+        for (path, detail) in duplicates {
+            self.issue(RepositoryIssueKind::InvalidMetadata, path, detail);
+        }
+    }
+}
+
+struct EntityOwner {
+    owner_uuid: Uuid,
+    metadata_path: PathBuf,
+}
+
+enum Ownership {
+    Missing,
+    Unique(Uuid),
+    Ambiguous,
+}
+
+fn ownership(map: &HashMap<Uuid, Vec<EntityOwner>>, uuid: Uuid) -> Ownership {
+    match map.get(&uuid) {
+        None => Ownership::Missing,
+        Some(owners) if owners.len() == 1 => Ownership::Unique(owners[0].owner_uuid),
+        Some(_) => Ownership::Ambiguous,
     }
 }
 
 struct PendingReference {
     owner_uuid: Uuid,
     target_uuid: Uuid,
+    source_path: PathBuf,
+}
+
+struct PendingParentReference {
+    child_uuid: Uuid,
+    parent_uuid: Uuid,
+    child_slot_uuid: Uuid,
     source_path: PathBuf,
 }
 
@@ -873,6 +964,63 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_slot_uuids_without_overwriting_owner() {
+        let fixture = IntegrityFixture::valid();
+        fixture.add_duplicate_slot_uuid_before_owner();
+
+        let report = check_repository(fixture.root(), true);
+
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.kind == RepositoryIssueKind::InvalidMetadata
+                    && issue.path == fixture.duplicate_slot_metadata_path()
+                    && issue.detail.contains("duplicate slot UUID")
+            }),
+            "{report:?}"
+        );
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.kind == RepositoryIssueKind::InvalidMetadata
+                    && issue.path == fixture.game_metadata_path()
+                    && issue.detail.contains("ambiguous active slot")
+            }),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_version_uuids_without_inventing_parent_ownership() {
+        let fixture = IntegrityFixture::valid();
+        fixture.add_duplicate_version_uuid_before_owner();
+
+        let report = check_repository(fixture.root(), true);
+
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.kind == RepositoryIssueKind::InvalidMetadata
+                    && issue.path == fixture.duplicate_version_metadata_path()
+                    && issue.detail.contains("duplicate version UUID")
+            }),
+            "{report:?}"
+        );
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.kind == RepositoryIssueKind::InvalidMetadata
+                    && issue.path == fixture.slot_metadata_path()
+                    && issue.detail.contains("ambiguous active version")
+            }),
+            "{report:?}"
+        );
+        assert!(
+            !report.issues.iter().any(|issue| {
+                issue.path == fixture.duplicate_version_metadata_path()
+                    && issue.detail.contains("belongs to another slot")
+            }),
+            "{report:?}"
+        );
+    }
+
+    #[test]
     fn malformed_sibling_does_not_hide_valid_sibling_findings() {
         let fixture = IntegrityFixture::valid();
         fixture.add_malformed_version_metadata();
@@ -1113,6 +1261,16 @@ mod tests {
             repository::metadata_path(&self.version_dir)
         }
 
+        fn duplicate_slot_metadata_path(&self) -> PathBuf {
+            let game_dir = repository::game_dir(self.root(), "aaa__g_00000000");
+            repository::metadata_path(&repository::slot_dir(&game_dir, "duplicate__s_00000000"))
+        }
+
+        fn duplicate_version_metadata_path(&self) -> PathBuf {
+            let slot_dir = repository::slot_dir(&self.game_dir(), "aaa__s_00000000");
+            repository::metadata_path(&repository::version_dir(&slot_dir, "v000__v_00000000"))
+        }
+
         fn set_format_version(&self, format_version: u32) {
             let mut metadata: RepositoryMetadata =
                 repository::read_metadata_json(self.root()).unwrap();
@@ -1277,6 +1435,84 @@ mod tests {
             self.rewrite_slot_metadata(|metadata| {
                 metadata.active_version_uuid = Some(version_uuid)
             });
+        }
+
+        fn add_duplicate_slot_uuid_before_owner(&self) {
+            let game_uuid = Uuid::from_u128(10);
+            let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+            let game_slug = "aaa__g_00000000";
+            let slot_slug = "duplicate__s_00000000";
+            let game_dir = repository::game_dir(self.root(), game_slug);
+            repository::write_metadata_json(
+                &game_dir,
+                &GameMetadata {
+                    entity: "game".to_string(),
+                    uuid: game_uuid,
+                    title: "Earlier".to_string(),
+                    folder_slug: game_slug.to_string(),
+                    active_slot_uuid: None,
+                    icon: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+            repository::write_metadata_json(
+                &repository::slot_dir(&game_dir, slot_slug),
+                &SlotMetadata {
+                    entity: "slot".to_string(),
+                    uuid: Uuid::from_u128(3),
+                    game_uuid,
+                    name: "Duplicate".to_string(),
+                    folder_slug: slot_slug.to_string(),
+                    active_version_uuid: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+        }
+
+        fn add_duplicate_version_uuid_before_owner(&self) {
+            let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+            let slot_slug = "aaa__s_00000000";
+            let slot_dir = repository::slot_dir(&self.game_dir(), slot_slug);
+            repository::write_metadata_json(
+                &slot_dir,
+                &SlotMetadata {
+                    entity: "slot".to_string(),
+                    uuid: Uuid::from_u128(6),
+                    game_uuid: Uuid::from_u128(1),
+                    name: "Earlier".to_string(),
+                    folder_slug: slot_slug.to_string(),
+                    active_version_uuid: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+
+            let mut duplicate: VersionMetadata =
+                repository::read_metadata_json(&self.version_dir).unwrap();
+            duplicate.uuid = Uuid::from_u128(4);
+            duplicate.slot_uuid = Some(Uuid::from_u128(6));
+            duplicate.folder_slug = "v000__v_00000000".to_string();
+            duplicate.parent_version_uuid = Some(Uuid::from_u128(7));
+            repository::write_metadata_json(
+                &repository::version_dir(&slot_dir, &duplicate.folder_slug),
+                &duplicate,
+            )
+            .unwrap();
+
+            let mut parent = duplicate.clone();
+            parent.uuid = Uuid::from_u128(7);
+            parent.folder_slug = "v001__v_00000000".to_string();
+            parent.parent_version_uuid = None;
+            repository::write_metadata_json(
+                &repository::version_dir(&slot_dir, &parent.folder_slug),
+                &parent,
+            )
+            .unwrap();
         }
 
         fn add_unsafe_relative_path(&self) {
