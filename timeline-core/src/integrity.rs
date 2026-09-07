@@ -586,6 +586,20 @@ impl Checker<'_> {
             }
         }
         for reference in std::mem::take(&mut self.active_versions) {
+            if matches!(
+                ownership(&self.slot_games, reference.owner_uuid),
+                Ownership::Ambiguous
+            ) {
+                self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "active version reference has ambiguous source slot UUID {}",
+                        reference.owner_uuid
+                    ),
+                );
+                continue;
+            }
             match ownership(&self.version_slots, reference.target_uuid) {
                 Ownership::Missing => self.issue(
                     RepositoryIssueKind::InvalidMetadata,
@@ -615,6 +629,20 @@ impl Checker<'_> {
             }
         }
         for reference in std::mem::take(&mut self.parent_versions) {
+            if matches!(
+                ownership(&self.slot_games, reference.child_slot_uuid),
+                Ownership::Ambiguous
+            ) {
+                self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    reference.source_path,
+                    format!(
+                        "parent reference has ambiguous source slot UUID {}",
+                        reference.child_slot_uuid
+                    ),
+                );
+                continue;
+            }
             if reference.parent_uuid == reference.child_uuid {
                 self.issue(
                     RepositoryIssueKind::InvalidMetadata,
@@ -1021,6 +1049,40 @@ mod tests {
     }
 
     #[test]
+    fn rejects_active_version_from_ambiguous_slot_uuid() {
+        let fixture = IntegrityFixture::valid();
+        fixture.add_duplicate_slot_uuid_with_active_version();
+
+        let report = check_repository(fixture.root(), true);
+
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.kind == RepositoryIssueKind::InvalidMetadata
+                    && issue.path == fixture.ambiguous_slot_metadata_path()
+                    && issue.detail.contains("ambiguous source slot")
+            }),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_parent_from_ambiguous_slot_uuid() {
+        let fixture = IntegrityFixture::valid();
+        fixture.add_duplicate_slot_uuid_with_parent_version();
+
+        let report = check_repository(fixture.root(), true);
+
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.kind == RepositoryIssueKind::InvalidMetadata
+                    && issue.path == fixture.ambiguous_parent_version_metadata_path()
+                    && issue.detail.contains("ambiguous source slot")
+            }),
+            "{report:?}"
+        );
+    }
+
+    #[test]
     fn malformed_sibling_does_not_hide_valid_sibling_findings() {
         let fixture = IntegrityFixture::valid();
         fixture.add_malformed_version_metadata();
@@ -1271,6 +1333,15 @@ mod tests {
             repository::metadata_path(&repository::version_dir(&slot_dir, "v000__v_00000000"))
         }
 
+        fn ambiguous_slot_metadata_path(&self) -> PathBuf {
+            repository::metadata_path(&repository::slot_dir(&self.game_dir(), "aaa__s_00000000"))
+        }
+
+        fn ambiguous_parent_version_metadata_path(&self) -> PathBuf {
+            let slot_dir = repository::slot_dir(&self.game_dir(), "aaa__s_00000000");
+            repository::metadata_path(&repository::version_dir(&slot_dir, "v002__v_00000000"))
+        }
+
         fn set_format_version(&self, format_version: u32) {
             let mut metadata: RepositoryMetadata =
                 repository::read_metadata_json(self.root()).unwrap();
@@ -1511,6 +1582,57 @@ mod tests {
             repository::write_metadata_json(
                 &repository::version_dir(&slot_dir, &parent.folder_slug),
                 &parent,
+            )
+            .unwrap();
+        }
+
+        fn add_duplicate_slot_uuid_with_active_version(&self) {
+            let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+            let slot_slug = "aaa__s_00000000";
+            repository::write_metadata_json(
+                &repository::slot_dir(&self.game_dir(), slot_slug),
+                &SlotMetadata {
+                    entity: "slot".to_string(),
+                    uuid: Uuid::from_u128(3),
+                    game_uuid: Uuid::from_u128(1),
+                    name: "Duplicate".to_string(),
+                    folder_slug: slot_slug.to_string(),
+                    active_version_uuid: Some(Uuid::from_u128(4)),
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+        }
+
+        fn add_duplicate_slot_uuid_with_parent_version(&self) {
+            let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+            let slot_slug = "aaa__s_00000000";
+            let slot_dir = repository::slot_dir(&self.game_dir(), slot_slug);
+            repository::write_metadata_json(
+                &slot_dir,
+                &SlotMetadata {
+                    entity: "slot".to_string(),
+                    uuid: Uuid::from_u128(3),
+                    game_uuid: Uuid::from_u128(1),
+                    name: "Duplicate".to_string(),
+                    folder_slug: slot_slug.to_string(),
+                    active_version_uuid: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+
+            let mut child: VersionMetadata =
+                repository::read_metadata_json(&self.version_dir).unwrap();
+            child.uuid = Uuid::from_u128(7);
+            child.slot_uuid = Some(Uuid::from_u128(3));
+            child.folder_slug = "v002__v_00000000".to_string();
+            child.parent_version_uuid = Some(Uuid::from_u128(4));
+            repository::write_metadata_json(
+                &repository::version_dir(&slot_dir, &child.folder_slug),
+                &child,
             )
             .unwrap();
         }
