@@ -999,6 +999,96 @@ fn test_switch_slot_to_never_versioned_slot_clears_live_dir() {
 }
 
 #[test]
+fn failed_slot_switch_preserves_active_slot() {
+    let h = harness("original-state");
+    let game = h.create_game("Failed Slot Switch");
+    let original_slot_id = h.core.get_game(game.id).unwrap().active_slot.unwrap().id;
+
+    let with_target = h.core.create_slot(game.id, "Broken Target").unwrap();
+    let target_slot_id = with_target.active_slot.as_ref().unwrap().id;
+    fs::write(&h.save_file, "target-state").unwrap();
+    h.core.switch_slot(game.id, original_slot_id).unwrap();
+    assert_eq!(fs::read_to_string(&h.save_file).unwrap(), "original-state");
+    fs::write(&h.save_file, "outgoing-changed-state").unwrap();
+
+    let slots = h.core.get_slots(game.id).unwrap();
+    let original_slot = slots
+        .iter()
+        .find(|slot| slot.slot.id == original_slot_id)
+        .unwrap();
+    let target_slot = slots
+        .iter()
+        .find(|slot| slot.slot.id == target_slot_id)
+        .unwrap();
+    let target_version_id = target_slot.slot.active_version_id.unwrap();
+    let target_version = target_slot
+        .versions
+        .iter()
+        .find(|version| version.id == target_version_id)
+        .unwrap();
+    let game_dir = savegame_timeline_core::repository::game_dir(
+        &h.repo_root(),
+        original_slot.game.folder_slug.as_deref().unwrap(),
+    );
+    let target_version_dir = savegame_timeline_core::repository::version_dir(
+        &savegame_timeline_core::repository::slot_dir(&game_dir, &target_slot.slot.folder_slug),
+        target_version.folder_slug.as_deref().unwrap(),
+    );
+    fs::remove_file(target_version_dir.join("metadata.json")).unwrap();
+
+    let original_game_metadata: savegame_timeline_core::repository::GameMetadata =
+        savegame_timeline_core::repository::read_metadata_json(&game_dir).unwrap();
+    let original_slot_metadata: savegame_timeline_core::repository::SlotMetadata =
+        savegame_timeline_core::repository::read_metadata_json(
+            &savegame_timeline_core::repository::slot_dir(
+                &game_dir,
+                &original_slot.slot.folder_slug,
+            ),
+        )
+        .unwrap();
+    let original_active_version_id = original_slot.slot.active_version_id;
+
+    assert!(h.core.switch_slot(game.id, target_slot_id).is_err());
+    assert_eq!(
+        fs::read_to_string(&h.save_file).unwrap(),
+        "outgoing-changed-state",
+        "failed target restore must leave live bytes unchanged"
+    );
+
+    let after = h.core.get_game(game.id).unwrap();
+    assert_eq!(after.game.active_slot_id, Some(original_slot_id));
+    assert_eq!(
+        after.active_slot.as_ref().unwrap().id,
+        original_slot_id,
+        "failed target restore must leave the original slot active"
+    );
+    assert_eq!(
+        after.active_slot.as_ref().unwrap().active_version_id,
+        original_active_version_id,
+        "failed target validation must not checkpoint the outgoing slot"
+    );
+
+    let game_metadata: savegame_timeline_core::repository::GameMetadata =
+        savegame_timeline_core::repository::read_metadata_json(&game_dir).unwrap();
+    let slot_metadata: savegame_timeline_core::repository::SlotMetadata =
+        savegame_timeline_core::repository::read_metadata_json(
+            &savegame_timeline_core::repository::slot_dir(
+                &game_dir,
+                &original_slot.slot.folder_slug,
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        game_metadata.active_slot_uuid, original_game_metadata.active_slot_uuid,
+        "game metadata must continue naming the original slot"
+    );
+    assert_eq!(
+        slot_metadata.active_version_uuid, original_slot_metadata.active_version_uuid,
+        "original slot metadata must remain unchanged"
+    );
+}
+
+#[test]
 fn test_version_metadata_records_parent_uuid() {
     // NOTE: the brief's version of this test drove `create_slot` once and
     // then inspected `get_game(...).versions`, which only ever returns the

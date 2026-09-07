@@ -23,6 +23,16 @@ const WATCHER_PAUSE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// covers anything still buffered when this elapses.
 const WATCHER_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 
+struct PreparedRestore {
+    restore_roots: std::collections::BTreeMap<PathBuf, Vec<glob::Pattern>>,
+    files: Vec<(PathBuf, PathBuf, PathBuf)>,
+}
+
+enum PreparedSlotActivation {
+    Restore(PreparedRestore),
+    Clear,
+}
+
 pub struct TimelineCore {
     games_repo: Arc<dyn GameRepository>,
     versions_repo: Arc<dyn VersionRepository>,
@@ -162,10 +172,14 @@ impl TimelineCore {
                 return Ok(current_game);
             }
 
+            let prepared = self
+                .prepare_slot_activation(&current_game, slot_id)
+                .context("Failed to validate target slot before switching")?;
+
             self.checkpoint_current_state(&current_game, VersionReason::PreSwitch)
                 .context("Failed to checkpoint current slot before switching")?;
 
-            self.activate_slot(game_id, slot_id)
+            self.activate_slot(&current_game, slot_id, prepared)
         })
     }
 
@@ -173,39 +187,57 @@ impl TimelineCore {
     /// the live tracked directories. The caller owns the decision of whether
     /// the outgoing slot's live state is worth checkpointing first, and must
     /// have the watcher paused: this writes to tracked directories.
-    fn activate_slot(&self, game_id: i32, slot_id: i32) -> Result<FullGame> {
-        self.games_repo
-            .set_active_slot(game_id, slot_id)
-            .context("Failed to activate target slot")?;
-
-        let target_game = self
-            .games_repo
-            .get_game(game_id)
-            .context("Failed to reload game after switching slots")?;
-
-        let target_slot = target_game
+    fn prepare_slot_activation(
+        &self,
+        game: &FullGame,
+        slot_id: i32,
+    ) -> Result<PreparedSlotActivation> {
+        let target_slot = game
             .slots
             .iter()
             .find(|slot| slot.id == slot_id)
-            .context("Target slot not found after switching")?;
+            .context("Target slot not found before switching")?;
 
         if let Some(active_version_id) = target_slot.active_version_id {
             let full_version = self
                 .versions_repo
                 .get_version(active_version_id)
                 .context("Failed to load active version for target slot")?;
-            self.restore_version_files(&target_game, &full_version)
-                .context("Failed to restore target slot snapshot")?;
+            Ok(PreparedSlotActivation::Restore(
+                self.prepare_restore_version_files(game, &full_version)
+                    .context("Failed to validate target slot snapshot")?,
+            ))
         } else {
-            self.clear_tracked_dirs(&target_game)
-                .context("Failed to clear tracked directories for empty slot")?;
+            self.validate_tracked_dirs(game)
+                .context("Failed to validate tracked directories for empty slot")?;
+            Ok(PreparedSlotActivation::Clear)
+        }
+    }
+
+    fn activate_slot(
+        &self,
+        game: &FullGame,
+        slot_id: i32,
+        prepared: PreparedSlotActivation,
+    ) -> Result<FullGame> {
+        match prepared {
+            PreparedSlotActivation::Restore(restore) => self
+                .apply_prepared_restore(restore)
+                .context("Failed to restore target slot snapshot")?,
+            PreparedSlotActivation::Clear => self
+                .clear_tracked_dirs(game)
+                .context("Failed to clear tracked directories for empty slot")?,
         }
 
-        self.resync_game_metadata(game_id)
+        self.games_repo
+            .set_active_slot(game.game.id, slot_id)
+            .context("Failed to activate target slot")?;
+
+        self.resync_game_metadata(game.game.id)
             .context("Failed to sync metadata after switching slots")?;
 
         self.games_repo
-            .get_game(game_id)
+            .get_game(game.game.id)
             .context("Failed to reload game after switching slots")
     }
 
@@ -273,8 +305,13 @@ impl TimelineCore {
             // Deliberately no checkpoint of the outgoing slot: it is about to be
             // discarded, so capturing its live state would only mint a version
             // that the delete below immediately removes.
-            self.run_with_paused_watcher(|| self.activate_slot(game_id, replacement_slot_id))
-                .context("Failed to switch to the replacement slot before deleting")?;
+            let prepared = self
+                .prepare_slot_activation(&game, replacement_slot_id)
+                .context("Failed to validate replacement slot before deleting")?;
+            self.run_with_paused_watcher(|| {
+                self.activate_slot(&game, replacement_slot_id, prepared)
+            })
+            .context("Failed to switch to the replacement slot before deleting")?;
         }
 
         // The slot's directory under the repository is deliberately left on
@@ -315,7 +352,10 @@ impl TimelineCore {
                 ));
             }
 
-            self.restore_version_files(&game, &version)
+            let prepared = self
+                .prepare_restore_version_files(&game, &version)
+                .context("Failed to validate version files")?;
+            self.apply_prepared_restore(prepared)
                 .context("Failed to restore version files")?;
             self.versions_repo
                 .set_active_version(version_id)
@@ -565,10 +605,7 @@ impl TimelineCore {
     }
 
     fn clear_tracked_dirs(&self, game: &FullGame) -> Result<()> {
-        for dir in &game.tracked_dirs {
-            crate::fs_utils::validate_restore_path(Path::new(&dir.path), Path::new(""))
-                .with_context(|| format!("Unsafe tracked dir {}", dir.path))?;
-        }
+        self.validate_tracked_dirs(game)?;
 
         for dir in &game.tracked_dirs {
             let live_dir = Path::new(&dir.path);
@@ -588,7 +625,19 @@ impl TimelineCore {
         Ok(())
     }
 
-    fn restore_version_files(&self, game: &FullGame, version: &FullVersion) -> Result<()> {
+    fn validate_tracked_dirs(&self, game: &FullGame) -> Result<()> {
+        for dir in &game.tracked_dirs {
+            crate::fs_utils::validate_restore_path(Path::new(&dir.path), Path::new(""))
+                .with_context(|| format!("Unsafe tracked dir {}", dir.path))?;
+        }
+        Ok(())
+    }
+
+    fn prepare_restore_version_files(
+        &self,
+        game: &FullGame,
+        version: &FullVersion,
+    ) -> Result<PreparedRestore> {
         let game_folder_slug = game
             .game
             .folder_slug
@@ -705,7 +754,14 @@ impl TimelineCore {
             })?;
         }
 
-        for (live_dir, exclusions) in &restore_roots {
+        Ok(PreparedRestore {
+            restore_roots,
+            files,
+        })
+    }
+
+    fn apply_prepared_restore(&self, prepared: PreparedRestore) -> Result<()> {
+        for (live_dir, exclusions) in &prepared.restore_roots {
             if live_dir.exists() {
                 crate::fs_utils::clear_dir_except(live_dir, exclusions).with_context(|| {
                     format!("Failed to clear live tracked dir {}", live_dir.display())
@@ -720,7 +776,7 @@ impl TimelineCore {
             })?;
         }
 
-        for (live_dir, relative, blob) in files {
+        for (live_dir, relative, blob) in prepared.files {
             let destination = live_dir.join(relative);
             if let Some(parent) = destination.parent() {
                 std::fs::create_dir_all(parent).with_context(|| {
