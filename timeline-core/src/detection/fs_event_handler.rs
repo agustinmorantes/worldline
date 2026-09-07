@@ -4,7 +4,7 @@ use crate::models::{FullGame, MonitoringSettings, TrackedDir};
 use crate::persistence::{GameRepository, VersionRepository};
 use crate::repository::VersionReason;
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDateTime, Utc};
 use notify_debouncer_full::DebouncedEvent;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,11 @@ pub struct FsEventHandler {
     working_base: PathBuf,
     games_repo: Arc<dyn GameRepository>,
     versions_repo: Arc<dyn VersionRepository>,
+}
+
+pub(super) struct FsRunResult {
+    pub games: Vec<FullGame>,
+    pub deferred: Vec<(i32, NaiveDateTime)>,
 }
 
 impl FsEventHandler {
@@ -29,14 +34,14 @@ impl FsEventHandler {
         }
     }
 
-    pub fn run(
+    pub(super) fn run(
         &self,
         events: Vec<DebouncedEvent>,
         notif_tx: NotificationSender,
         games: &[FullGame],
         working_base: &Path,
         monitoring_settings: MonitoringSettings,
-    ) -> Result<Vec<FullGame>> {
+    ) -> Result<FsRunResult> {
         let games = games.to_vec();
 
         let dirs = games
@@ -115,17 +120,52 @@ impl FsEventHandler {
             }
         }
 
+        let result = self.process_modified_games(
+            &modified_games,
+            notif_tx.clone(),
+            &games,
+            monitoring_settings,
+        )?;
+        for game_id in &modified_games {
+            notif_tx.send(Notification::ChangeDetected { game_id: *game_id })?;
+        }
+        Ok(result)
+    }
+
+    pub(super) fn process_modified_games(
+        &self,
+        modified_games: &HashSet<i32>,
+        notif_tx: NotificationSender,
+        games: &[FullGame],
+        monitoring_settings: MonitoringSettings,
+    ) -> Result<FsRunResult> {
         // Capture every tracked directory before deciding whether a new row is
         // needed. The manifest, not the event path, is authoritative.
         let mut created_games: HashSet<i32> = HashSet::new();
-        for game_id in &modified_games {
+        let mut deferred = Vec::new();
+        for game_id in modified_games {
             let game = games
                 .iter()
                 .find(|g| g.game.id == *game_id)
                 .context("failed to find modified game")?;
 
-            if let Some(CheckpointOutcome::Created(version)) = self
-                .handle_new_version(game, monitoring_settings)
+            if let Some(eligible_at) = game
+                .versions
+                .iter()
+                .map(|version| version.created_at)
+                .max()
+                .map(|created_at| {
+                    created_at
+                        + Duration::minutes(i64::from(monitoring_settings.version_cooldown_minutes))
+                })
+                && eligible_at > Utc::now().naive_utc()
+            {
+                deferred.push((*game_id, eligible_at));
+                continue;
+            }
+
+            if let CheckpointOutcome::Created(version) = self
+                .handle_new_version(game)
                 .context("failed to handle new version")?
             {
                 created_games.insert(*game_id);
@@ -140,17 +180,12 @@ impl FsEventHandler {
 
         // Reload games if new versions were created to get updated active_version_id
         let games = if !created_games.is_empty() {
-            self.reload_games(&games)?
+            self.reload_games(games)?
         } else {
-            games
+            games.to_vec()
         };
 
-        // Send change detected notifications
-        for game_id in &modified_games {
-            notif_tx.send(Notification::ChangeDetected { game_id: *game_id })?;
-        }
-
-        Ok(games)
+        Ok(FsRunResult { games, deferred })
     }
 
     fn reload_games(&self, _old_games: &[FullGame]) -> Result<Vec<FullGame>> {
@@ -159,20 +194,7 @@ impl FsEventHandler {
             .context("failed to reload games from database")
     }
 
-    fn handle_new_version(
-        &self,
-        game: &FullGame,
-        monitoring_settings: MonitoringSettings,
-    ) -> Result<Option<CheckpointOutcome>> {
-        let cooldown_cutoff = Utc::now().naive_utc()
-            - Duration::minutes(i64::from(monitoring_settings.version_cooldown_minutes));
-        let latest_version_created_at =
-            game.versions.iter().map(|version| version.created_at).max();
-
-        if latest_version_created_at.is_some_and(|created_at| created_at > cooldown_cutoff) {
-            return Ok(None);
-        }
-
+    fn handle_new_version(&self, game: &FullGame) -> Result<CheckpointOutcome> {
         println!("Creating new game version");
 
         let outcome = crate::checkpoint::checkpoint_current_state(
@@ -186,7 +208,7 @@ impl FsEventHandler {
             println!("Created new version with id: {}", version.version.id);
         }
 
-        Ok(Some(outcome))
+        Ok(outcome)
     }
 }
 
@@ -356,7 +378,7 @@ mod tests {
         let parent_uuid = full_version.version.uuid.clone();
         versions_repo
             .expect_get_version()
-            .times(1)
+            .times(2)
             .returning(move |_| Ok(full_version_for_reload.clone()));
         versions_repo
             .expect_create_version_from_snapshot()
@@ -418,6 +440,17 @@ mod tests {
                 .try_iter()
                 .any(|notification| matches!(notification, Notification::VersionCreated { .. }))
         );
+
+        let unchanged_retry = handler
+            .process_modified_games(
+                &HashSet::from([1]),
+                notif_tx.clone(),
+                std::slice::from_ref(&game),
+                MonitoringSettings::default(),
+            )
+            .unwrap();
+        assert!(unchanged_retry.deferred.is_empty());
+        assert!(notif_rx.try_recv().is_err());
 
         fs::write(first_dir.path().join("first.dat"), b"changed").unwrap();
         handler
@@ -839,26 +872,8 @@ mod tests {
         assert!(received_change);
     }
 
-    #[test]
-    fn test_recent_version_suppresses_new_version_creation() {
-        let games_repo = MockGameRepository::new();
-        let mut versions_repo = MockVersionRepository::new();
-        versions_repo.expect_create_version_from_snapshot().times(0);
-
-        let working_base = tempdir().unwrap();
-        let source_dir = tempdir().unwrap();
-        let source_path = source_dir.path().to_str().unwrap().to_string();
-
-        let handler = FsEventHandler::new(
-            working_base.path().to_path_buf(),
-            Arc::new(games_repo),
-            Arc::new(versions_repo),
-        );
-
-        let (notif_tx, notif_rx) = mpsc::channel();
-        let created_at = Utc::now().naive_utc();
-
-        let game = with_test_tracked_dir_uuids(FullGame {
+    fn cooldown_game(created_at: chrono::NaiveDateTime, source_path: String) -> FullGame {
+        with_test_tracked_dir_uuids(FullGame {
             game: Game {
                 id: 1,
                 uuid: None,
@@ -900,8 +915,24 @@ mod tests {
                 created_at,
                 parent_id: None,
             }],
-        });
+        })
+    }
 
+    #[test]
+    fn test_recent_version_suppresses_new_version_creation() {
+        let games_repo = MockGameRepository::new();
+        let mut versions_repo = MockVersionRepository::new();
+        versions_repo.expect_create_version_from_snapshot().times(0);
+        let working_base = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let handler = FsEventHandler::new(
+            working_base.path().to_path_buf(),
+            Arc::new(games_repo),
+            Arc::new(versions_repo),
+        );
+        let (notif_tx, notif_rx) = mpsc::channel();
+        let created_at = Utc::now().naive_utc();
+        let game = cooldown_game(created_at, source_dir.path().to_string_lossy().into_owned());
         let mut event = Event::new(notify_debouncer_full::notify::EventKind::Any);
         event = event.add_path(source_dir.path().join("save.dat"));
 
@@ -910,7 +941,7 @@ mod tests {
             time: std::time::Instant::now(),
         }];
 
-        handler
+        let result = handler
             .run(
                 events,
                 notif_tx,
@@ -919,6 +950,11 @@ mod tests {
                 MonitoringSettings::default(),
             )
             .unwrap();
+
+        assert_eq!(
+            result.deferred,
+            vec![(1, created_at + Duration::minutes(15))]
+        );
 
         let mut received_version = false;
         let mut received_change = false;
@@ -939,5 +975,84 @@ mod tests {
             "Should not create a version during the cooldown window"
         );
         assert!(received_change);
+    }
+
+    #[test]
+    fn retry_after_cooldown_creates_one_version_without_another_change_notification() {
+        let working_base = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        fs::write(source_dir.path().join("save.dat"), b"changed save").unwrap();
+        let mut game = cooldown_game(
+            Utc::now().naive_utc(),
+            source_dir.path().to_string_lossy().into_owned(),
+        );
+        let mut games_repo = MockGameRepository::new();
+        let mut versions_repo = MockVersionRepository::new();
+        let mut created = game.last_version.clone().unwrap();
+        created.id = 2;
+        created.version_number = 2;
+        created.parent_id = Some(1);
+        let full_version = FullVersion {
+            version: created.clone(),
+            game: game.game.clone(),
+            slot: default_slot(1, Some(2)),
+            parent_uuid: None,
+        };
+        versions_repo
+            .expect_create_version_from_snapshot()
+            .times(1)
+            .returning(move |game_id, reason, snapshot| {
+                assert_eq!(game_id, 1);
+                assert_eq!(reason, VersionReason::Watcher);
+                assert_eq!(snapshot.files.len(), 1);
+                Ok(full_version.clone())
+            });
+        let mut refreshed = game.clone();
+        refreshed.last_version = Some(created.clone());
+        refreshed.versions.push(created);
+        games_repo
+            .expect_get_games()
+            .times(1)
+            .returning(move || Ok(vec![refreshed.clone()]));
+        let handler = FsEventHandler::new(
+            working_base.path().to_path_buf(),
+            Arc::new(games_repo),
+            Arc::new(versions_repo),
+        );
+        let (notif_tx, notif_rx) = mpsc::channel();
+        let ids = HashSet::from([1]);
+        let blocked = handler
+            .process_modified_games(
+                &ids,
+                notif_tx.clone(),
+                std::slice::from_ref(&game),
+                MonitoringSettings::default(),
+            )
+            .unwrap();
+        assert_eq!(blocked.deferred.len(), 1);
+        assert!(notif_rx.try_recv().is_err());
+
+        // Make the fixture eligible without sleeping through a real cooldown.
+        game.versions[0].created_at = (Utc::now() - Duration::minutes(16)).naive_utc();
+        let result = handler
+            .process_modified_games(&ids, notif_tx, &[game], MonitoringSettings::default())
+            .unwrap();
+        assert!(result.deferred.is_empty());
+        assert_eq!(
+            result.games[0]
+                .last_version
+                .as_ref()
+                .unwrap()
+                .version_number,
+            2
+        );
+        assert!(matches!(
+            notif_rx.try_recv().unwrap(),
+            Notification::VersionCreated {
+                game_id: 1,
+                version_number: 2
+            }
+        ));
+        assert!(notif_rx.try_recv().is_err());
     }
 }
