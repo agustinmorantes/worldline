@@ -30,16 +30,20 @@ pub fn is_excluded(patterns: &[Pattern], relative_path: &Path) -> bool {
     if patterns.is_empty() {
         return false;
     }
-    relative_path.ancestors().any(|ancestor| {
-        let as_str = ancestor.to_string_lossy().replace('\\', "/");
-        let file_name = ancestor.file_name().map(|n| n.to_string_lossy());
-        patterns.iter().any(|pattern| {
-            pattern.matches_with(&as_str, MATCH_OPTIONS)
-                || file_name
-                    .as_ref()
-                    .is_some_and(|name| pattern.matches_with(name, MATCH_OPTIONS))
+    relative_path
+        .ancestors()
+        .enumerate()
+        .filter(|(index, ancestor)| *index == 0 || !ancestor.as_os_str().is_empty())
+        .any(|(_, ancestor)| {
+            let as_str = ancestor.to_string_lossy().replace('\\', "/");
+            let file_name = ancestor.file_name().map(|n| n.to_string_lossy());
+            patterns.iter().any(|pattern| {
+                pattern.matches_with(&as_str, MATCH_OPTIONS)
+                    || file_name
+                        .as_ref()
+                        .is_some_and(|name| pattern.matches_with(name, MATCH_OPTIONS))
+            })
         })
-    })
 }
 
 #[cfg(test)]
@@ -75,5 +79,13 @@ mod tests {
 
         assert!(is_excluded(&patterns, Path::new("a/save.dat")));
         assert!(!is_excluded(&patterns, Path::new("other/save.dat")));
+    }
+
+    #[test]
+    fn empty_exclusions_do_not_match_nonempty_paths() {
+        let patterns = parse(r#"[""]"#);
+
+        assert!(!is_excluded(&patterns, Path::new("save.dat")));
+        assert!(!is_excluded(&patterns, Path::new("nested/save.dat")));
     }
 }
