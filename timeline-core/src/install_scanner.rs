@@ -21,6 +21,8 @@ pub enum GameSource {
 pub struct InstallScannerItem {
     pub title: String,
     pub dirs: Vec<String>,
+    #[serde(default)]
+    pub candidate_dirs: Vec<String>,
     pub install_path: Option<String>,
     pub icon_path: Option<String>,
     pub last_modified_at: Option<i64>,
@@ -347,6 +349,25 @@ fn resolve_tracked_directory(resolved_path: &str) -> Option<PathBuf> {
     }
 }
 
+fn candidate_tracked_directory(resolved_path: &str) -> PathBuf {
+    if let Some(index) = resolved_path.find(['*', '?', '[']) {
+        let prefix = resolved_path[..index].trim_end_matches(['/', '\\']);
+        let path = PathBuf::from(prefix);
+        if resolved_path[..index].ends_with(['/', '\\']) {
+            path
+        } else {
+            path.parent().unwrap_or(&path).to_path_buf()
+        }
+    } else {
+        let path = PathBuf::from(resolved_path);
+        if path.extension().is_some() {
+            path.parent().unwrap_or(&path).to_path_buf()
+        } else {
+            path
+        }
+    }
+}
+
 fn is_save_path(tags: &Option<Vec<String>>) -> bool {
     if let Some(t) = tags {
         if t.is_empty() {
@@ -637,6 +658,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
         }
 
         let mut verified_dirs = Vec::new();
+        let mut candidate_dirs = Vec::new();
         for (template, details) in &game_files {
             if !is_save_path(&details.tags) {
                 continue;
@@ -650,6 +672,13 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
                 Some(&store_game_id_str),
             );
 
+            let candidate = candidate_tracked_directory(&resolved)
+                .to_string_lossy()
+                .to_string();
+            if !candidate_dirs.contains(&candidate) {
+                candidate_dirs.push(candidate);
+            }
+
             if let Some(dir) = resolve_tracked_directory(&resolved) {
                 if dir.exists() {
                     let dir_str = dir.to_string_lossy().to_string();
@@ -660,7 +689,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
             }
         }
 
-        if !verified_dirs.is_empty() {
+        if !candidate_dirs.is_empty() {
             let mut icon_path = None;
             let steam_icon = steam_root
                 .join("appcache")
@@ -680,6 +709,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
                 InstallScannerItem {
                     title: title.clone(),
                     dirs: verified_dirs,
+                    candidate_dirs,
                     install_path: Some(install_location.to_string_lossy().to_string()),
                     icon_path,
                     last_modified_at,
@@ -793,6 +823,7 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
         }
 
         let mut verified_dirs = Vec::new();
+        let mut candidate_dirs = Vec::new();
         for (template, details) in &game_files {
             if !is_save_path(&details.tags) {
                 continue;
@@ -806,6 +837,13 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
                 None,
             );
 
+            let candidate = candidate_tracked_directory(&resolved)
+                .to_string_lossy()
+                .to_string();
+            if !candidate_dirs.contains(&candidate) {
+                candidate_dirs.push(candidate);
+            }
+
             if let Some(dir) = resolve_tracked_directory(&resolved) {
                 if dir.exists() {
                     let dir_str = dir.to_string_lossy().to_string();
@@ -816,7 +854,7 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
             }
         }
 
-        if !verified_dirs.is_empty() {
+        if !candidate_dirs.is_empty() {
             let icon_path = app
                 .launch_executable
                 .as_ref()
@@ -837,6 +875,7 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
                 InstallScannerItem {
                     title: title.clone(),
                     dirs: verified_dirs,
+                    candidate_dirs,
                     install_path: Some(app.install_location.clone()),
                     icon_path,
                     last_modified_at,
@@ -1007,6 +1046,7 @@ fn os_location_scan(manifest: &Manifest, results: &mut HashMap<String, InstallSc
                 title.clone(),
                 InstallScannerItem {
                     title: title.clone(),
+                    candidate_dirs: verified_dirs.clone(),
                     dirs: verified_dirs,
                     install_path: None,
                     icon_path: None,
@@ -1131,6 +1171,7 @@ fn custom_roots_scan(
                                     title.to_string(),
                                     InstallScannerItem {
                                         title: title.to_string(),
+                                        candidate_dirs: verified_dirs.clone(),
                                         dirs: verified_dirs,
                                         install_path: Some(path.to_string_lossy().to_string()),
                                         icon_path,
@@ -1170,6 +1211,16 @@ pub fn scan_installed(
     cache_dir: &Path,
     custom_roots: &[String],
 ) -> Result<Vec<InstallScannerItem>> {
+    Ok(scan_installed_candidates(cache_dir, custom_roots)?
+        .into_iter()
+        .filter(|item| !item.dirs.is_empty())
+        .collect())
+}
+
+pub fn scan_installed_candidates(
+    cache_dir: &Path,
+    custom_roots: &[String],
+) -> Result<Vec<InstallScannerItem>> {
     let manifest = load_manifest(cache_dir);
     let mut results = HashMap::new();
 
@@ -1190,6 +1241,12 @@ pub fn scan_installed(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn candidate_path_survives_before_the_save_directory_exists() {
+        let candidate = candidate_tracked_directory("C:\\Games\\NeverRun\\save.dat");
+        assert_eq!(candidate, PathBuf::from("C:\\Games\\NeverRun"));
+    }
 
     #[test]
     fn test_resolve_tracked_directory_literal() {

@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils"
 import { useGames } from "@/api/queries"
 import { GameIcon } from "./GameIcon"
 import { Link } from "@tanstack/react-router"
-import { Plus, Download, Settings, Library, HelpCircle } from "lucide-react"
+import { Plus, Download, Settings, Library, HelpCircle, Cloud } from "lucide-react"
 import { Skeleton } from "./ui/skeleton"
 import { AddGameModal } from "./AddGameModal"
 import { FullGame } from "@/models/game"
@@ -89,6 +89,9 @@ export function Sidebar({ className }: { className?: string }): ReactElement {
       <AddGameModal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); }} />
 
       <div className="p-3 border-t border-border/40 space-y-1">
+        <SidebarNavItem to="/remote" icon={<Cloud size={14} />}>
+          Remote Games
+        </SidebarNavItem>
         <SidebarNavItem id="tour-import-games" to="/import" icon={<Download size={14} />}>
           Import Games
         </SidebarNavItem>

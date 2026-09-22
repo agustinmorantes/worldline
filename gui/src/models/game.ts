@@ -6,6 +6,7 @@ import { Slot, SlotSchema } from '@/models/slot.ts';
 
 export const GameSchema = z.object({
   id: z.number().optional(),
+  uuid: z.uuid().nullable().optional(),
   title: z.string(),
   active_slot_id: z.number().nullable().optional(),
   icon_path: z.string().nullable().optional(),
@@ -17,6 +18,7 @@ export const GameSchema = z.object({
 
 export class Game {
   id?: number
+  uuid?: string
   // A game has no active version of its own: the active version lives on the
   // active slot (`active_slot.active_version_id`). `games.active_version_id`
   // was dropped from the schema.
@@ -45,6 +47,7 @@ export class Game {
     const parsedData = result.data;
     const game = new Game(parsedData.title);
     game.id = parsedData.id;
+    game.uuid = parsedData.uuid ?? undefined;
     game.active_slot_id = parsedData.active_slot_id ?? undefined;
     game.icon_path = parsedData.icon_path ?? undefined;
     game.tracked_dirs = parsedData.tracked_dirs;

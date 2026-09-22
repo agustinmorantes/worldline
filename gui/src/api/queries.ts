@@ -2,6 +2,8 @@ import { UseQueryResult, useQuery } from '@tanstack/react-query';
 import { getGames, getGame, scanInstalled, getScanRoots } from './games';
 import { FullGame } from '@/models/game';
 import { InstallScannerItem } from '@/models/install_scanner_item';
+import { refreshSync } from './sync';
+import { SyncReport } from '@/models/sync';
 
 export const useGames = (): UseQueryResult<FullGame[]> => {
   return useQuery({
@@ -33,5 +35,15 @@ export const useScanRoots = (): UseQueryResult<string[]> => {
   return useQuery({
     queryKey: ['scan-roots'],
     queryFn: getScanRoots,
+  });
+};
+
+export const useSyncReport = (enabled = true): UseQueryResult<SyncReport> => {
+  return useQuery({
+    queryKey: ['sync-report'],
+    queryFn: refreshSync,
+    enabled,
+    retry: false,
+    staleTime: 60_000,
   });
 };

@@ -2,6 +2,7 @@ import {listen} from "@tauri-apps/api/event";
 import {toast} from "sonner";
 import {getGame} from "@/api/games.ts";
 import {queryClient} from "@/lib/query-client.ts";
+import { SyncReportSchema } from '@/models/sync';
 
 export function listenNotifications(): void {
   void listen<number[]>("version-created", event => {
@@ -26,4 +27,16 @@ export function listenNotifications(): void {
       description: event.payload
     });
   })
+
+  void listen<unknown>('sync-complete', event => {
+    const report = SyncReportSchema.safeParse(event.payload);
+    if (report.success) {
+      queryClient.setQueryData(['sync-report'], report.data);
+      void queryClient.invalidateQueries({ queryKey: ['games'] });
+    }
+  });
+
+  void listen<string>('sync-error', () => {
+    void queryClient.invalidateQueries({ queryKey: ['sync-report'] });
+  });
 }

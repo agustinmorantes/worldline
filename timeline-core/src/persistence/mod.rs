@@ -19,6 +19,11 @@ pub trait GameRepository: Send + Sync {
     fn delete_slot(&self, slot_id: i32) -> Result<()>;
     fn set_active_slot(&self, game_id: i32, slot_id: i32) -> Result<Slot>;
     fn save_game<'a>(&self, game: GameForm<'a>, dirs: Option<Vec<&'a str>>) -> Result<Game>;
+    fn import_remote_game(
+        &self,
+        game: &crate::sync::RemoteGame,
+        state: Option<crate::sync::DeviceGameState>,
+    ) -> Result<FullGame>;
     fn delete_game(&self, id: i32) -> Result<()>;
 }
 

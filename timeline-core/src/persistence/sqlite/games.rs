@@ -359,6 +359,238 @@ impl GameRepository for SqliteGameRepository {
         Ok(res)
     }
 
+    fn import_remote_game(
+        &self,
+        remote: &crate::sync::RemoteGame,
+        state: Option<crate::sync::DeviceGameState>,
+    ) -> Result<FullGame> {
+        use crate::schema::{games, slots, tracked_dirs, versions};
+
+        let conn = &mut self.pool.get().context("Error getting db connection")?;
+        let game_id = conn.transaction::<i32, anyhow::Error, _>(|conn| {
+            let game_uuid = remote.metadata.uuid.to_string();
+            let existing: Option<Game> = games::table
+                .filter(games::uuid.eq(&game_uuid))
+                .select(Game::as_select())
+                .first(conn)
+                .optional()?;
+            let game = if let Some(game) = existing {
+                diesel::update(games::table.filter(games::id.eq(game.id)))
+                    .set((
+                        games::title.eq(&remote.metadata.title),
+                        games::title_normalized.eq(crate::repository::normalize_display_name(
+                            &remote.metadata.title,
+                        )),
+                        games::icon_path.eq(&remote.metadata.icon),
+                        games::updated_at.eq(remote.metadata.updated_at.naive_utc()),
+                    ))
+                    .returning(Game::as_returning())
+                    .get_result(conn)?
+            } else {
+                diesel::insert_into(games::table)
+                    .values((
+                        games::uuid.eq(&game_uuid),
+                        games::title.eq(&remote.metadata.title),
+                        games::title_normalized.eq(crate::repository::normalize_display_name(
+                            &remote.metadata.title,
+                        )),
+                        games::folder_slug.eq(&remote.metadata.folder_slug),
+                        games::icon_path.eq(&remote.metadata.icon),
+                        games::created_at.eq(remote.metadata.created_at.naive_utc()),
+                        games::updated_at.eq(remote.metadata.updated_at.naive_utc()),
+                    ))
+                    .returning(Game::as_returning())
+                    .get_result(conn)?
+            };
+
+            for tracked in remote
+                .tracked_dirs
+                .iter()
+                .filter(|tracked| tracked.retired_at.is_none())
+            {
+                let tracked_uuid = tracked.uuid.to_string();
+                let path = crate::path_placeholders::expand_path_placeholders(&tracked.path);
+                if !std::path::Path::new(&path).is_absolute() {
+                    return Err(anyhow!("Remote tracked directory path is not absolute"));
+                }
+                let exclusions = serde_json::to_string(&tracked.exclusions)?;
+                let found: Option<i32> = tracked_dirs::table
+                    .filter(tracked_dirs::uuid.eq(&tracked_uuid))
+                    .filter(tracked_dirs::game_id.eq(game.id))
+                    .select(tracked_dirs::id)
+                    .first(conn)
+                    .optional()?;
+                if let Some(id) = found {
+                    diesel::update(tracked_dirs::table.filter(tracked_dirs::id.eq(id)))
+                        .set((
+                            tracked_dirs::label.eq(&tracked.label),
+                            tracked_dirs::exclusions.eq(&exclusions),
+                            tracked_dirs::retired_at
+                                .eq(tracked.retired_at.map(|at| at.naive_utc())),
+                            tracked_dirs::updated_at.eq(tracked.updated_at.naive_utc()),
+                        ))
+                        .execute(conn)?;
+                } else {
+                    diesel::insert_into(tracked_dirs::table)
+                        .values((
+                            tracked_dirs::uuid.eq(&tracked_uuid),
+                            tracked_dirs::folder_slug.eq(&tracked.folder_slug),
+                            tracked_dirs::path.eq(&path),
+                            tracked_dirs::game_id.eq(game.id),
+                            tracked_dirs::label.eq(&tracked.label),
+                            tracked_dirs::exclusions.eq(&exclusions),
+                            tracked_dirs::retired_at
+                                .eq(tracked.retired_at.map(|at| at.naive_utc())),
+                            tracked_dirs::created_at.eq(tracked.created_at.naive_utc()),
+                            tracked_dirs::updated_at.eq(tracked.updated_at.naive_utc()),
+                        ))
+                        .execute(conn)?;
+                }
+            }
+
+            let mut slot_ids = std::collections::HashMap::new();
+            for remote_slot in &remote.slots {
+                let slot_uuid = remote_slot.metadata.uuid.to_string();
+                let found: Option<Slot> = slots::table
+                    .filter(slots::uuid.eq(&slot_uuid))
+                    .filter(slots::game_id.eq(game.id))
+                    .select(Slot::as_select())
+                    .first(conn)
+                    .optional()?;
+                let slot = if let Some(slot) = found {
+                    diesel::update(slots::table.filter(slots::id.eq(slot.id)))
+                        .set((
+                            slots::name.eq(&remote_slot.metadata.name),
+                            slots::name_normalized.eq(crate::repository::normalize_display_name(
+                                &remote_slot.metadata.name,
+                            )),
+                            slots::updated_at.eq(remote_slot.metadata.updated_at.naive_utc()),
+                        ))
+                        .returning(Slot::as_returning())
+                        .get_result(conn)?
+                } else {
+                    diesel::insert_into(slots::table)
+                        .values((
+                            slots::uuid.eq(&slot_uuid),
+                            slots::game_id.eq(game.id),
+                            slots::name.eq(&remote_slot.metadata.name),
+                            slots::name_normalized.eq(crate::repository::normalize_display_name(
+                                &remote_slot.metadata.name,
+                            )),
+                            slots::folder_slug.eq(&remote_slot.metadata.folder_slug),
+                            slots::created_at.eq(remote_slot.metadata.created_at.naive_utc()),
+                            slots::updated_at.eq(remote_slot.metadata.updated_at.naive_utc()),
+                        ))
+                        .returning(Slot::as_returning())
+                        .get_result(conn)?
+                };
+                slot_ids.insert(remote_slot.metadata.uuid, slot.id);
+            }
+
+            let mut pending = remote
+                .slots
+                .iter()
+                .flat_map(|slot| {
+                    slot.versions
+                        .iter()
+                        .map(move |version| (slot, &version.version))
+                })
+                .collect::<Vec<_>>();
+            while !pending.is_empty() {
+                let before = pending.len();
+                let mut deferred = Vec::new();
+                for (remote_slot, version) in pending {
+                    let version_uuid = version.uuid.to_string();
+                    let slot_id = slot_ids[&remote_slot.metadata.uuid];
+                    if let Some(existing_slot_id) = versions::table
+                        .filter(versions::uuid.eq(&version_uuid))
+                        .select(versions::slot_id)
+                        .first::<i32>(conn)
+                        .optional()
+                        .context("Error looking up imported version")?
+                    {
+                        if existing_slot_id != slot_id {
+                            return Err(anyhow!("Remote version UUID belongs to another slot"));
+                        }
+                        continue;
+                    }
+                    let parent_id = match version.parent_version_uuid {
+                        Some(parent_uuid) => match versions::table
+                            .filter(versions::uuid.eq(parent_uuid.to_string()))
+                            .select((versions::id, versions::slot_id))
+                            .first::<(i32, i32)>(conn)
+                            .optional()
+                            .context("Error looking up imported version parent")?
+                        {
+                            Some((id, parent_slot_id)) if parent_slot_id == slot_id => Some(id),
+                            Some(_) => {
+                                return Err(anyhow!(
+                                    "Remote version parent belongs to another slot"
+                                ));
+                            }
+                            None => {
+                                deferred.push((remote_slot, version));
+                                continue;
+                            }
+                        },
+                        None => None,
+                    };
+                    diesel::insert_into(versions::table)
+                        .values((
+                            versions::uuid.eq(&version_uuid),
+                            versions::folder_slug.eq(&version.folder_slug),
+                            versions::version_number.eq(version.version_number),
+                            versions::slot_id.eq(slot_id),
+                            versions::tag.eq(&version.tag),
+                            versions::reason.eq(version.reason.as_str()),
+                            versions::content_hash.eq(&version.content_hash),
+                            versions::created_at.eq(version.created_at.naive_utc()),
+                            versions::parent_id.eq(parent_id),
+                        ))
+                        .execute(conn)
+                        .context("Error importing remote version")?;
+                }
+                if deferred.len() == before {
+                    return Err(anyhow!(
+                        "Remote version history has missing or cyclic parents"
+                    ));
+                }
+                pending = deferred;
+            }
+
+            if let Some(state) = &state {
+                for (slot_uuid, slot_state) in &state.slots {
+                    let Some(slot_id) = slot_ids.get(slot_uuid) else {
+                        continue;
+                    };
+                    let active_version_id = slot_state
+                        .active_version_uuid
+                        .map(|uuid| {
+                            versions::table
+                                .filter(versions::uuid.eq(uuid.to_string()))
+                                .filter(versions::slot_id.eq(*slot_id))
+                                .select(versions::id)
+                                .first::<i32>(conn)
+                                .optional()
+                        })
+                        .transpose()?
+                        .flatten();
+                    diesel::update(slots::table.filter(slots::id.eq(slot_id)))
+                        .set(slots::active_version_id.eq(active_version_id))
+                        .execute(conn)?;
+                }
+                let active_slot_id = state
+                    .active_slot_uuid
+                    .and_then(|uuid| slot_ids.get(&uuid).copied());
+                diesel::update(games::table.filter(games::id.eq(game.id)))
+                    .set(games::active_slot_id.eq(active_slot_id))
+                    .execute(conn)?;
+            }
+            Ok(game.id)
+        })?;
+        load_full_game(conn, game_id)
+    }
+
     fn delete_game(&self, target_id: i32) -> Result<()> {
         use crate::schema::games::dsl;
 

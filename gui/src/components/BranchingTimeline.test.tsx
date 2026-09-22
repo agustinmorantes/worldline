@@ -36,6 +36,22 @@ describe('BranchingTimeline', () => {
     expect(screen.getByText('CURRENT')).toBeInTheDocument();
   });
 
+  it('badges only versions attributed to another device', () => {
+    const local = makeVersion(1, 1);
+    const remote = makeVersion(2, 2, 1);
+    local.uuid = '11111111-1111-4111-8111-111111111111';
+    remote.uuid = '22222222-2222-4222-8222-222222222222';
+    render(
+      <BranchingTimeline
+        versions={[local, remote]}
+        activeVersionId={1}
+        remoteVersions={{ [remote.uuid]: 'Steam Deck' }}
+      />
+    );
+    expect(screen.getByText('Steam Deck')).toBeInTheDocument();
+    expect(screen.getAllByTitle(/created on this device/i)).toHaveLength(1);
+  });
+
   it('pre-branching null-parent versions are not marked inactive', () => {
     const versions = [
       makeVersion(1, 1),

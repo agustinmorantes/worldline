@@ -14,6 +14,12 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@/api/queries', () => ({
   useGame: vi.fn(),
+  useSyncReport: vi.fn(() => ({
+    data: undefined,
+    isFetching: false,
+    error: null,
+    refetch: vi.fn(),
+  })),
 }));
 
 // The timeline is mocked so the test can assert on what it is *handed*.

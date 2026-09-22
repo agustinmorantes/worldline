@@ -229,8 +229,14 @@ pub fn read_metadata_json<T>(entity_dir: &Path) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let path = metadata_path(entity_dir);
-    let file = File::open(&path)
+    read_json_file(&metadata_path(entity_dir))
+}
+
+pub fn read_json_file<T>(path: &Path) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let file = File::open(path)
         .with_context(|| format!("failed to open metadata file at {}", path.display()))?;
     let reader = BufReader::new(file);
 
@@ -242,11 +248,20 @@ pub fn write_metadata_json<T>(entity_dir: &Path, value: &T) -> Result<()>
 where
     T: Serialize,
 {
-    fs::create_dir_all(entity_dir)
-        .with_context(|| format!("failed to create metadata dir at {}", entity_dir.display()))?;
+    write_json_file(&metadata_path(entity_dir), value)
+}
 
-    let path = metadata_path(entity_dir);
-    let tmp_path = metadata_tmp_path(&path);
+pub fn write_json_file<T>(path: &Path, value: &T) -> Result<()>
+where
+    T: Serialize,
+{
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("JSON file has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create metadata dir at {}", parent.display()))?;
+
+    let tmp_path = metadata_tmp_path(path);
     let payload = serde_json::to_vec_pretty(value).context("failed to serialize metadata")?;
 
     {
@@ -278,7 +293,7 @@ where
 
     sync_parent_dir(&tmp_path);
 
-    atomic_replace(&tmp_path, &path).with_context(|| {
+    atomic_replace(&tmp_path, path).with_context(|| {
         format!(
             "failed to atomically move metadata into place from {} to {}",
             tmp_path.display(),
@@ -286,7 +301,7 @@ where
         )
     })?;
 
-    sync_parent_dir(&path);
+    sync_parent_dir(path);
     Ok(())
 }
 
@@ -308,18 +323,24 @@ fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
         .encode_wide()
         .chain(iter::once(0))
         .collect::<Vec<_>>();
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+    for attempt in 0..8 {
+        let result = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if result != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::PermissionDenied || attempt == 7 {
+            return Err(error);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    unreachable!()
 }
 
 #[cfg(not(windows))]
@@ -385,7 +406,13 @@ pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame
             .as_ref()
             .map(|metadata| metadata.created_at)
             .unwrap_or(now),
-        updated_at: now,
+        updated_at: existing_game_metadata
+            .as_ref()
+            .filter(|metadata| {
+                metadata.title == game.game.title && metadata.icon == game.game.icon_path
+            })
+            .map(|metadata| metadata.updated_at)
+            .unwrap_or(now),
     };
     write_metadata_json(&game_entity_dir, &game_metadata)?;
 
@@ -459,8 +486,9 @@ pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame
             .as_ref()
             .is_some_and(|active_slot| active_slot.id == slot.id)
         {
-            game.last_version
-                .as_ref()
+            game.versions
+                .iter()
+                .find(|version| Some(version.id) == slot.active_version_id)
                 .and_then(|version| version.uuid.as_deref())
                 .and_then(|uuid| Uuid::parse_str(uuid).ok())
         } else {
@@ -619,7 +647,10 @@ fn parse_uuid_field(value: Option<&str>, field_name: &str) -> Result<Uuid> {
     Uuid::parse_str(value).with_context(|| format!("failed to parse UUID for {field_name}"))
 }
 
-fn validate_folder_slug<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
+pub(crate) fn validate_folder_slug<'a>(
+    value: Option<&'a str>,
+    field_name: &str,
+) -> Result<&'a str> {
     let value = required_string_field(value, field_name)?;
     let path = Path::new(value);
     let mut components = path.components();

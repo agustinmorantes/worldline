@@ -4,6 +4,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { Button } from './ui/button';
 import { RotateCcw, Tag as TagIcon, CheckCircle2 } from 'lucide-react';
+import { Badge } from './ui/badge';
 
 interface BranchingTimelineProps {
   versions: Version[];
@@ -13,6 +14,14 @@ interface BranchingTimelineProps {
   compact?: boolean;
   onRestore?: (version: Version) => void;
   onTag?: (version: Version, tag: string) => void;
+  remoteVersions?: Partial<Record<string, string>>;
+}
+
+const NO_REMOTE_VERSIONS: Partial<Record<string, string>> = {};
+
+function provenance(version: Version, remoteVersions: Partial<Record<string, string>>): string {
+  const device = version.uuid === undefined ? undefined : remoteVersions[version.uuid];
+  return device === undefined ? 'Created on this device' : `Synced from ${device}`;
 }
 
 export function BranchingTimeline({
@@ -23,6 +32,7 @@ export function BranchingTimeline({
   compact = false,
   onRestore,
   onTag,
+  remoteVersions = NO_REMOTE_VERSIONS,
 }: BranchingTimelineProps): ReactElement {
   const [editingId, setEditingId] = useState<number | null>(null);
   const canEditTags = showActions;
@@ -190,6 +200,7 @@ export function BranchingTimeline({
             key={pv.version.id} 
             className="flex items-center group relative" 
             style={{ height: metrics.rowHeight }}
+            title={provenance(pv.version, remoteVersions)}
           >
             {/* Node Area */}
             <div
@@ -299,6 +310,11 @@ export function BranchingTimeline({
                       <CheckCircle2 size={10} /> CURRENT
                     </span>
                   )}
+                  {pv.version.uuid !== undefined && remoteVersions[pv.version.uuid] !== undefined ? (
+                    <Badge variant="secondary">
+                      {remoteVersions[pv.version.uuid]}
+                    </Badge>
+                  ) : null}
                 </div>
                 
                 <span className={cn("mt-0.5 font-medium text-muted-foreground", compact ? "text-[9px]" : "text-[10px]")}>

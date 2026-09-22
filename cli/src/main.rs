@@ -327,6 +327,13 @@ fn main() -> Result<()> {
                         version_number,
                     } => {
                         println!("Version {version_number} created for game {game_id}");
+                        if core
+                            .get_sync_settings()
+                            .is_ok_and(|settings| settings.remote_path.is_some())
+                            && let Err(error) = core.push_sync()
+                        {
+                            eprintln!("Sync error: {error}");
+                        }
                     }
                     Notification::Error(err) => {
                         eprintln!("Error: {err}");

@@ -71,10 +71,31 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         icons_dir,
         None,
     )?;
-    app.manage(Arc::new(core));
+    let core = Arc::new(core);
+    app.manage(core.clone());
     tray::setup_tray(app)?;
 
+    let sync_app = app.handle().clone();
+    let periodic_core = core.clone();
+    std::thread::spawn(move || loop {
+        if periodic_core
+            .get_sync_settings()
+            .is_ok_and(|settings| settings.remote_path.is_some())
+        {
+            match periodic_core.refresh_sync() {
+                Ok(report) => {
+                    sync_app.emit("sync-complete", report).ok();
+                }
+                Err(error) => {
+                    sync_app.emit("sync-error", error.to_string()).ok();
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5 * 60));
+    });
+
     let notif_app = app.handle().clone();
+    let checkpoint_core = core.clone();
     std::thread::spawn(move || {
         for notification in notif_rx {
             match notification {
@@ -88,6 +109,14 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     notif_app
                         .emit("version-created", (game_id, version_number))
                         .ok();
+                    if checkpoint_core
+                        .get_sync_settings()
+                        .is_ok_and(|settings| settings.remote_path.is_some())
+                    {
+                        if let Err(error) = checkpoint_core.push_sync() {
+                            notif_app.emit("sync-error", error.to_string()).ok();
+                        }
+                    }
                 }
                 detection::Notification::Error(err) => {
                     notif_app.emit("detection-error", err).ok();

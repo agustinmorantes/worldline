@@ -132,6 +132,78 @@ fn update_monitoring_settings(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_device(core: State<Arc<TimelineCore>>) -> savegame_timeline_core::sync::DeviceMetadata {
+    core.device_metadata()
+}
+
+#[tauri::command]
+fn update_device_name(
+    name: String,
+    core: State<Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::sync::DeviceMetadata, String> {
+    core.update_device_name(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_sync_settings(
+    core: State<Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::sync::SyncSettings, String> {
+    core.get_sync_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_sync_settings(
+    settings: savegame_timeline_core::sync::SyncSettings,
+    core: State<Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::sync::SyncSettings, String> {
+    core.update_sync_settings(settings)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn refresh_sync(
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::sync::SyncReport, String> {
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.refresh_sync())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn adopt_remote_game(
+    game_uuid: String,
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<FullGame, String> {
+    let game_uuid = uuid::Uuid::parse_str(&game_uuid).map_err(|e| e.to_string())?;
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.adopt_remote_game(game_uuid))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn apply_remote_version(
+    version_id: i32,
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<(), String> {
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.apply_remote_version(version_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_sync_device(device_uuid: String, core: State<Arc<TimelineCore>>) -> Result<(), String> {
+    let device_uuid = uuid::Uuid::parse_str(&device_uuid).map_err(|e| e.to_string())?;
+    core.remove_sync_device(device_uuid)
+        .map_err(|e| e.to_string())
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
@@ -152,5 +224,13 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         remove_scan_root,
         get_monitoring_settings,
         update_monitoring_settings,
+        get_device,
+        update_device_name,
+        get_sync_settings,
+        update_sync_settings,
+        refresh_sync,
+        adopt_remote_game,
+        apply_remote_version,
+        remove_sync_device,
     ])
 }

@@ -14,6 +14,7 @@ pub mod path_placeholders;
 pub mod persistence;
 pub mod repository;
 pub mod schema;
+pub mod sync;
 
 pub use core_facade::TimelineCore;
 

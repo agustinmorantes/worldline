@@ -3,6 +3,7 @@ import {tagVersion,restoreVersion} from "@/api/versions.ts";
 
 export const VersionSchema = z.object({
   id: z.number().optional().nullable(),
+  uuid: z.uuid().nullable().optional(),
   version_number: z.number(),
   // Versions belong to a slot, not to a game: `versions.game_id` was dropped
   // from the schema, and the backend no longer serialises it.
@@ -15,6 +16,7 @@ export const VersionSchema = z.object({
 
 export class Version {
   id?: number;
+  uuid?: string;
   tag?: string;
   created_at?: Date;
   parent_id?: number;
@@ -35,6 +37,7 @@ export class Version {
     
     const version = new Version(parsedData.version_number, parsedData.slot_id);
     version.id = parsedData.id ?? undefined;
+    version.uuid = parsedData.uuid ?? undefined;
     version.created_at = parsedData.created_at;
     version.tag = parsedData.tag ?? undefined;
     version.parent_id = parsedData.parent_id ?? undefined;

@@ -7,7 +7,8 @@ use anyhow::{Context, Result, anyhow};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
+use uuid::Uuid;
 
 /// How long a caller waits for the watcher to acknowledge a pause before giving
 /// up and proceeding unsuppressed. Generous, because it should only ever be hit
@@ -40,7 +41,11 @@ pub struct TimelineCore {
     cmd_tx: CommandSender,
     pub working_base: PathBuf,
     pub icons_dir: PathBuf,
+    data_dir: PathBuf,
     monitoring_settings_path: PathBuf,
+    sync_settings_path: PathBuf,
+    device_metadata: RwLock<crate::sync::DeviceMetadata>,
+    sync_lock: Mutex<()>,
 }
 
 impl TimelineCore {
@@ -55,10 +60,17 @@ impl TimelineCore {
         crate::repository::ensure_repository_root(&working_base)
             .context("Failed to initialize repository root")?;
 
-        let monitoring_settings_path = working_base
-            .parent()
-            .unwrap_or(&working_base)
-            .join("monitoring_settings.json");
+        let data_dir = if working_base
+            .file_name()
+            .is_some_and(|name| name == "repository")
+        {
+            working_base.parent().unwrap_or(&working_base).to_path_buf()
+        } else {
+            working_base.clone()
+        };
+        let monitoring_settings_path = data_dir.join("monitoring_settings.json");
+        let sync_settings_path = data_dir.join("sync_settings.json");
+        let device_metadata = crate::sync::load_or_create_device(&data_dir)?;
         let mut monitoring_settings = load_monitoring_settings(&monitoring_settings_path)?;
         if let Some(seconds) = new_version_seconds {
             monitoring_settings.snapshot_debounce_seconds = seconds;
@@ -79,10 +91,448 @@ impl TimelineCore {
                 cmd_tx,
                 working_base,
                 icons_dir,
+                data_dir,
                 monitoring_settings_path,
+                sync_settings_path,
+                device_metadata: RwLock::new(device_metadata),
+                sync_lock: Mutex::new(()),
             },
             notif_rx,
         ))
+    }
+
+    pub fn device_metadata(&self) -> crate::sync::DeviceMetadata {
+        self.device_metadata
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn update_device_name(&self, name: &str) -> Result<crate::sync::DeviceMetadata> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(anyhow!("Device name cannot be empty"));
+        }
+        let mut device = self
+            .device_metadata
+            .write()
+            .map_err(|_| anyhow!("Device metadata lock poisoned"))?;
+        device.name = name.to_string();
+        crate::sync::save_device(&self.data_dir, &device)?;
+        Ok(device.clone())
+    }
+
+    pub fn get_sync_settings(&self) -> Result<crate::sync::SyncSettings> {
+        crate::sync::load_settings(&self.sync_settings_path)
+    }
+
+    pub fn update_sync_settings(
+        &self,
+        settings: crate::sync::SyncSettings,
+    ) -> Result<crate::sync::SyncSettings> {
+        if let Some(path) = settings.remote_path.as_deref()
+            && path.trim().is_empty()
+        {
+            return Err(anyhow!("Remote path cannot be empty"));
+        }
+        if let Some(path) = settings.remote_path.as_deref() {
+            let remote = std::fs::canonicalize(path)
+                .context("Sync folder must already exist and be reachable")?;
+            if !remote.is_dir() {
+                return Err(anyhow!("Sync folder must be a directory"));
+            }
+            let data_dir = std::fs::canonicalize(&self.data_dir)?;
+            if remote.starts_with(&data_dir) || data_dir.starts_with(&remote) {
+                return Err(anyhow!(
+                    "The sync folder must not overlap local application data"
+                ));
+            }
+        }
+        crate::sync::save_settings(&self.sync_settings_path, &settings)?;
+        Ok(settings)
+    }
+
+    pub fn refresh_sync(&self) -> Result<crate::sync::SyncReport> {
+        let _guard = self
+            .sync_lock
+            .lock()
+            .map_err(|_| anyhow!("Sync lock poisoned"))?;
+        let settings = self.get_sync_settings()?;
+        let remote_root = PathBuf::from(
+            settings
+                .remote_path
+                .as_deref()
+                .context("Sync remote is not configured")?,
+        );
+        let device = self.device_metadata();
+        let initial_games = self.games_repo.get_games()?;
+        self.push_sync_unlocked()?;
+
+        let catalog = crate::sync::load_catalog(&remote_root)?;
+        let mut local_uuids = initial_games
+            .iter()
+            .filter_map(|game| game.game.uuid.as_deref())
+            .filter_map(|uuid| Uuid::parse_str(uuid).ok())
+            .collect::<std::collections::HashSet<_>>();
+        let needs_adoption_scan = catalog.games.iter().any(|remote| {
+            !local_uuids.contains(&remote.metadata.uuid)
+                || initial_games
+                    .iter()
+                    .find(|local| {
+                        local.game.uuid.as_deref() == Some(&remote.metadata.uuid.to_string())
+                    })
+                    .is_some_and(|local| {
+                        self.remote_relation(&catalog, remote, local)
+                            == crate::sync::Divergence::FastForward
+                    })
+        });
+        let installed = if needs_adoption_scan {
+            crate::install_scanner::scan_installed_candidates(
+                &self.data_dir.join("cache"),
+                &self.scan_roots_repo.get_scan_roots()?,
+            )?
+        } else {
+            Vec::new()
+        };
+        let installed_titles = installed
+            .iter()
+            .map(|item| crate::repository::normalize_display_name(&item.title))
+            .collect::<std::collections::HashSet<_>>();
+        let installed_by_title = installed
+            .iter()
+            .map(|item| (crate::repository::normalize_display_name(&item.title), item))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut auto_applied = std::collections::HashSet::new();
+
+        for remote_game in &catalog.games {
+            let adopted = local_uuids.contains(&remote_game.metadata.uuid);
+            let installed = installed_titles.contains(&crate::repository::normalize_display_name(
+                &remote_game.metadata.title,
+            ));
+            if !adopted && !installed {
+                continue;
+            }
+            let mut apply = !adopted
+                && !crate::sync::remote_heads_diverge(
+                    &catalog,
+                    device.device_uuid,
+                    remote_game.metadata.uuid,
+                );
+            if adopted
+                && let Some(local) = initial_games.iter().find(|game| {
+                    game.game.uuid.as_deref() == Some(&remote_game.metadata.uuid.to_string())
+                })
+                && self.remote_relation(&catalog, remote_game, local)
+                    == crate::sync::Divergence::FastForward
+            {
+                let checkpoint = crate::checkpoint::checkpoint_current_state(
+                    &self.working_base,
+                    self.versions_repo.as_ref(),
+                    local,
+                    VersionReason::Watcher,
+                )?;
+                let unchanged = matches!(
+                    checkpoint,
+                    crate::checkpoint::CheckpointOutcome::Unchanged(_)
+                );
+                let install_path = installed_by_title
+                    .get(&crate::repository::normalize_display_name(
+                        &remote_game.metadata.title,
+                    ))
+                    .and_then(|item| item.install_path.as_deref());
+                apply = crate::sync::decide_apply(
+                    true,
+                    crate::sync::Divergence::FastForward,
+                    !unchanged,
+                    crate::sync::game_is_running(install_path),
+                ) == crate::sync::ApplyDecision::AutoApply;
+            }
+            apply = self.import_remote_game(&remote_root, &catalog, remote_game, apply)?;
+            if apply {
+                auto_applied.insert(remote_game.metadata.uuid);
+            }
+            local_uuids.insert(remote_game.metadata.uuid);
+        }
+
+        let games = self.games_repo.get_games()?;
+        self.cmd_tx.send(Command::ReregisterGames(games.clone()))?;
+        let state = self.device_state(&games)?;
+        let published = crate::sync::push(&self.working_base, &remote_root, &device, &state)?;
+        *self
+            .device_metadata
+            .write()
+            .map_err(|_| anyhow!("Device metadata lock poisoned"))? = published;
+        crate::sync::save_device(&self.data_dir, &self.device_metadata())?;
+
+        let catalog = crate::sync::load_catalog(&remote_root)?;
+        self.sync_report(&catalog, &installed_titles, &games, &auto_applied)
+    }
+
+    pub fn push_sync(&self) -> Result<()> {
+        let _guard = self
+            .sync_lock
+            .lock()
+            .map_err(|_| anyhow!("Sync lock poisoned"))?;
+        self.push_sync_unlocked()
+    }
+
+    fn push_sync_unlocked(&self) -> Result<()> {
+        let settings = self.get_sync_settings()?;
+        let remote_root = PathBuf::from(
+            settings
+                .remote_path
+                .as_deref()
+                .context("Sync remote is not configured")?,
+        );
+        let device = self.device_metadata();
+        let games = self.games_repo.get_games()?;
+        let state = self.device_state(&games)?;
+        let published = crate::sync::push(&self.working_base, &remote_root, &device, &state)?;
+        *self
+            .device_metadata
+            .write()
+            .map_err(|_| anyhow!("Device metadata lock poisoned"))? = published;
+        crate::sync::save_device(&self.data_dir, &self.device_metadata())
+    }
+
+    pub fn adopt_remote_game(&self, game_uuid: Uuid) -> Result<FullGame> {
+        let settings = self.get_sync_settings()?;
+        let remote_root = PathBuf::from(
+            settings
+                .remote_path
+                .as_deref()
+                .context("Sync remote is not configured")?,
+        );
+        let catalog = crate::sync::load_catalog(&remote_root)?;
+        let remote_game = catalog
+            .games
+            .iter()
+            .find(|game| game.metadata.uuid == game_uuid)
+            .context("Remote game not found")?;
+        self.import_remote_game(&remote_root, &catalog, remote_game, true)?;
+        let game = self
+            .games_repo
+            .get_games()?
+            .into_iter()
+            .find(|game| game.game.uuid.as_deref() == Some(&game_uuid.to_string()))
+            .context("Adopted game was not persisted")?;
+        let all_games = self.games_repo.get_games()?;
+        self.cmd_tx.send(Command::ReregisterGames(all_games))?;
+        Ok(game)
+    }
+
+    pub fn remove_sync_device(&self, device_uuid: Uuid) -> Result<()> {
+        if device_uuid == self.device_metadata().device_uuid {
+            return Err(anyhow!("The current device cannot remove itself"));
+        }
+        let settings = self.get_sync_settings()?;
+        let remote_root = PathBuf::from(
+            settings
+                .remote_path
+                .as_deref()
+                .context("Sync remote is not configured")?,
+        );
+        crate::sync::remove_remote_device(&remote_root, device_uuid)
+    }
+
+    fn import_remote_game(
+        &self,
+        remote_root: &Path,
+        catalog: &crate::sync::RemoteCatalog,
+        remote_game: &crate::sync::RemoteGame,
+        apply: bool,
+    ) -> Result<bool> {
+        let new_game =
+            !self.games_repo.get_games()?.iter().any(|game| {
+                game.game.uuid.as_deref() == Some(&remote_game.metadata.uuid.to_string())
+            });
+        let existing_saves = new_game && !Self::remote_save_dirs_empty(remote_game)?;
+        let tip = crate::sync::latest_remote_tip(
+            catalog,
+            self.device_metadata().device_uuid,
+            remote_game.metadata.uuid,
+        );
+        let apply =
+            apply && !existing_saves && tip.as_ref().and_then(|tip| tip.version_uuid).is_some();
+        let pulled = crate::sync::pull_game(&self.working_base, remote_root, remote_game)?;
+        let state = tip.as_ref().map(|tip| {
+            let mut state = tip.game_state.clone();
+            if !apply {
+                for slot in state.slots.values_mut() {
+                    slot.active_version_uuid = None;
+                }
+            }
+            state
+        });
+        let imported = self
+            .games_repo
+            .import_remote_game(&pulled, if new_game || apply { state } else { None })?;
+        if existing_saves {
+            crate::checkpoint::checkpoint_current_state(
+                &self.working_base,
+                self.versions_repo.as_ref(),
+                &imported,
+                VersionReason::Initial,
+            )?;
+        }
+        if apply
+            && let Some(version_uuid) = tip.and_then(|tip| tip.version_uuid)
+            && let Some(version_id) = self.find_version_id(&imported, version_uuid)?
+        {
+            self.restore_version(version_id)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn remote_save_dirs_empty(game: &crate::sync::RemoteGame) -> Result<bool> {
+        for tracked in game
+            .tracked_dirs
+            .iter()
+            .filter(|dir| dir.retired_at.is_none())
+        {
+            let path = PathBuf::from(crate::path_placeholders::expand_path_placeholders(
+                &tracked.path,
+            ));
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if !metadata.file_type().is_dir() => return Ok(false),
+                Ok(_) if std::fs::read_dir(&path)?.next().is_some() => return Ok(false),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("Failed to inspect local save directory"),
+            }
+        }
+        Ok(true)
+    }
+
+    fn find_version_id(&self, game: &FullGame, version_uuid: Uuid) -> Result<Option<i32>> {
+        for slot in &game.slots {
+            if let Some(version) = self
+                .games_repo
+                .get_slot(slot.id)?
+                .versions
+                .into_iter()
+                .find(|version| version.uuid.as_deref() == Some(&version_uuid.to_string()))
+            {
+                return Ok(Some(version.id));
+            }
+        }
+        Ok(None)
+    }
+
+    fn sync_report(
+        &self,
+        catalog: &crate::sync::RemoteCatalog,
+        installed_titles: &std::collections::HashSet<String>,
+        games: &[FullGame],
+        auto_applied: &std::collections::HashSet<Uuid>,
+    ) -> Result<crate::sync::SyncReport> {
+        let local_by_uuid = games
+            .iter()
+            .filter_map(|game| {
+                Uuid::parse_str(game.game.uuid.as_deref()?)
+                    .ok()
+                    .map(|uuid| (uuid, game))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let device = self.device_metadata();
+        let mut statuses = Vec::new();
+        for remote_game in &catalog.games {
+            let Some(local) = local_by_uuid.get(&remote_game.metadata.uuid) else {
+                continue;
+            };
+            let Some(tip) = crate::sync::latest_remote_tip(
+                catalog,
+                device.device_uuid,
+                remote_game.metadata.uuid,
+            ) else {
+                continue;
+            };
+            let remote_version_id = tip
+                .version_uuid
+                .map(|uuid| self.find_version_id(local, uuid))
+                .transpose()?
+                .flatten();
+            statuses.push(crate::sync::GameSyncStatus {
+                game_uuid: remote_game.metadata.uuid,
+                relation: self.remote_relation(catalog, remote_game, local),
+                remote_device: Some(tip.device_name),
+                remote_version_uuid: tip.version_uuid,
+                remote_version_id,
+                auto_applied: auto_applied.contains(&remote_game.metadata.uuid),
+            });
+        }
+        let remote_games = catalog
+            .games
+            .iter()
+            .map(|game| crate::sync::RemoteGameSummary {
+                uuid: game.metadata.uuid,
+                title: game.metadata.title.clone(),
+                installed: installed_titles.contains(&crate::repository::normalize_display_name(
+                    &game.metadata.title,
+                )),
+                adopted: local_by_uuid.contains_key(&game.metadata.uuid),
+            })
+            .collect();
+        Ok(crate::sync::SyncReport {
+            synced_at: chrono::Utc::now(),
+            games: statuses,
+            remote_games,
+            devices: catalog.devices.clone(),
+            remote_versions: crate::sync::remote_version_devices(catalog, device.device_uuid),
+        })
+    }
+
+    fn remote_relation(
+        &self,
+        catalog: &crate::sync::RemoteCatalog,
+        remote_game: &crate::sync::RemoteGame,
+        local: &FullGame,
+    ) -> crate::sync::Divergence {
+        if crate::sync::remote_heads_diverge(
+            catalog,
+            self.device_metadata().device_uuid,
+            remote_game.metadata.uuid,
+        ) {
+            return crate::sync::Divergence::Diverged;
+        }
+        let remote_tip = crate::sync::latest_remote_tip(
+            catalog,
+            self.device_metadata().device_uuid,
+            remote_game.metadata.uuid,
+        )
+        .and_then(|tip| tip.version_uuid);
+        let local_tip = local
+            .active_slot
+            .as_ref()
+            .and_then(|slot| {
+                local
+                    .versions
+                    .iter()
+                    .find(|version| Some(version.id) == slot.active_version_id)
+            })
+            .and_then(|version| version.uuid.as_deref())
+            .and_then(|uuid| Uuid::parse_str(uuid).ok());
+        let versions = remote_game
+            .slots
+            .iter()
+            .flat_map(|slot| &slot.versions)
+            .map(|version| (version.version.uuid, version.version.parent_version_uuid))
+            .collect::<std::collections::HashMap<_, _>>();
+        crate::sync::classify(local_tip, remote_tip, &versions)
+    }
+
+    fn device_state(&self, games: &[FullGame]) -> Result<crate::sync::DeviceState> {
+        let slots = games
+            .iter()
+            .flat_map(|game| &game.slots)
+            .map(|slot| {
+                self.games_repo
+                    .get_slot(slot.id)
+                    .map(|full| (slot.id, full))
+            })
+            .collect::<Result<std::collections::HashMap<_, _>>>()?;
+        crate::sync::DeviceState::from_games(self.device_metadata().device_uuid, games, &slots)
     }
 
     pub fn get_games(&self) -> Result<Vec<FullGame>> {
@@ -329,42 +779,63 @@ impl TimelineCore {
     }
 
     pub fn restore_version(&self, version_id: i32) -> Result<()> {
-        self.run_with_paused_watcher(|| {
-            // Read and validate BEFORE any filesystem mutation.
-            let version = self
-                .versions_repo
-                .get_version(version_id)
-                .context("Failed to load version for restoration")?;
-            let game = self
-                .games_repo
-                .get_game(version.game.id)
-                .context("Failed to reload game for restoration")?;
+        self.run_with_paused_watcher(|| self.restore_version_unpaused(version_id))
+    }
 
-            if !game
-                .slots
-                .iter()
-                .any(|slot| slot.id == version.version.slot_id)
-            {
+    pub fn apply_remote_version(&self, version_id: i32) -> Result<()> {
+        self.run_with_paused_watcher(|| {
+            let version = self.versions_repo.get_version(version_id)?;
+            let game = self.games_repo.get_game(version.game.id)?;
+            if game.active_slot.is_none() {
                 return Err(anyhow!(
-                    "Version {} does not belong to game {}",
-                    version_id,
-                    game.game.id
+                    "Cannot apply remote progress without an active local slot"
                 ));
             }
-
-            let prepared = self
-                .prepare_restore_version_files(&game, &version)
-                .context("Failed to validate version files")?;
-            self.apply_prepared_restore(prepared)
-                .context("Failed to restore version files")?;
-            self.versions_repo
-                .set_active_version(version_id)
-                .context("Failed to activate version for restoration")?;
-            self.resync_game_metadata(game.game.id)
-                .context("Failed to sync metadata after restoration")?;
-
-            Ok(())
+            crate::checkpoint::checkpoint_current_state(
+                &self.working_base,
+                self.versions_repo.as_ref(),
+                &game,
+                VersionReason::PreRestore,
+            )?;
+            self.restore_version_unpaused(version_id)
         })
+    }
+
+    fn restore_version_unpaused(&self, version_id: i32) -> Result<()> {
+        // Read and validate BEFORE any filesystem mutation.
+        let version = self
+            .versions_repo
+            .get_version(version_id)
+            .context("Failed to load version for restoration")?;
+        let game = self
+            .games_repo
+            .get_game(version.game.id)
+            .context("Failed to reload game for restoration")?;
+
+        if !game
+            .slots
+            .iter()
+            .any(|slot| slot.id == version.version.slot_id)
+        {
+            return Err(anyhow!(
+                "Version {} does not belong to game {}",
+                version_id,
+                game.game.id
+            ));
+        }
+
+        let prepared = self
+            .prepare_restore_version_files(&game, &version)
+            .context("Failed to validate version files")?;
+        self.apply_prepared_restore(prepared)
+            .context("Failed to restore version files")?;
+        self.versions_repo
+            .set_active_version(version_id)
+            .context("Failed to activate version for restoration")?;
+        self.resync_game_metadata(game.game.id)
+            .context("Failed to sync metadata after restoration")?;
+
+        Ok(())
     }
 
     pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
@@ -601,6 +1072,7 @@ impl TimelineCore {
             crate::checkpoint::CheckpointOutcome::Unchanged(version)
             | crate::checkpoint::CheckpointOutcome::Created(version) => version,
         };
+        let _ = self.push_sync();
         Ok(Some(version))
     }
 

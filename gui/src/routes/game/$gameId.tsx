@@ -1,7 +1,7 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router';
 import { ReactElement, useState } from 'react';
 import { motion } from 'framer-motion';
-import { useGame } from '@/api/queries';
+import { useGame, useSyncReport } from '@/api/queries';
 import { GameIcon } from '@/components/GameIcon';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -28,6 +28,8 @@ import { createSlot, deleteGame, deleteSlot, renameSlot, saveGame, setGameIcon, 
 import { queryClient } from '@/lib/query-client';
 import { confirm, open } from '@tauri-apps/plugin-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { applyRemoteVersion } from '@/api/sync';
+import { formatDistanceToNow } from 'date-fns';
 
 export const Route = createFileRoute('/game/$gameId')({
   component: GameDetail,
@@ -38,6 +40,7 @@ export function GameDetail(): ReactElement {
   const { gameId } = Route.useParams();
   const id = parseInt(gameId);
   const { data: fullGame, isLoading, error, refetch } = useGame(id);
+  const { data: syncReport, isFetching: syncing, error: syncError, refetch: refreshSync } = useSyncReport();
 
   const [restoreTarget, setRestoreTarget] = useState<Version | null>(null);
   const [editTitleOpen, setEditTitleOpen] = useState(false);
@@ -65,6 +68,17 @@ export function GameDetail(): ReactElement {
   const activeSlotVersions = versions.filter((v) => v.slot_id === game.active_slot?.id);
   // A game has no active version of its own — the pointer lives on the slot.
   const activeVersionId = game.active_slot?.active_version_id;
+  const gameSync = syncReport?.games.find(status => status.game_uuid === game.uuid);
+  const pendingRemoteVersionId = gameSync?.relation === 'fast_forward'
+    ? gameSync.remote_version_id
+    : undefined;
+  const syncLabel = syncing
+    ? 'Syncing…'
+    : syncError !== null
+      ? 'Offline'
+      : syncReport !== undefined
+        ? `Synced ${formatDistanceToNow(new Date(syncReport.synced_at), { addSuffix: true })}`
+        : 'Sync off';
 
   async function handleDelete(): Promise<void> {
     const confirmed = await confirm(
@@ -96,6 +110,24 @@ export function GameDetail(): ReactElement {
     } catch (err) {
       console.error(err);
       toast.error('Failed to restore version');
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  async function handleApplyRemote(versionId: number): Promise<void> {
+    try {
+      setRestoring(true);
+      await applyRemoteVersion(versionId);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['game', id] }),
+        queryClient.invalidateQueries({ queryKey: ['games'] }),
+        refreshSync(),
+      ]);
+      toast.success('Remote progress applied');
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to apply remote progress');
     } finally {
       setRestoring(false);
     }
@@ -275,6 +307,7 @@ export function GameDetail(): ReactElement {
           <div className="flex items-center gap-3">
             <StatChip label={`${versions.length.toString()} total saves`} />
             <StatChip label={`${slots.length.toString()} ${slots.length === 1 ? 'slot' : 'slots'}`} />
+            <StatChip label={syncLabel} />
           </div>
         </div>
       </header>
@@ -300,6 +333,17 @@ export function GameDetail(): ReactElement {
         <ScrollArea className="flex-1 min-h-0">
         <div>
           <TabsContent value="timeline" className="m-0 p-8 pt-6">
+            {typeof pendingRemoteVersionId === 'number' ? (
+              <section className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-primary/30 bg-primary/10 p-4">
+                <div>
+                  <p className="text-sm font-bold">{gameSync?.remote_device ?? 'Another device'} has newer progress</p>
+                  <p className="text-xs text-muted-foreground">Apply it when the game is closed.</p>
+                </div>
+                <Button disabled={restoring} onClick={() => { void handleApplyRemote(pendingRemoteVersionId); }}>
+                  Apply
+                </Button>
+              </section>
+            ) : null}
             <div className="flex items-center justify-between mb-8">
               <SlotSelector
                 slots={slots}
@@ -331,6 +375,7 @@ export function GameDetail(): ReactElement {
                 activeVersionId={activeVersionId}
                 onRestore={(v) => { setRestoreTarget(v); }}
                 onTag={(v, tag) => { void handleTag(v, tag); }}
+                remoteVersions={syncReport?.remote_versions}
               />
             )}
           </TabsContent>
