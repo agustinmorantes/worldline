@@ -94,6 +94,37 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(std::time::Duration::from_secs(5 * 60));
     });
 
+    let pruning_app = app.handle().clone();
+    let pruning_core = core.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        loop {
+            match pruning_core.get_pruning_settings() {
+                Ok(settings) if settings.automatic => match pruning_core.run_pruning() {
+                    Ok(report) => {
+                        if !report.retired_versions.is_empty()
+                            || report.local_gc.reclaimable_blobs > 0
+                            || report
+                                .remote_gc
+                                .as_ref()
+                                .is_some_and(|gc| gc.reclaimable_blobs > 0)
+                        {
+                            pruning_app.emit("history-pruned", ()).ok();
+                        }
+                    }
+                    Err(error) => {
+                        pruning_app.emit("pruning-error", error.to_string()).ok();
+                    }
+                },
+                Err(error) => {
+                    pruning_app.emit("pruning-error", error.to_string()).ok();
+                }
+                _ => {}
+            }
+            std::thread::sleep(std::time::Duration::from_secs(4 * 60 * 60));
+        }
+    });
+
     let notif_app = app.handle().clone();
     let checkpoint_core = core.clone();
     std::thread::spawn(move || {

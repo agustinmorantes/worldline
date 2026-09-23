@@ -18,7 +18,10 @@ import {
 } from '@/api/sync';
 import { SyncReport } from '@/models/sync';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { formatDistanceToNow } from 'date-fns';
+import { getPruningSettings, previewPruning, runPruning, updatePruningSettings, type PruningPreview } from '@/api/pruning';
+import { queryClient } from '@/lib/query-client';
 
 export const Route = createFileRoute('/settings')({
   component: SettingsView,
@@ -32,6 +35,9 @@ function SettingsView(): ReactElement {
   const [deviceUuid, setDeviceUuid] = useState('');
   const [syncReport, setSyncReport] = useState<SyncReport>();
   const [syncing, setSyncing] = useState(false);
+  const [pruning, setPruning] = useState(false);
+  const [pruningPreview, setPruningPreview] = useState<PruningPreview>();
+  const [automaticPruning, setAutomaticPruning] = useState(false);
 
   useEffect(() => {
     void getMonitoringSettings()
@@ -46,11 +52,12 @@ function SettingsView(): ReactElement {
   }, []);
 
   useEffect(() => {
-    void Promise.all([getDevice(), getSyncSettings()])
-      .then(([device, settings]) => {
+    void Promise.all([getDevice(), getSyncSettings(), getPruningSettings()])
+      .then(([device, settings, pruningSettings]) => {
         setDeviceName(device.name);
         setDeviceUuid(device.device_uuid);
         setRemotePath(settings.remote_path ?? '');
+        setAutomaticPruning(pruningSettings.automatic);
         if (settings.remote_path !== null && settings.remote_path !== undefined) {
           setSyncing(true);
           void refreshSync()
@@ -85,15 +92,16 @@ function SettingsView(): ReactElement {
           snapshot_debounce_seconds: debounceSeconds,
           version_cooldown_minutes: cooldownMinutes,
         }),
-        updateSyncSettings({ remote_path: remotePath.trim() === '' ? null : remotePath.trim() }),
         updateDeviceName(deviceName),
       ]);
+      await updateSyncSettings({ remote_path: remotePath.trim() === '' ? null : remotePath.trim() });
+      await updatePruningSettings({ automatic: automaticPruning });
       if (remotePath.trim() !== '') {
         setSyncReport(await refreshSync());
       }
     } catch (err) {
       console.error(err);
-      toast.error('Failed to save monitoring settings');
+      toast.error(`Failed to save settings: ${String(err)}`);
       return;
     }
 
@@ -131,19 +139,51 @@ function SettingsView(): ReactElement {
     }
   };
 
+  const handlePreviewPruning = async (): Promise<void> => {
+    try {
+      setPruning(true);
+      setPruningPreview(await previewPruning());
+    } catch (err) {
+      console.error(err);
+      toast.error(`Cleanup preview failed: ${String(err)}`);
+    } finally {
+      setPruning(false);
+    }
+  };
+
+  const handleRunPruning = async (): Promise<void> => {
+    if (!await confirm('Retire eligible checkpoints and remove unreferenced files locally and from the sync folder? Other registered devices must be explicitly removed first.', {
+      title: 'Run History Cleanup', kind: 'warning',
+    })) return;
+    try {
+      setPruning(true);
+      const report = await runPruning();
+      setPruningPreview(await previewPruning());
+      void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
+      void queryClient.invalidateQueries({ queryKey: ['games'] });
+      toast.success(`Retired ${report.retired_versions.length.toString()} checkpoints; reclaimed ${report.local_gc.reclaimable_bytes.toLocaleString()} bytes locally${report.remote_gc === null ? '' : ` and ${report.remote_gc.reclaimable_bytes.toLocaleString()} bytes remotely`}`);
+    } catch (err) {
+      console.error(err);
+      toast.error(`Cleanup failed: ${String(err)}`);
+    } finally {
+      setPruning(false);
+    }
+  };
+
   const handleReset = (): void => {
     setDebounce('0.2');
     setCooldown('0');
-    void updateMonitoringSettings({
+    setAutomaticPruning(false);
+    void Promise.all([updateMonitoringSettings({
       snapshot_debounce_seconds: 0.2,
       version_cooldown_minutes: 0,
-    })
+    }), updatePruningSettings({ automatic: false })])
       .then(() => {
         toast.success('Settings reset to demo defaults');
       })
       .catch((err: unknown) => {
         console.error(err);
-        toast.error('Failed to reset monitoring settings');
+        toast.error('Failed to reset settings');
       });
   };
 
@@ -213,6 +253,37 @@ function SettingsView(): ReactElement {
               </div>
             </SettingsCard>
           </div>
+        </section>
+
+        <section className="flex flex-col gap-4">
+          <div className="flex items-center gap-2 px-1">
+            <Clock data-icon="inline-start" />
+            <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground/70">History Cleanup</h2>
+          </div>
+          <SettingsCard>
+            <div className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-sm font-bold">Smart Retention</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">Tagged, first, branch, and active checkpoints stay restorable. Older intermediate checkpoints can be retired while their timeline links remain.</p>
+              </div>
+              <div className="flex items-center justify-between gap-4 rounded-lg bg-el p-3">
+                <div>
+                  <label htmlFor="automatic-pruning" className="text-sm font-semibold">Automatic cleanup</label>
+                  <p className="text-xs text-muted-foreground">Runs every four hours when only this device is registered in the sync folder.</p>
+                </div>
+                <Switch id="automatic-pruning" checked={automaticPruning} onCheckedChange={setAutomaticPruning} />
+              </div>
+              {pruningPreview !== undefined ? (
+                <p className="text-xs text-muted-foreground">
+                  {pruningPreview.retire_versions.length} eligible checkpoint(s) · {pruningPreview.local_gc.reclaimable_bytes.toLocaleString()} bytes already reclaimable locally
+                </p>
+              ) : null}
+              <div className="flex gap-2">
+                <Button variant="outline" disabled={pruning} onClick={() => { void handlePreviewPruning(); }}>Preview Cleanup</Button>
+                <Button disabled={pruning} onClick={() => { void handleRunPruning(); }}>{pruning ? 'Working…' : 'Run Cleanup Now'}</Button>
+              </div>
+            </div>
+          </SettingsCard>
         </section>
 
         <section className="flex flex-col gap-4">

@@ -15,9 +15,11 @@ interface BranchingTimelineProps {
   onRestore?: (version: Version) => void;
   onTag?: (version: Version, tag: string) => void;
   remoteVersions?: Partial<Record<string, string>>;
+  retiredVersions?: ReadonlySet<string>;
 }
 
 const NO_REMOTE_VERSIONS: Partial<Record<string, string>> = {};
+const NO_RETIRED_VERSIONS: ReadonlySet<string> = new Set();
 
 function provenance(version: Version, remoteVersions: Partial<Record<string, string>>): string {
   const device = version.uuid === undefined ? undefined : remoteVersions[version.uuid];
@@ -33,6 +35,7 @@ export function BranchingTimeline({
   onRestore,
   onTag,
   remoteVersions = NO_REMOTE_VERSIONS,
+  retiredVersions = NO_RETIRED_VERSIONS,
 }: BranchingTimelineProps): ReactElement {
   const [editingId, setEditingId] = useState<number | null>(null);
   const canEditTags = showActions;
@@ -315,6 +318,9 @@ export function BranchingTimeline({
                       {remoteVersions[pv.version.uuid]}
                     </Badge>
                   ) : null}
+                  {pv.version.uuid !== undefined && retiredVersions.has(pv.version.uuid) ? (
+                    <Badge variant="outline">History only · files removed</Badge>
+                  ) : null}
                 </div>
                 
                 <span className={cn("mt-0.5 font-medium text-muted-foreground", compact ? "text-[9px]" : "text-[10px]")}>
@@ -324,25 +330,26 @@ export function BranchingTimeline({
 
               {/* Actions */}
               {showActions && (
-              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  className="h-8 w-8 p-0"
-                  onClick={() => { onTag?.(pv.version, pv.version.tag ?? ''); }}
-                >
-                  <TagIcon size={14} className="text-muted-foreground" />
-                </Button>
-                
-                <Button 
-                  variant="secondary" 
-                  size="sm" 
-                  className="h-8 gap-1.5 text-xs font-semibold"
-                  onClick={() => { onRestore?.(pv.version); }}
-                >
-                  <RotateCcw size={12} /> Restore
-                </Button>
-              </div>
+                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    onClick={() => { onTag?.(pv.version, pv.version.tag ?? ''); }}
+                  >
+                    <TagIcon size={14} className="text-muted-foreground" />
+                  </Button>
+                  {pv.version.uuid === undefined || !retiredVersions.has(pv.version.uuid) ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs font-semibold"
+                      onClick={() => { onRestore?.(pv.version); }}
+                    >
+                      <RotateCcw size={12} /> Restore
+                    </Button>
+                  ) : null}
+                </div>
               )}
             </div>
           </div>

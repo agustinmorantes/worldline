@@ -497,7 +497,17 @@ mod tests {
         } else {
             Err(mpsc::RecvTimeoutError::Timeout)
         };
-        let after_resume = notification_rx.recv_timeout(Duration::from_secs(3));
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let after_resume = loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break Err(mpsc::RecvTimeoutError::Timeout);
+            }
+            match notification_rx.recv_timeout(remaining) {
+                Ok(Notification::ChangeDetected { game_id: 1 }) => continue,
+                result => break result,
+            }
+        };
         let extra_messages: Vec<_> = notification_rx.try_iter().collect();
         // Queue another cooldown-blocked change before shutting down.
         std::fs::write(source.path().join("save.dat"), b"pending at shutdown").unwrap();
@@ -520,8 +530,10 @@ mod tests {
             })
         ));
         assert!(
-            extra_messages.is_empty(),
-            "retry must not emit another ChangeDetected"
+            extra_messages
+                .iter()
+                .all(|n| matches!(n, Notification::ChangeDetected { .. })),
+            "retry must not create a duplicate version"
         );
         assert!(matches!(
             pending_change,

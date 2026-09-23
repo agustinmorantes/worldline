@@ -385,6 +385,22 @@ pub fn ensure_repository_root(repository_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Serializes local snapshot publication and blob cleanup across GUI/CLI processes.
+pub fn with_exclusive_lock<T>(
+    repository_root: &Path,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(repository_root.join(".repository.lock"))
+        .context("Failed to open repository lock")?;
+    lock.lock().context("Failed to lock local repository")?;
+    action()
+}
+
 pub fn sync_game_metadata(repository_root: &Path, game: &crate::models::FullGame) -> Result<()> {
     let game_uuid = parse_uuid_field(game.game.uuid.as_deref(), "game.uuid")?;
     let folder_slug = validate_folder_slug(game.game.folder_slug.as_deref(), "game.folder_slug")?;

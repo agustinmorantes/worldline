@@ -43,6 +43,7 @@ pub struct TimelineCore {
     pub icons_dir: PathBuf,
     data_dir: PathBuf,
     monitoring_settings_path: PathBuf,
+    pruning_settings_path: PathBuf,
     sync_settings_path: PathBuf,
     device_metadata: RwLock<crate::sync::DeviceMetadata>,
     sync_lock: Mutex<()>,
@@ -69,6 +70,7 @@ impl TimelineCore {
             working_base.clone()
         };
         let monitoring_settings_path = data_dir.join("monitoring_settings.json");
+        let pruning_settings_path = data_dir.join("pruning_settings.json");
         let sync_settings_path = data_dir.join("sync_settings.json");
         let device_metadata = crate::sync::load_or_create_device(&data_dir)?;
         let mut monitoring_settings = load_monitoring_settings(&monitoring_settings_path)?;
@@ -93,6 +95,7 @@ impl TimelineCore {
                 icons_dir,
                 data_dir,
                 monitoring_settings_path,
+                pruning_settings_path,
                 sync_settings_path,
                 device_metadata: RwLock::new(device_metadata),
                 sync_lock: Mutex::new(()),
@@ -126,10 +129,179 @@ impl TimelineCore {
         crate::sync::load_settings(&self.sync_settings_path)
     }
 
+    pub fn get_pruning_settings(&self) -> Result<crate::pruning::PruningSettings> {
+        crate::pruning::load_settings(&self.pruning_settings_path)
+    }
+
+    pub fn update_pruning_settings(
+        &self,
+        settings: crate::pruning::PruningSettings,
+    ) -> Result<crate::pruning::PruningSettings> {
+        if settings.automatic
+            && let Some(remote) = self.get_sync_settings()?.remote_path
+            && crate::sync::load_catalog(Path::new(&remote))?
+                .devices
+                .iter()
+                .any(|device| device.device_uuid != self.device_metadata().device_uuid)
+        {
+            return Err(anyhow!(
+                "Automatic pruning requires other sync devices to be removed"
+            ));
+        }
+        crate::pruning::save_settings(&self.pruning_settings_path, settings)?;
+        Ok(settings)
+    }
+
+    pub fn preview_pruning(&self) -> Result<crate::pruning::PruningPreview> {
+        let (catalog, state, _) = self.pruning_context(false)?;
+        let active = state
+            .games
+            .values()
+            .flat_map(|game| game.slots.values())
+            .filter_map(|slot| slot.active_version_uuid)
+            .collect();
+        Ok(crate::pruning::PruningPreview {
+            retire_versions: crate::pruning::plan_retirement(&catalog, &state, chrono::Utc::now())?,
+            local_gc: crate::pruning::preview_local_gc(&self.working_base, &active)?,
+        })
+    }
+
+    pub fn retired_versions(&self) -> Result<Vec<Uuid>> {
+        let mut versions = crate::pruning::read_markers(&self.working_base)?
+            .into_keys()
+            .collect::<Vec<_>>();
+        versions.sort_unstable();
+        Ok(versions)
+    }
+
+    pub fn run_pruning(&self) -> Result<crate::pruning::PruningRunReport> {
+        let _sync_guard = self
+            .sync_lock
+            .lock()
+            .map_err(|_| anyhow!("Sync lock poisoned"))?;
+        if self.get_sync_settings()?.remote_path.is_some() {
+            self.push_sync_unlocked()?;
+        }
+        crate::repository::with_exclusive_lock(&self.working_base, || {
+            let (catalog, state, remote) = self.pruning_context(true)?;
+            if remote.is_some()
+                && catalog
+                    .devices
+                    .iter()
+                    .any(|device| device.device_uuid != state.device_uuid)
+            {
+                return Err(anyhow!(
+                    "Pruning requires every other sync device to be explicitly removed"
+                ));
+            }
+            let retired_versions =
+                crate::pruning::plan_retirement(&catalog, &state, chrono::Utc::now())?;
+            for uuid in &retired_versions {
+                let version = catalog
+                    .games
+                    .iter()
+                    .flat_map(|game| &game.slots)
+                    .flat_map(|slot| &slot.versions)
+                    .find(|version| version.version.uuid == *uuid)
+                    .context("Planned version is missing from catalog")?;
+                let marker = crate::pruning::RetirementMarker {
+                    version_uuid: *uuid,
+                    slot_uuid: version
+                        .version
+                        .slot_uuid
+                        .context("Version is missing slot UUID")?,
+                    content_hash: version.version.content_hash.clone(),
+                    retired_at: chrono::Utc::now(),
+                };
+                if let Some(root) = &remote {
+                    crate::pruning::write_marker(root, &marker)?;
+                }
+                crate::pruning::write_marker(&self.working_base, &marker)?;
+            }
+            let active = self
+                .device_state(&self.games_repo.get_games()?)?
+                .games
+                .values()
+                .flat_map(|game| game.slots.values())
+                .filter_map(|slot| slot.active_version_uuid)
+                .collect();
+            let local_gc = crate::pruning::run_local_gc_unlocked(&self.working_base, &active)?;
+            let remote_gc = remote
+                .as_deref()
+                .map(|root| {
+                    crate::pruning::validate_catalog_complete(root)?;
+                    let current = crate::sync::load_catalog(root)?;
+                    if current
+                        .devices
+                        .iter()
+                        .any(|device| device.device_uuid != state.device_uuid)
+                    {
+                        return Err(anyhow!(
+                            "Remote cleanup requires every other sync device to be explicitly removed"
+                        ));
+                    }
+                    let mut remote_active = active.clone();
+                    for state in &current.states {
+                        remote_active.extend(
+                            state
+                                .games
+                                .values()
+                                .flat_map(|game| game.slots.values())
+                                .filter_map(|slot| slot.active_version_uuid),
+                        );
+                    }
+                    crate::pruning::run_local_gc(root, &remote_active)
+                })
+                .transpose()?;
+            Ok(crate::pruning::PruningRunReport {
+                retired_versions,
+                local_gc,
+                remote_gc,
+            })
+        })
+    }
+
+    fn pruning_context(
+        &self,
+        strict: bool,
+    ) -> Result<(
+        crate::sync::RemoteCatalog,
+        crate::sync::DeviceState,
+        Option<PathBuf>,
+    )> {
+        if strict {
+            crate::pruning::validate_catalog_complete(&self.working_base)?;
+        }
+        let games = self.games_repo.get_games()?;
+        let state = self.device_state(&games)?;
+        let local_catalog = crate::sync::load_catalog(&self.working_base)?;
+        let settings = self.get_sync_settings()?;
+        let remote = settings.remote_path.map(PathBuf::from);
+        let mut catalog = if let Some(remote) = &remote {
+            if strict {
+                crate::pruning::validate_catalog_complete(remote)?;
+            }
+            crate::sync::load_catalog(remote)?
+        } else {
+            crate::sync::RemoteCatalog {
+                devices: Vec::new(),
+                states: Vec::new(),
+                games: Vec::new(),
+                retired_versions: Default::default(),
+            }
+        };
+        crate::pruning::merge_local_history(&mut catalog, local_catalog)?;
+        Ok((catalog, state, remote))
+    }
+
     pub fn update_sync_settings(
         &self,
         settings: crate::sync::SyncSettings,
     ) -> Result<crate::sync::SyncSettings> {
+        let _sync_guard = self
+            .sync_lock
+            .lock()
+            .map_err(|_| anyhow!("Sync lock poisoned"))?;
         if let Some(path) = settings.remote_path.as_deref()
             && path.trim().is_empty()
         {
@@ -169,6 +341,9 @@ impl TimelineCore {
         self.push_sync_unlocked()?;
 
         let catalog = crate::sync::load_catalog(&remote_root)?;
+        for marker in catalog.retired_versions.values() {
+            crate::pruning::write_marker(&self.working_base, marker)?;
+        }
         let mut local_uuids = initial_games
             .iter()
             .filter_map(|game| game.game.uuid.as_deref())
@@ -304,6 +479,9 @@ impl TimelineCore {
                 .context("Sync remote is not configured")?,
         );
         let catalog = crate::sync::load_catalog(&remote_root)?;
+        for marker in catalog.retired_versions.values() {
+            crate::pruning::write_marker(&self.working_base, marker)?;
+        }
         let remote_game = catalog
             .games
             .iter()
@@ -352,9 +530,18 @@ impl TimelineCore {
             self.device_metadata().device_uuid,
             remote_game.metadata.uuid,
         );
-        let apply =
-            apply && !existing_saves && tip.as_ref().and_then(|tip| tip.version_uuid).is_some();
-        let pulled = crate::sync::pull_game(&self.working_base, remote_root, remote_game)?;
+        let apply = apply
+            && !existing_saves
+            && tip
+                .as_ref()
+                .and_then(|tip| tip.version_uuid)
+                .is_some_and(|uuid| !catalog.retired_versions.contains_key(&uuid));
+        let pulled = crate::sync::pull_game(
+            &self.working_base,
+            remote_root,
+            remote_game,
+            &catalog.retired_versions,
+        )?;
         let state = tip.as_ref().map(|tip| {
             let mut state = tip.game_state.clone();
             if !apply {
@@ -562,7 +749,9 @@ impl TimelineCore {
     }
 
     pub fn tag_version(&self, id: i32, tag: String) -> Result<Version> {
-        self.versions_repo.tag_version(id, tag)
+        crate::repository::with_exclusive_lock(&self.working_base, || {
+            self.versions_repo.tag_version(id, tag)
+        })
     }
 
     pub fn create_slot(&self, game_id: i32, name: &str) -> Result<FullGame> {
@@ -592,11 +781,14 @@ impl TimelineCore {
             self.clear_tracked_dirs(&active_game)
                 .context("Failed to clear tracked directories for new slot")?;
 
-            let empty_snapshot = crate::content_store::capture_snapshot(&self.working_base, &[])
-                .context("Failed to capture empty baseline")?;
-            self.versions_repo
-                .create_version_from_snapshot(game_id, VersionReason::Initial, empty_snapshot)
-                .context("Failed to create empty baseline for new slot")?;
+            crate::repository::with_exclusive_lock(&self.working_base, || {
+                let empty_snapshot =
+                    crate::content_store::capture_snapshot(&self.working_base, &[])
+                        .context("Failed to capture empty baseline")?;
+                self.versions_repo
+                    .create_version_from_snapshot(game_id, VersionReason::Initial, empty_snapshot)
+                    .context("Failed to create empty baseline for new slot")
+            })?;
 
             self.resync_game_metadata(game_id)
                 .context("Failed to sync metadata after creating slot")?;
@@ -622,14 +814,16 @@ impl TimelineCore {
                 return Ok(current_game);
             }
 
-            let prepared = self
-                .prepare_slot_activation(&current_game, slot_id)
+            self.prepare_slot_activation(&current_game, slot_id)
                 .context("Failed to validate target slot before switching")?;
 
             self.checkpoint_current_state(&current_game, VersionReason::PreSwitch)
                 .context("Failed to checkpoint current slot before switching")?;
 
-            self.activate_slot(&current_game, slot_id, prepared)
+            crate::repository::with_exclusive_lock(&self.working_base, || {
+                let prepared = self.prepare_slot_activation(&current_game, slot_id)?;
+                self.activate_slot(&current_game, slot_id, prepared)
+            })
         })
     }
 
@@ -755,11 +949,13 @@ impl TimelineCore {
             // Deliberately no checkpoint of the outgoing slot: it is about to be
             // discarded, so capturing its live state would only mint a version
             // that the delete below immediately removes.
-            let prepared = self
-                .prepare_slot_activation(&game, replacement_slot_id)
+            self.prepare_slot_activation(&game, replacement_slot_id)
                 .context("Failed to validate replacement slot before deleting")?;
             self.run_with_paused_watcher(|| {
-                self.activate_slot(&game, replacement_slot_id, prepared)
+                crate::repository::with_exclusive_lock(&self.working_base, || {
+                    let prepared = self.prepare_slot_activation(&game, replacement_slot_id)?;
+                    self.activate_slot(&game, replacement_slot_id, prepared)
+                })
             })
             .context("Failed to switch to the replacement slot before deleting")?;
         }
@@ -779,7 +975,11 @@ impl TimelineCore {
     }
 
     pub fn restore_version(&self, version_id: i32) -> Result<()> {
-        self.run_with_paused_watcher(|| self.restore_version_unpaused(version_id))
+        self.run_with_paused_watcher(|| {
+            crate::repository::with_exclusive_lock(&self.working_base, || {
+                self.restore_version_unpaused(version_id)
+            })
+        })
     }
 
     pub fn apply_remote_version(&self, version_id: i32) -> Result<()> {
@@ -797,7 +997,9 @@ impl TimelineCore {
                 &game,
                 VersionReason::PreRestore,
             )?;
-            self.restore_version_unpaused(version_id)
+            crate::repository::with_exclusive_lock(&self.working_base, || {
+                self.restore_version_unpaused(version_id)
+            })
         })
     }
 
@@ -1110,6 +1312,17 @@ impl TimelineCore {
         game: &FullGame,
         version: &FullVersion,
     ) -> Result<PreparedRestore> {
+        if let Some(uuid) = version
+            .version
+            .uuid
+            .as_deref()
+            .and_then(|uuid| Uuid::parse_str(uuid).ok())
+            && crate::pruning::read_markers(&self.working_base)?.contains_key(&uuid)
+        {
+            return Err(anyhow!(
+                "This checkpoint was retired and can no longer be restored"
+            ));
+        }
         let game_folder_slug = game
             .game
             .folder_slug

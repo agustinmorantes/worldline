@@ -12,6 +12,7 @@ pub mod integrity;
 pub mod models;
 pub mod path_placeholders;
 pub mod persistence;
+pub mod pruning;
 pub mod repository;
 pub mod schema;
 pub mod sync;

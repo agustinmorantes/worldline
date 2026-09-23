@@ -4,6 +4,7 @@ import { FullGame } from '@/models/game';
 import { InstallScannerItem } from '@/models/install_scanner_item';
 import { refreshSync } from './sync';
 import { SyncReport } from '@/models/sync';
+import { getRetiredVersions } from './pruning';
 
 export const useGames = (): UseQueryResult<FullGame[]> => {
   return useQuery({
@@ -46,4 +47,8 @@ export const useSyncReport = (enabled = true): UseQueryResult<SyncReport> => {
     retry: false,
     staleTime: 60_000,
   });
+};
+
+export const useRetiredVersions = (): UseQueryResult<string[]> => {
+  return useQuery({ queryKey: ['retired-versions'], queryFn: getRetiredVersions });
 };

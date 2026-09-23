@@ -1,7 +1,7 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router';
-import { ReactElement, useState } from 'react';
+import { ReactElement, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { useGame, useSyncReport } from '@/api/queries';
+import { useGame, useRetiredVersions, useSyncReport } from '@/api/queries';
 import { GameIcon } from '@/components/GameIcon';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -41,6 +41,8 @@ export function GameDetail(): ReactElement {
   const id = parseInt(gameId);
   const { data: fullGame, isLoading, error, refetch } = useGame(id);
   const { data: syncReport, isFetching: syncing, error: syncError, refetch: refreshSync } = useSyncReport();
+  const { data: retiredVersionIds = [] } = useRetiredVersions();
+  const retiredVersions = useMemo(() => new Set(retiredVersionIds), [retiredVersionIds]);
 
   const [restoreTarget, setRestoreTarget] = useState<Version | null>(null);
   const [editTitleOpen, setEditTitleOpen] = useState(false);
@@ -70,6 +72,7 @@ export function GameDetail(): ReactElement {
   const activeVersionId = game.active_slot?.active_version_id;
   const gameSync = syncReport?.games.find(status => status.game_uuid === game.uuid);
   const pendingRemoteVersionId = gameSync?.relation === 'fast_forward'
+    && (typeof gameSync.remote_version_uuid !== 'string' || !retiredVersions.has(gameSync.remote_version_uuid))
     ? gameSync.remote_version_id
     : undefined;
   const syncLabel = syncing
@@ -376,6 +379,7 @@ export function GameDetail(): ReactElement {
                 onRestore={(v) => { setRestoreTarget(v); }}
                 onTag={(v, tag) => { void handleTag(v, tag); }}
                 remoteVersions={syncReport?.remote_versions}
+                retiredVersions={retiredVersions}
               />
             )}
           </TabsContent>

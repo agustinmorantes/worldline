@@ -64,6 +64,23 @@ fn games_list_empty() {
 }
 
 #[test]
+fn prune_preview_empty_repository() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .args(["prune", "preview"])
+        .assert()
+        .success()
+        .stdout(contains("0 checkpoint(s) eligible for retirement"));
+    cli(dir.path())
+        .args(["prune", "run"])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Retired 0 checkpoint(s); reclaimed 0 local blob(s)",
+        ));
+}
+
+#[test]
 fn games_add_and_list() {
     let dir = tempdir().unwrap();
     cli(dir.path())

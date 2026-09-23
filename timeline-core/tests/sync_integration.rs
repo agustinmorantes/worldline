@@ -6,6 +6,7 @@ use savegame_timeline_core::models::{FullGame, GameForm};
 use savegame_timeline_core::persistence::sqlite::{
     SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
 };
+use savegame_timeline_core::pruning::{self, RetirementMarker};
 use savegame_timeline_core::repository::{self, TrackedDirMetadata, VersionReason};
 use savegame_timeline_core::sync::{self, Divergence, SyncSettings};
 use savegame_timeline_core::{MIGRATIONS, TimelineCore};
@@ -115,6 +116,337 @@ impl Drop for DeviceHarness {
     fn drop(&mut self) {
         self.core.shutdown();
     }
+}
+
+#[test]
+fn retired_version_keeps_ancestry_without_blob_or_restore() {
+    let remote = tempdir().unwrap();
+    let first = DeviceHarness::new(remote.path());
+    let game = first.add_game("Retirement Game", b"first");
+    first.write(b"middle");
+    let game = first.checkpoint(game.game.id);
+    let middle = game.last_version.as_ref().unwrap().clone();
+    first.write(b"latest");
+    let game = first.checkpoint(game.game.id);
+    first.core.push_sync().unwrap();
+    assert_eq!(
+        first.core.preview_pruning().unwrap().retire_versions.len(),
+        0
+    );
+
+    let local_root = first.data.path().join("repository");
+    let middle_meta: repository::VersionMetadata =
+        repository::read_metadata_json(&repository::version_dir(
+            &repository::slot_dir(
+                &repository::game_dir(&local_root, game.game.folder_slug.as_deref().unwrap()),
+                &game.active_slot.as_ref().unwrap().folder_slug,
+            ),
+            middle.folder_slug.as_deref().unwrap(),
+        ))
+        .unwrap();
+    let middle_uuid = middle_meta.uuid;
+    pruning::write_marker(
+        &local_root,
+        &RetirementMarker {
+            version_uuid: middle_uuid,
+            slot_uuid: middle_meta.slot_uuid.unwrap(),
+            content_hash: middle_meta.content_hash.clone(),
+            retired_at: chrono::Utc::now(),
+        },
+    )
+    .unwrap();
+    first.core.push_sync().unwrap();
+    let report = first.core.run_pruning().unwrap();
+    assert_eq!(report.local_gc.reclaimable_blobs, 1);
+    assert_eq!(report.remote_gc.unwrap().reclaimable_blobs, 1);
+    first.core.push_sync().unwrap();
+    assert!(
+        !savegame_timeline_core::content_store::blob_path(
+            remote.path(),
+            &middle_meta.files[0].sha256
+        )
+        .unwrap()
+        .exists()
+    );
+
+    let second = DeviceHarness::new(remote.path());
+    let game_uuid = Uuid::parse_str(game.game.uuid.as_deref().unwrap()).unwrap();
+    point_remote_tracked_dir_at(remote.path(), game_uuid, second.live.path());
+    let adopted = second.core.adopt_remote_game(game_uuid).unwrap();
+    assert_eq!(adopted.versions.len(), 3);
+    let middle_id = adopted
+        .versions
+        .iter()
+        .find(|v| v.uuid.as_deref() == Some(&middle_uuid.to_string()))
+        .unwrap()
+        .id;
+    let first_id = adopted
+        .versions
+        .iter()
+        .find(|v| v.version_number == 1)
+        .unwrap()
+        .id;
+    let latest = adopted
+        .versions
+        .iter()
+        .find(|v| v.version_number == 3)
+        .unwrap();
+    assert_eq!(
+        adopted
+            .versions
+            .iter()
+            .find(|v| v.id == middle_id)
+            .unwrap()
+            .parent_id,
+        Some(first_id)
+    );
+    assert_eq!(latest.parent_id, Some(middle_id));
+    assert!(second.core.restore_version(middle_id).is_err());
+    assert_eq!(second.bytes(), b"latest");
+    let catalog = sync::load_catalog(remote.path()).unwrap();
+    assert_eq!(catalog.games[0].slots[0].versions.len(), 3);
+    assert_eq!(catalog.retired_versions.len(), 1);
+}
+
+#[test]
+fn local_pruning_reclaims_only_eligible_payload() {
+    let remote = tempdir().unwrap();
+    let device = DeviceHarness::new(remote.path());
+    device
+        .core
+        .update_sync_settings(SyncSettings { remote_path: None })
+        .unwrap();
+    let mut game = device.add_game("Local Pruning Game", b"first");
+    for bytes in [b"second".as_slice(), b"third", b"fourth"] {
+        device.write(bytes);
+        game = device.checkpoint(game.game.id);
+    }
+    let root = device.data.path().join("repository");
+    let game_dir = repository::game_dir(&root, game.game.folder_slug.as_deref().unwrap());
+    let slot_dir = repository::slot_dir(&game_dir, &game.active_slot.as_ref().unwrap().folder_slug);
+    for version in &game.versions {
+        let version_dir =
+            repository::version_dir(&slot_dir, version.folder_slug.as_deref().unwrap());
+        let mut metadata: repository::VersionMetadata =
+            repository::read_metadata_json(&version_dir).unwrap();
+        metadata.created_at = chrono::DateTime::parse_from_rfc3339("2020-01-06T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            + chrono::Duration::minutes(i64::from(version.version_number));
+        repository::write_metadata_json(&version_dir, &metadata).unwrap();
+    }
+    let second = game
+        .versions
+        .iter()
+        .find(|v| v.version_number == 2)
+        .unwrap();
+    let first = game
+        .versions
+        .iter()
+        .find(|v| v.version_number == 1)
+        .unwrap();
+    let expected = Uuid::parse_str(second.uuid.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        device.core.preview_pruning().unwrap().retire_versions,
+        vec![expected]
+    );
+    let report = device.core.run_pruning().unwrap();
+    assert_eq!(report.retired_versions, vec![expected]);
+    assert_eq!(report.local_gc.reclaimable_blobs, 1);
+    assert_eq!(report.local_gc.reclaimable_bytes, b"second".len() as u64);
+    assert!(device.core.restore_version(second.id).is_err());
+    device.core.restore_version(first.id).unwrap();
+    assert_eq!(device.bytes(), b"first");
+    assert!(
+        device
+            .core
+            .preview_pruning()
+            .unwrap()
+            .retire_versions
+            .is_empty()
+    );
+}
+
+#[test]
+fn representative_history_reclaims_seventy_five_percent_of_payload_bytes() {
+    let remote = tempdir().unwrap();
+    let device = DeviceHarness::new(remote.path());
+    device
+        .core
+        .update_sync_settings(SyncSettings { remote_path: None })
+        .unwrap();
+    let mut game = device.add_game("Long History", b"save-00");
+    for index in 1..12 {
+        device.write(format!("save-{index:02}").as_bytes());
+        game = device.checkpoint(game.game.id);
+    }
+    let root = device.data.path().join("repository");
+    let game_dir = repository::game_dir(&root, game.game.folder_slug.as_deref().unwrap());
+    let slot_dir = repository::slot_dir(&game_dir, &game.active_slot.as_ref().unwrap().folder_slug);
+    for version in &game.versions {
+        let path = repository::version_dir(&slot_dir, version.folder_slug.as_deref().unwrap());
+        let mut metadata: repository::VersionMetadata =
+            repository::read_metadata_json(&path).unwrap();
+        metadata.created_at = chrono::DateTime::parse_from_rfc3339("2020-01-06T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            + chrono::Duration::minutes(i64::from(version.version_number));
+        repository::write_metadata_json(&path, &metadata).unwrap();
+    }
+    let before = 12 * b"save-00".len();
+    let report = device.core.run_pruning().unwrap();
+    assert_eq!(report.retired_versions.len(), 9);
+    assert_eq!(report.local_gc.reclaimable_bytes as usize, before * 3 / 4);
+    let first = game
+        .versions
+        .iter()
+        .find(|v| v.version_number == 1)
+        .unwrap();
+    device.core.restore_version(first.id).unwrap();
+    assert_eq!(device.bytes(), b"save-00");
+    device
+        .core
+        .restore_version(game.last_version.unwrap().id)
+        .unwrap();
+    assert_eq!(device.bytes(), b"save-11");
+}
+
+#[test]
+fn cleanup_publishes_local_history_before_remote_retirement() {
+    let remote = tempdir().unwrap();
+    let device = DeviceHarness::new(remote.path());
+    let mut game = device.add_game("Unpublished History", b"first");
+    for bytes in [b"second".as_slice(), b"third", b"fourth"] {
+        device.write(bytes);
+        game = device.checkpoint(game.game.id);
+    }
+    let root = device.data.path().join("repository");
+    let game_dir = repository::game_dir(&root, game.game.folder_slug.as_deref().unwrap());
+    let slot_dir = repository::slot_dir(&game_dir, &game.active_slot.as_ref().unwrap().folder_slug);
+    for version in &game.versions {
+        let path = repository::version_dir(&slot_dir, version.folder_slug.as_deref().unwrap());
+        let mut metadata: repository::VersionMetadata =
+            repository::read_metadata_json(&path).unwrap();
+        metadata.created_at = chrono::DateTime::parse_from_rfc3339("2020-01-06T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            + chrono::Duration::minutes(i64::from(version.version_number));
+        repository::write_metadata_json(&path, &metadata).unwrap();
+    }
+    let report = device.core.run_pruning().unwrap();
+    assert_eq!(report.retired_versions.len(), 1);
+    assert_eq!(
+        report.remote_gc.unwrap().reclaimable_bytes,
+        b"second".len() as u64
+    );
+    let catalog = sync::load_catalog(remote.path()).unwrap();
+    assert_eq!(catalog.games[0].slots[0].versions.len(), 4);
+    assert_eq!(catalog.retired_versions.len(), 1);
+}
+
+#[test]
+fn concurrent_checkpoint_and_restore_remain_valid_during_cleanup() {
+    let remote = tempdir().unwrap();
+    let device = DeviceHarness::new(remote.path());
+    device
+        .core
+        .update_sync_settings(SyncSettings { remote_path: None })
+        .unwrap();
+    let mut game = device.add_game("Concurrent Cleanup", b"first");
+    for bytes in [b"second".as_slice(), b"third", b"fourth"] {
+        device.write(bytes);
+        game = device.checkpoint(game.game.id);
+    }
+    let first_id = game
+        .versions
+        .iter()
+        .find(|v| v.version_number == 1)
+        .unwrap()
+        .id;
+    device.write(b"fifth");
+    let repository_root = device.data.path().join("repository");
+    let core = &device.core;
+    let versions = &device.versions;
+    let current = core.get_game(game.game.id).unwrap();
+    std::thread::scope(|scope| {
+        let cleanup = scope.spawn(|| core.run_pruning().unwrap());
+        let checkpoint = scope.spawn(|| {
+            checkpoint::checkpoint_current_state(
+                &repository_root,
+                versions.as_ref(),
+                &current,
+                VersionReason::Manual,
+            )
+            .unwrap()
+        });
+        cleanup.join().unwrap();
+        assert!(matches!(
+            checkpoint.join().unwrap(),
+            CheckpointOutcome::Created(_)
+        ));
+    });
+    assert_eq!(core.get_game(game.game.id).unwrap().versions.len(), 5);
+    std::thread::scope(|scope| {
+        let cleanup = scope.spawn(|| core.run_pruning().unwrap());
+        let restore = scope.spawn(|| core.restore_version(first_id).unwrap());
+        cleanup.join().unwrap();
+        restore.join().unwrap();
+    });
+    assert_eq!(device.bytes(), b"first");
+}
+
+#[test]
+fn removed_device_cannot_reappear_from_delayed_cloud_files() {
+    let remote = tempdir().unwrap();
+    let first = DeviceHarness::new(remote.path());
+    let second = DeviceHarness::new(remote.path());
+    first.core.push_sync().unwrap();
+    second.core.push_sync().unwrap();
+    let second_uuid = second.core.device_metadata().device_uuid;
+    let device_file = sync::remote_device_file(remote.path(), second_uuid);
+    let state_file = sync::remote_state_file(remote.path(), second_uuid);
+    let device_bytes = fs::read(&device_file).unwrap();
+    let state_bytes = fs::read(&state_file).unwrap();
+    fs::remove_file(&state_file).unwrap();
+    assert!(
+        first.core.run_pruning().is_err(),
+        "missing device state must block GC"
+    );
+    fs::write(&state_file, &state_bytes).unwrap();
+    assert!(
+        first.core.run_pruning().is_err(),
+        "registered offline device must block GC"
+    );
+    first.core.remove_sync_device(second_uuid).unwrap();
+    fs::create_dir_all(device_file.parent().unwrap()).unwrap();
+    fs::write(&device_file, device_bytes).unwrap();
+    fs::write(&state_file, state_bytes).unwrap();
+    assert_eq!(sync::load_catalog(remote.path()).unwrap().devices.len(), 1);
+    assert!(second.core.push_sync().is_err());
+    assert!(first.core.run_pruning().is_ok());
+}
+
+#[test]
+fn tagging_a_published_version_preserves_a_remote_retention_anchor() {
+    let remote = tempdir().unwrap();
+    let device = DeviceHarness::new(remote.path());
+    let game = device.add_game("Tagged Game", b"save");
+    device.core.push_sync().unwrap();
+    let version = game.last_version.unwrap();
+    device.core.tag_version(version.id, "keep".into()).unwrap();
+    device.core.push_sync().unwrap();
+    let catalog = sync::load_catalog(remote.path()).unwrap();
+    assert_eq!(
+        catalog.games[0].slots[0].versions[0].version.tag.as_deref(),
+        Some("keep")
+    );
+    device.core.tag_version(version.id, "".into()).unwrap();
+    device.core.push_sync().unwrap();
+    let catalog = sync::load_catalog(remote.path()).unwrap();
+    assert_eq!(
+        catalog.games[0].slots[0].versions[0].version.tag.as_deref(),
+        Some("keep")
+    );
 }
 
 #[test]

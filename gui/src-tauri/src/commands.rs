@@ -3,7 +3,7 @@ use savegame_timeline_core::install_scanner::InstallScannerItem;
 use savegame_timeline_core::models::*;
 use savegame_timeline_core::TimelineCore;
 use std::sync::Arc;
-use tauri::{generate_handler, State};
+use tauri::{generate_handler, Emitter, State};
 
 #[tauri::command]
 fn get_games(core: State<Arc<TimelineCore>>) -> Result<Vec<FullGame>, String> {
@@ -204,6 +204,60 @@ fn remove_sync_device(device_uuid: String, core: State<Arc<TimelineCore>>) -> Re
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_retired_versions(core: State<Arc<TimelineCore>>) -> Result<Vec<uuid::Uuid>, String> {
+    core.retired_versions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_pruning_settings(
+    core: State<Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::pruning::PruningSettings, String> {
+    core.get_pruning_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_pruning_settings(
+    settings: savegame_timeline_core::pruning::PruningSettings,
+    core: State<Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::pruning::PruningSettings, String> {
+    core.update_pruning_settings(settings)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn preview_pruning(
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::pruning::PruningPreview, String> {
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.preview_pruning())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_pruning(
+    core: State<'_, Arc<TimelineCore>>,
+    app: tauri::AppHandle,
+) -> Result<savegame_timeline_core::pruning::PruningRunReport, String> {
+    let core = Arc::clone(&core);
+    let report = tauri::async_runtime::spawn_blocking(move || core.run_pruning())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    if !report.retired_versions.is_empty()
+        || report.local_gc.reclaimable_blobs > 0
+        || report
+            .remote_gc
+            .as_ref()
+            .is_some_and(|gc| gc.reclaimable_blobs > 0)
+    {
+        app.emit("history-pruned", ()).map_err(|e| e.to_string())?;
+    }
+    Ok(report)
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
@@ -232,5 +286,10 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         adopt_remote_game,
         apply_remote_version,
         remove_sync_device,
+        get_retired_versions,
+        get_pruning_settings,
+        update_pruning_settings,
+        preview_pruning,
+        run_pruning,
     ])
 }

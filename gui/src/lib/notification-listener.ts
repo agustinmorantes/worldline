@@ -39,4 +39,10 @@ export function listenNotifications(): void {
   void listen<string>('sync-error', () => {
     void queryClient.invalidateQueries({ queryKey: ['sync-report'] });
   });
+
+  void listen('history-pruned', () => {
+    void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
+    void queryClient.invalidateQueries({ queryKey: ['games'] });
+    void queryClient.invalidateQueries({ queryKey: ['game'] });
+  });
 }

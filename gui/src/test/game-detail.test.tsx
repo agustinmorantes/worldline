@@ -14,6 +14,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@/api/queries', () => ({
   useGame: vi.fn(),
+  useRetiredVersions: vi.fn(() => ({ data: [] })),
   useSyncReport: vi.fn(() => ({
     data: undefined,
     isFetching: false,

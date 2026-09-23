@@ -17,23 +17,25 @@ pub fn checkpoint_current_state(
     game: &FullGame,
     reason: VersionReason,
 ) -> Result<CheckpointOutcome> {
-    let snapshot = capture_snapshot(working_base, &game.tracked_dirs)
-        .context("failed to capture tracked directories")?;
+    repository::with_exclusive_lock(working_base, || {
+        let snapshot = capture_snapshot(working_base, &game.tracked_dirs)
+            .context("failed to capture tracked directories")?;
 
-    if let Some(active_version) = game.last_version.as_ref()
-        && let Some(metadata) = active_version_metadata(working_base, game, active_version)?
-        && metadata.content_hash == snapshot.content_hash
-    {
+        if let Some(active_version) = game.last_version.as_ref()
+            && let Some(metadata) = active_version_metadata(working_base, game, active_version)?
+            && metadata.content_hash == snapshot.content_hash
+        {
+            let version = versions_repo
+                .get_version(active_version.id)
+                .context("failed to load unchanged active version")?;
+            return Ok(CheckpointOutcome::Unchanged(version));
+        }
+
         let version = versions_repo
-            .get_version(active_version.id)
-            .context("failed to load unchanged active version")?;
-        return Ok(CheckpointOutcome::Unchanged(version));
-    }
-
-    let version = versions_repo
-        .create_version_from_snapshot(game.game.id, reason, snapshot)
-        .context("failed to create checkpoint version")?;
-    Ok(CheckpointOutcome::Created(version))
+            .create_version_from_snapshot(game.game.id, reason, snapshot)
+            .context("failed to create checkpoint version")?;
+        Ok(CheckpointOutcome::Created(version))
+    })
 }
 
 fn active_version_metadata(

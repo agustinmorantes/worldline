@@ -41,7 +41,17 @@ enum Commands {
         #[command(subcommand)]
         action: SlotsAction,
     },
+    Prune {
+        #[command(subcommand)]
+        action: PruneAction,
+    },
     Watch,
+}
+
+#[derive(Subcommand)]
+enum PruneAction {
+    Preview,
+    Run,
 }
 
 #[derive(Subcommand)]
@@ -313,6 +323,34 @@ fn main() -> Result<()> {
                     .transpose()?;
                 core.delete_slot(slot_id, replacement)?;
                 println!("Deleted slot {slot_id}");
+            }
+        },
+        Commands::Prune { action } => match action {
+            PruneAction::Preview => {
+                let preview = core.preview_pruning()?;
+                println!(
+                    "{} checkpoint(s) eligible for retirement",
+                    preview.retire_versions.len()
+                );
+                println!(
+                    "{} blob(s), {} byte(s) already reclaimable locally",
+                    preview.local_gc.reclaimable_blobs, preview.local_gc.reclaimable_bytes
+                );
+            }
+            PruneAction::Run => {
+                let report = core.run_pruning()?;
+                println!(
+                    "Retired {} checkpoint(s); reclaimed {} local blob(s), {} byte(s)",
+                    report.retired_versions.len(),
+                    report.local_gc.reclaimable_blobs,
+                    report.local_gc.reclaimable_bytes
+                );
+                if let Some(remote) = report.remote_gc {
+                    println!(
+                        "Reclaimed {} remote blob(s), {} byte(s)",
+                        remote.reclaimable_blobs, remote.reclaimable_bytes
+                    );
+                }
             }
         },
         Commands::Watch => {
