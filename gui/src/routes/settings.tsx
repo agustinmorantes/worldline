@@ -29,8 +29,8 @@ export const Route = createFileRoute('/settings')({
 });
 
 function SettingsView(): ReactElement {
-  const [debounce, setDebounce] = useState('0.2');
-  const [cooldown, setCooldown] = useState('0');
+  const [debounce, setDebounce] = useState('5');
+  const [cooldown, setCooldown] = useState('15');
   const [remotePath, setRemotePath] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const [deviceUuid, setDeviceUuid] = useState('');
@@ -172,15 +172,15 @@ function SettingsView(): ReactElement {
   };
 
   const handleReset = (): void => {
-    setDebounce('0.2');
-    setCooldown('0');
+    setDebounce('5');
+    setCooldown('15');
     setAutomaticPruning(false);
     void Promise.all([updateMonitoringSettings({
-      snapshot_debounce_seconds: 0.2,
-      version_cooldown_minutes: 0,
+      snapshot_debounce_seconds: 5,
+      version_cooldown_minutes: 15,
     }), updatePruningSettings({ automatic: false })])
       .then(() => {
-        toast.success('Settings reset to demo defaults');
+        toast.success('Settings reset to defaults');
       })
       .catch((err: unknown) => {
         console.error(err);
@@ -373,7 +373,7 @@ function SettingsView(): ReactElement {
           <Button className="font-bold px-8" onClick={() => { void handleSave(); }}>Save Settings</Button>
         </div>
         <p className="text-right text-xs text-muted-foreground">
-          Changes apply immediately after saving. Reset uses demo-friendly defaults.
+          Changes apply immediately after saving.
         </p>
       </div>
       </ScrollArea>

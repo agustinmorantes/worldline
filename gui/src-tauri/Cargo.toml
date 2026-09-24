@@ -1,9 +1,9 @@
 [package]
 name = "savegame-timeline"
 version = "0.1.1"
-description = "A Tauri App"
-authors = ["you"]
+description = "Desktop app for tracking and restoring game save history"
 edition = "2021"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,17 +13,6 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "savegame_timeline_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
-
-
-[profile.dev]
-incremental = true
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-panic = "abort"
-strip = true
 
 
 [build-dependencies]

@@ -1,0 +1,45 @@
+name: Build desktop bundles
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: deb
+          - os: windows-latest
+            target: nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - if: runner.os == 'Linux'
+        name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file libayatana-appindicator3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install GUI dependencies
+        working-directory: gui
+        run: bun install --frozen-lockfile
+
+      - name: Build bundle
+        working-directory: gui
+        run: bun run tauri build --bundles ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: savegame-timeline-${{ matrix.target }}
+          path: target/release/bundle/${{ matrix.target }}/
+          if-no-files-found: error

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "prepare": "bun run ../.husky/install.mts",
-    "check": "eslint --cache --fix && tsc --noEmit",
+    "check": "eslint . && tsc --noEmit",
     "test": "vitest",
     "lint": "lint-staged",
     "ci": "eslint --fix && tsc --noEmit && cd src-tauri && cargo clippy",

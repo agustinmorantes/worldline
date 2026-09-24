@@ -722,6 +722,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
 
 #[allow(clippy::collapsible_if)]
 fn parse_epic_installs() -> Vec<EpicManifest> {
+    #[allow(unused_mut)] // Only the Windows manifest scan adds entries.
     let mut installs = Vec::new();
     #[cfg(target_os = "windows")]
     {
@@ -1244,8 +1245,9 @@ mod tests {
 
     #[test]
     fn candidate_path_survives_before_the_save_directory_exists() {
-        let candidate = candidate_tracked_directory("C:\\Games\\NeverRun\\save.dat");
-        assert_eq!(candidate, PathBuf::from("C:\\Games\\NeverRun"));
+        let save_dir = tempdir().unwrap().path().join("NeverRun");
+        let candidate = candidate_tracked_directory(&save_dir.join("save.dat").to_string_lossy());
+        assert_eq!(candidate, save_dir);
     }
 
     #[test]
