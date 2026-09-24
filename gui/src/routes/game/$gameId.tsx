@@ -12,7 +12,7 @@ import { SlotSelector } from '@/components/SlotSelector';
 import { RestoreModal } from '@/components/RestoreModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image, EllipsisVertical } from 'lucide-react';
+import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image, EllipsisVertical, History } from 'lucide-react';
 import { Version } from '@/models/version';
 import { Game } from '@/models/game';
 import { Slot } from '@/models/slot.ts';
@@ -26,10 +26,11 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { createSlot, deleteGame, deleteSlot, renameSlot, saveGame, setGameIcon, switchSlot } from '@/api/games';
 import { queryClient } from '@/lib/query-client';
-import { confirm, open } from '@tauri-apps/plugin-dialog';
+import { confirm, open, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { applyRemoteVersion } from '@/api/sync';
 import { formatDistanceToNow } from 'date-fns';
+import { exportGameHistory } from '@/api/history';
 
 export const Route = createFileRoute('/game/$gameId')({
   component: GameDetail,
@@ -50,6 +51,7 @@ export function GameDetail(): ReactElement {
   // Slot operations and restores both rewrite the live save directory, so one
   // must not be startable while the other is running.
   const [restoring, setRestoring] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   if (isLoading) return <GameDetailSkeleton />;
 
@@ -164,6 +166,24 @@ export function GameDetail(): ReactElement {
     } catch (err) {
       console.error(err);
       toast.error('Failed to set icon');
+    }
+  }
+
+  async function handleExportHistory(): Promise<void> {
+    try {
+      const destination = await saveDialog({
+        title: 'Choose a new history bundle directory name',
+        defaultPath: `${game.title} history`,
+      });
+      if (destination === null) return;
+      setExporting(true);
+      const report = await exportGameHistory(game.id, destination);
+      toast.success(`Exported ${report.version_count.toString()} version(s) for ${report.title}`);
+    } catch (err) {
+      console.error(err);
+      toast.error(`History export failed: ${String(err)}`);
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -298,6 +318,9 @@ export function GameDetail(): ReactElement {
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={handleOpenEditTitle}>
                   <Pencil size={14} className="mr-2" /> Edit Title
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={exporting} onClick={() => { void handleExportHistory(); }}>
+                  <History size={14} className="mr-2" /> {exporting ? 'Exporting History…' : 'Export History'}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onClick={() => { void handleDelete(); }}>

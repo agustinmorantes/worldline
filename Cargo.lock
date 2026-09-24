@@ -593,6 +593,7 @@ dependencies = [
  "predicates",
  "savegame-timeline-core",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]

@@ -734,6 +734,45 @@ impl TimelineCore {
         self.games_repo.list_slots(game_id)
     }
 
+    pub fn inspect_history_bundle(
+        path: &Path,
+    ) -> Result<crate::history_transfer::HistoryBundleSummary> {
+        crate::history_transfer::inspect(path)
+    }
+
+    pub fn export_game_history(
+        &self,
+        game_id: i32,
+        destination: &Path,
+    ) -> Result<crate::history_transfer::HistoryTransferReport> {
+        crate::repository::with_exclusive_lock(&self.working_base, || {
+            crate::history_transfer::export_game(
+                &self.working_base,
+                self.games_repo.as_ref(),
+                game_id,
+                destination,
+            )
+        })
+    }
+
+    pub fn import_game_history(
+        &self,
+        bundle_path: &Path,
+        mappings: &std::collections::HashMap<Uuid, PathBuf>,
+    ) -> Result<crate::history_transfer::HistoryTransferReport> {
+        let report = crate::repository::with_exclusive_lock(&self.working_base, || {
+            crate::history_transfer::import_game(
+                &self.working_base,
+                self.games_repo.as_ref(),
+                bundle_path,
+                mappings,
+            )
+        })?;
+        let games = self.games_repo.get_games()?;
+        self.cmd_tx.send(Command::ReregisterGames(games))?;
+        Ok(report)
+    }
+
     pub fn save_game(&self, form: GameForm, dirs: Option<Vec<&str>>) -> Result<Game> {
         let game = self.games_repo.save_game(form, dirs)?;
         let all_games = self.games_repo.get_games()?;

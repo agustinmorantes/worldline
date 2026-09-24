@@ -22,6 +22,7 @@ import { Switch } from '@/components/ui/switch';
 import { formatDistanceToNow } from 'date-fns';
 import { getPruningSettings, previewPruning, runPruning, updatePruningSettings, type PruningPreview } from '@/api/pruning';
 import { queryClient } from '@/lib/query-client';
+import { ImportHistorySection } from '@/components/ImportHistorySection';
 
 export const Route = createFileRoute('/settings')({
   component: SettingsView,
@@ -254,6 +255,8 @@ function SettingsView(): ReactElement {
             </SettingsCard>
           </div>
         </section>
+
+        <ImportHistorySection />
 
         <section className="flex flex-col gap-4">
           <div className="flex items-center gap-2 px-1">

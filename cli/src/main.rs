@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use savegame_timeline_core::persistence::sqlite::{
     SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
 };
 use savegame_timeline_core::{MIGRATIONS, TimelineCore};
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "savegame-cli")]
@@ -45,7 +47,27 @@ enum Commands {
         #[command(subcommand)]
         action: PruneAction,
     },
+    History {
+        #[command(subcommand)]
+        action: HistoryAction,
+    },
     Watch,
+}
+
+#[derive(Subcommand)]
+enum HistoryAction {
+    Inspect {
+        bundle_dir: PathBuf,
+    },
+    Export {
+        game: String,
+        destination_dir: PathBuf,
+    },
+    Import {
+        bundle_dir: PathBuf,
+        #[arg(long = "map", value_name = "TRACKED-DIR-UUID=ABSOLUTE-PATH")]
+        mappings: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -175,6 +197,13 @@ fn resolve_slot_id(core: &TimelineCore, game_id: i32, slot: &str) -> Result<i32>
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Commands::History {
+        action: HistoryAction::Inspect { bundle_dir },
+    } = &cli.command
+    {
+        print_history_summary(&TimelineCore::inspect_history_bundle(bundle_dir)?);
+        return Ok(());
+    }
     let data_dir = match cli.data_dir {
         Some(p) => p,
         None => default_data_dir()?,
@@ -353,6 +382,52 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Commands::History { action } => match action {
+            HistoryAction::Inspect { bundle_dir } => {
+                print_history_summary(&TimelineCore::inspect_history_bundle(&bundle_dir)?);
+            }
+            HistoryAction::Export {
+                game,
+                destination_dir,
+            } => {
+                let game_id = resolve_game_id(&core, &game)?;
+                let report = core.export_game_history(game_id, &destination_dir)?;
+                println!(
+                    "Exported {}: {} slot(s), {} version(s), {} blob(s), {} retired version(s)",
+                    report.title,
+                    report.slot_count,
+                    report.version_count,
+                    report.blob_count,
+                    report.retired_version_count
+                );
+            }
+            HistoryAction::Import {
+                bundle_dir,
+                mappings: values,
+            } => {
+                let mut mappings = HashMap::new();
+                for value in values {
+                    let (uuid, path) = value.split_once('=').ok_or_else(|| {
+                        anyhow::anyhow!("Invalid mapping {value:?}; expected UUID=ABSOLUTE_PATH")
+                    })?;
+                    let uuid = Uuid::parse_str(uuid).map_err(|error| {
+                        anyhow::anyhow!("Invalid tracked-directory UUID: {error}")
+                    })?;
+                    if mappings.insert(uuid, PathBuf::from(path)).is_some() {
+                        anyhow::bail!("Duplicate mapping for tracked-directory UUID {uuid}");
+                    }
+                }
+                let report = core.import_game_history(&bundle_dir, &mappings)?;
+                println!(
+                    "Imported {}: {} slot(s), {} version(s), {} blob(s), {} retired version(s)",
+                    report.title,
+                    report.slot_count,
+                    report.version_count,
+                    report.blob_count,
+                    report.retired_version_count
+                );
+            }
+        },
         Commands::Watch => {
             println!("Watching for changes (Ctrl+C to stop)...");
             for notification in notif_rx {
@@ -382,4 +457,28 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_history_summary(summary: &savegame_timeline_core::history_transfer::HistoryBundleSummary) {
+    println!("{} ({})", summary.title, summary.game_uuid);
+    println!(
+        "{} slot(s), {} version(s), {} tracked directory(s), {} blob(s), {} retired version(s)",
+        summary.slot_count,
+        summary.version_count,
+        summary.tracked_dir_count,
+        summary.blob_count,
+        summary.retired_version_count
+    );
+    for tracked in &summary.active_tracked_dirs {
+        println!(
+            "  {}{} — source hint: {}",
+            tracked.uuid,
+            tracked
+                .label
+                .as_deref()
+                .map(|label| format!(" ({label})"))
+                .unwrap_or_default(),
+            tracked.source_path_hint
+        );
+    }
 }

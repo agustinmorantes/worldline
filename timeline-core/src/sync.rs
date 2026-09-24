@@ -602,112 +602,198 @@ pub fn pull_game(
 ) -> Result<RemoteGame> {
     repository::ensure_repository_root(local_root).context("Failed to open local repository")?;
     repository::with_exclusive_lock(local_root, || {
-        let game_slug = repository::validate_folder_slug(
-            Some(&game.metadata.folder_slug),
-            "remote game folder_slug",
-        )?;
-        let remote_game_dir = repository::game_dir(remote_root, game_slug);
-        let local_game_dir = repository::game_dir(local_root, game_slug);
-
-        let local_game = repository::read_metadata_json::<GameMetadata>(&local_game_dir).ok();
-        repository::write_metadata_json(
-            &local_game_dir,
-            &GameMetadata {
-                entity: game.metadata.entity.clone(),
-                uuid: game.metadata.uuid,
-                title: game.metadata.title.clone(),
-                folder_slug: game.metadata.folder_slug.clone(),
-                active_slot_uuid: local_game.and_then(|metadata| metadata.active_slot_uuid),
-                icon: game.metadata.icon.clone(),
-                created_at: game.metadata.created_at,
-                updated_at: game.metadata.updated_at,
-            },
-        )?;
-
-        for tracked in &game.tracked_dirs {
-            if tracked.game_uuid != game.metadata.uuid {
-                return Err(anyhow!("Remote tracked directory belongs to another game"));
-            }
-            let tracked_slug = repository::validate_folder_slug(
-                Some(&tracked.folder_slug),
-                "remote tracked directory folder_slug",
-            )?;
-            let source = repository::tracked_dir_dir(&remote_game_dir, tracked_slug);
-            if repository::metadata_path(&source).exists() {
-                repository::write_metadata_json(
-                    &repository::tracked_dir_dir(&local_game_dir, tracked_slug),
-                    tracked,
-                )?;
-            }
-        }
-        let mut pulled_slots = Vec::new();
-        for slot in &game.slots {
-            if slot.metadata.game_uuid != game.metadata.uuid {
-                return Err(anyhow!("Remote slot belongs to another game"));
-            }
-            let slot_slug = repository::validate_folder_slug(
-                Some(&slot.metadata.folder_slug),
-                "remote slot folder_slug",
-            )?;
-            let remote_slot_dir = repository::slot_dir(&remote_game_dir, slot_slug);
-            let local_slot_dir = repository::slot_dir(&local_game_dir, slot_slug);
-            let local_slot = repository::read_metadata_json::<SlotMetadata>(&local_slot_dir).ok();
-            repository::write_metadata_json(
-                &local_slot_dir,
-                &SlotMetadata {
-                    entity: slot.metadata.entity.clone(),
-                    uuid: slot.metadata.uuid,
-                    game_uuid: slot.metadata.game_uuid,
-                    name: slot.metadata.name.clone(),
-                    folder_slug: slot.metadata.folder_slug.clone(),
-                    active_version_uuid: local_slot
-                        .and_then(|metadata| metadata.active_version_uuid),
-                    created_at: slot.metadata.created_at,
-                    updated_at: slot.metadata.updated_at,
-                },
-            )?;
-            let mut pulled_versions = Vec::new();
-            for remote_version in &slot.versions {
-                let version = &remote_version.version;
-                if version.game_uuid != game.metadata.uuid
-                    || version.slot_uuid != Some(slot.metadata.uuid)
-                {
-                    return Err(anyhow!("Remote version belongs to another game or slot"));
-                }
-                let version_slug = repository::validate_folder_slug(
-                    Some(&version.folder_slug),
-                    "remote version folder_slug",
-                )?;
-                let is_retired = retired.contains_key(&version.uuid);
-                if !is_retired && !version_blobs_available(remote_root, version) {
-                    continue;
-                }
-                if !is_retired {
-                    for file in &version.files {
-                        copy_blob(remote_root, local_root, &file.sha256, file.size)?;
-                    }
-                }
-                let remote_version_dir = repository::version_dir(&remote_slot_dir, version_slug);
-                if !repository::metadata_path(&remote_version_dir).exists() {
-                    continue;
-                }
-                repository::write_metadata_json(
-                    &repository::version_dir(&local_slot_dir, version_slug),
-                    version,
-                )?;
-                pulled_versions.push(remote_version.clone());
-            }
-            pulled_slots.push(RemoteSlot {
-                metadata: slot.metadata.clone(),
-                versions: pulled_versions,
-            });
-        }
-        Ok(RemoteGame {
-            metadata: game.metadata.clone(),
-            tracked_dirs: game.tracked_dirs.clone(),
-            slots: pulled_slots,
-        })
+        pull_game_inner(local_root, remote_root, game, retired, false)
     })
+}
+
+/// Pull a fully inspected history bundle while the caller holds the local repository lock.
+pub(crate) fn pull_game_history(
+    local_root: &Path,
+    remote_root: &Path,
+    game: &RemoteGame,
+    retired: &HashMap<Uuid, crate::pruning::RetirementMarker>,
+) -> Result<RemoteGame> {
+    pull_game_inner(local_root, remote_root, game, retired, true)
+}
+
+fn pull_game_inner(
+    local_root: &Path,
+    remote_root: &Path,
+    game: &RemoteGame,
+    retired: &HashMap<Uuid, crate::pruning::RetirementMarker>,
+    strict: bool,
+) -> Result<RemoteGame> {
+    let game_slug = repository::validate_folder_slug(
+        Some(&game.metadata.folder_slug),
+        "remote game folder_slug",
+    )?;
+    let remote_game_dir = repository::game_dir(remote_root, game_slug);
+    let local_game_dir = repository::game_dir(local_root, game_slug);
+
+    let local_game = repository::read_metadata_json::<GameMetadata>(&local_game_dir).ok();
+    repository::write_metadata_json(
+        &local_game_dir,
+        &GameMetadata {
+            entity: game.metadata.entity.clone(),
+            uuid: game.metadata.uuid,
+            title: game.metadata.title.clone(),
+            folder_slug: game.metadata.folder_slug.clone(),
+            active_slot_uuid: local_game.and_then(|metadata| metadata.active_slot_uuid),
+            icon: game.metadata.icon.clone(),
+            created_at: game.metadata.created_at,
+            updated_at: game.metadata.updated_at,
+        },
+    )?;
+
+    for tracked in &game.tracked_dirs {
+        if tracked.game_uuid != game.metadata.uuid {
+            return Err(anyhow!("Remote tracked directory belongs to another game"));
+        }
+        let tracked_slug = repository::validate_folder_slug(
+            Some(&tracked.folder_slug),
+            "remote tracked directory folder_slug",
+        )?;
+        let source = repository::tracked_dir_dir(&remote_game_dir, tracked_slug);
+        if !repository::metadata_path(&source).is_file() && strict {
+            return Err(anyhow!(
+                "History bundle is missing tracked directory metadata"
+            ));
+        }
+        if repository::metadata_path(&source).exists() {
+            let destination = repository::tracked_dir_dir(&local_game_dir, tracked_slug);
+            if strict {
+                write_history_metadata(&destination, tracked)?;
+            } else {
+                repository::write_metadata_json(&destination, tracked)?;
+            }
+        }
+    }
+    let mut pulled_slots = Vec::new();
+    for slot in &game.slots {
+        if slot.metadata.game_uuid != game.metadata.uuid {
+            return Err(anyhow!("Remote slot belongs to another game"));
+        }
+        let slot_slug = repository::validate_folder_slug(
+            Some(&slot.metadata.folder_slug),
+            "remote slot folder_slug",
+        )?;
+        let remote_slot_dir = repository::slot_dir(&remote_game_dir, slot_slug);
+        let local_slot_dir = repository::slot_dir(&local_game_dir, slot_slug);
+        let local_slot = repository::read_metadata_json::<SlotMetadata>(&local_slot_dir).ok();
+        let local_metadata = SlotMetadata {
+            entity: slot.metadata.entity.clone(),
+            uuid: slot.metadata.uuid,
+            game_uuid: slot.metadata.game_uuid,
+            name: slot.metadata.name.clone(),
+            folder_slug: slot.metadata.folder_slug.clone(),
+            active_version_uuid: local_slot.and_then(|metadata| metadata.active_version_uuid),
+            created_at: slot.metadata.created_at,
+            updated_at: slot.metadata.updated_at,
+        };
+        if strict {
+            write_history_metadata(&local_slot_dir, &local_metadata)?;
+        } else {
+            repository::write_metadata_json(&local_slot_dir, &local_metadata)?;
+        }
+        let mut pulled_versions = Vec::new();
+        for remote_version in &slot.versions {
+            let version = &remote_version.version;
+            if version.game_uuid != game.metadata.uuid
+                || version.slot_uuid != Some(slot.metadata.uuid)
+            {
+                return Err(anyhow!("Remote version belongs to another game or slot"));
+            }
+            let version_slug = repository::validate_folder_slug(
+                Some(&version.folder_slug),
+                "remote version folder_slug",
+            )?;
+            let is_retired = retired.contains_key(&version.uuid);
+            if !is_retired && !version_blobs_available(remote_root, version) {
+                if strict {
+                    return Err(anyhow!(
+                        "History bundle is missing or has corrupt blobs for version {}",
+                        version.uuid
+                    ));
+                }
+                continue;
+            }
+            if !is_retired {
+                for file in &version.files {
+                    copy_blob(remote_root, local_root, &file.sha256, file.size)?;
+                }
+            }
+            let remote_version_dir = repository::version_dir(&remote_slot_dir, version_slug);
+            if !repository::metadata_path(&remote_version_dir).exists() {
+                if strict {
+                    return Err(anyhow!(
+                        "History bundle is missing version metadata for {}",
+                        version.uuid
+                    ));
+                }
+                continue;
+            }
+            let local_version_dir = repository::version_dir(&local_slot_dir, version_slug);
+            if strict {
+                write_history_metadata(&local_version_dir, version)?;
+            } else {
+                repository::write_metadata_json(&local_version_dir, version)?;
+            }
+            pulled_versions.push(remote_version.clone());
+        }
+        pulled_slots.push(RemoteSlot {
+            metadata: slot.metadata.clone(),
+            versions: pulled_versions,
+        });
+    }
+    Ok(RemoteGame {
+        metadata: game.metadata.clone(),
+        tracked_dirs: game.tracked_dirs.clone(),
+        slots: pulled_slots,
+    })
+}
+
+fn write_history_metadata<T: serde::Serialize>(directory: &Path, metadata: &T) -> Result<()> {
+    match fs::symlink_metadata(directory) {
+        Ok(existing) if existing.is_dir() && !crate::fs_utils::is_link_or_reparse(&existing) => {
+            return repository::write_metadata_json(directory, metadata);
+        }
+        Ok(_) => {
+            return Err(anyhow!(
+                "Imported metadata path is not a regular directory: {}",
+                directory.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let parent = directory
+        .parent()
+        .ok_or_else(|| anyhow!("Imported metadata path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let name = directory
+        .file_name()
+        .ok_or_else(|| anyhow!("Imported metadata path has no name"))?;
+    let staging = parent.join(format!(
+        ".{}.history-{}",
+        name.to_string_lossy(),
+        Uuid::new_v4()
+    ));
+    fs::create_dir(&staging)?;
+    let result = (|| {
+        repository::write_metadata_json(&staging, metadata)?;
+        crate::content_store::atomic_rename_no_replace(&staging, directory).with_context(|| {
+            format!(
+                "Failed to publish imported metadata at {}",
+                directory.display()
+            )
+        })?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(staging);
+    }
+    result
 }
 
 pub fn classify(
@@ -835,7 +921,12 @@ fn copy_game_metadata(
     Ok(())
 }
 
-fn copy_blob(source_root: &Path, destination_root: &Path, hash: &str, size: u64) -> Result<()> {
+pub(crate) fn copy_blob(
+    source_root: &Path,
+    destination_root: &Path,
+    hash: &str,
+    size: u64,
+) -> Result<()> {
     let source = verify_blob(source_root, hash, size)?;
     let destination = blob_path(destination_root, hash)?;
     if verify_blob(destination_root, hash, size).is_ok() {

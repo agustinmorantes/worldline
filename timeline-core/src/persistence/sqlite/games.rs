@@ -403,14 +403,10 @@ impl GameRepository for SqliteGameRepository {
                     .get_result(conn)?
             };
 
-            for tracked in remote
-                .tracked_dirs
-                .iter()
-                .filter(|tracked| tracked.retired_at.is_none())
-            {
+            for tracked in &remote.tracked_dirs {
                 let tracked_uuid = tracked.uuid.to_string();
                 let path = crate::path_placeholders::expand_path_placeholders(&tracked.path);
-                if !std::path::Path::new(&path).is_absolute() {
+                if tracked.retired_at.is_none() && !std::path::Path::new(&path).is_absolute() {
                     return Err(anyhow!("Remote tracked directory path is not absolute"));
                 }
                 let exclusions = serde_json::to_string(&tracked.exclusions)?;
@@ -502,15 +498,25 @@ impl GameRepository for SqliteGameRepository {
                 for (remote_slot, version) in pending {
                     let version_uuid = version.uuid.to_string();
                     let slot_id = slot_ids[&remote_slot.metadata.uuid];
-                    if let Some(existing_slot_id) = versions::table
+                    if let Some((existing_id, existing_slot_id, existing_tag)) = versions::table
                         .filter(versions::uuid.eq(&version_uuid))
-                        .select(versions::slot_id)
-                        .first::<i32>(conn)
+                        .select((versions::id, versions::slot_id, versions::tag))
+                        .first::<(i32, i32, Option<String>)>(conn)
                         .optional()
                         .context("Error looking up imported version")?
                     {
                         if existing_slot_id != slot_id {
                             return Err(anyhow!("Remote version UUID belongs to another slot"));
+                        }
+                        if existing_tag.as_deref().is_none_or(str::is_empty)
+                            && version
+                                .tag
+                                .as_deref()
+                                .is_some_and(|tag| !tag.trim().is_empty())
+                        {
+                            diesel::update(versions::table.filter(versions::id.eq(existing_id)))
+                                .set(versions::tag.eq(&version.tag))
+                                .execute(conn)?;
                         }
                         continue;
                     }

@@ -10,6 +10,7 @@ anyhow = "1"
 diesel = { version = "2", features = ["sqlite", "r2d2"] }
 diesel_migrations = "2"
 dirs = "5"
+uuid = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"

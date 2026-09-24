@@ -7,6 +7,7 @@ pub mod core_facade;
 pub mod detection;
 pub mod exclusions;
 pub mod fs_utils;
+pub mod history_transfer;
 pub mod install_scanner;
 pub mod integrity;
 pub mod models;

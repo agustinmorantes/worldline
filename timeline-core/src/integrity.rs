@@ -42,6 +42,7 @@ pub fn check_repository(repository_root: &Path, deep: bool) -> RepositoryIntegri
         tracked_dirs: HashSet::new(),
         slot_games: HashMap::new(),
         version_slots: HashMap::new(),
+        retired_versions: HashMap::new(),
         active_slots: Vec::new(),
         active_versions: Vec::new(),
         parent_versions: Vec::new(),
@@ -65,6 +66,7 @@ struct Checker<'a> {
     tracked_dirs: HashSet<(Uuid, Uuid)>,
     slot_games: HashMap<Uuid, Vec<EntityOwner>>,
     version_slots: HashMap<Uuid, Vec<EntityOwner>>,
+    retired_versions: HashMap<Uuid, crate::pruning::RetirementMarker>,
     active_slots: Vec<PendingReference>,
     active_versions: Vec<PendingReference>,
     parent_versions: Vec<PendingParentReference>,
@@ -116,6 +118,15 @@ impl Checker<'_> {
             return;
         }
 
+        match crate::pruning::read_markers(self.repository_root) {
+            Ok(markers) => self.retired_versions = markers,
+            Err(error) => self.issue(
+                RepositoryIssueKind::InvalidMetadata,
+                self.repository_root.join("retired-versions"),
+                format!("failed to read retirement markers: {error}"),
+            ),
+        }
+
         let games_dir = repository::games_dir(self.repository_root);
         if !self.is_directory_or_absent(&games_dir, "games directory") {
             return;
@@ -125,6 +136,19 @@ impl Checker<'_> {
         };
         for game_dir in games {
             self.check_game(&game_dir);
+        }
+        let missing_retired = self
+            .retired_versions
+            .keys()
+            .filter(|uuid| !self.version_slots.contains_key(uuid))
+            .copied()
+            .collect::<Vec<_>>();
+        for version_uuid in missing_retired {
+            self.issue(
+                RepositoryIssueKind::InvalidMetadata,
+                crate::pruning::marker_path(self.repository_root, version_uuid),
+                "retirement marker references a missing version",
+            );
         }
         self.validate_relationships();
     }
@@ -298,6 +322,21 @@ impl Checker<'_> {
             });
         }
 
+        let retired = if let Some(marker) = self.retired_versions.get(&metadata.uuid) {
+            if marker.slot_uuid != slot_uuid || marker.content_hash != metadata.content_hash {
+                self.issue(
+                    RepositoryIssueKind::InvalidMetadata,
+                    crate::pruning::marker_path(self.repository_root, metadata.uuid),
+                    "retirement marker does not match version metadata",
+                );
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
         let mut canonical_files = metadata.files.clone();
         sort_manifest_files(&mut canonical_files);
         if canonical_files != metadata.files {
@@ -356,7 +395,9 @@ impl Checker<'_> {
                     continue;
                 }
             };
-            self.check_blob(&blob, file, &metadata_path);
+            if !retired {
+                self.check_blob(&blob, file, &metadata_path);
+            }
         }
     }
 
@@ -974,6 +1015,7 @@ mod tests {
             tracked_dirs: HashSet::new(),
             slot_games: HashMap::new(),
             version_slots: HashMap::new(),
+            retired_versions: HashMap::new(),
             active_slots: Vec::new(),
             active_versions: Vec::new(),
             parent_versions: Vec::new(),

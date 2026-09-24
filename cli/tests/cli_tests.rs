@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
+use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -112,6 +113,156 @@ fn games_add_with_dirs() {
         .assert()
         .success()
         .stdout(contains(save_path));
+}
+
+#[test]
+fn history_cli_round_trips_between_independent_data_dirs() {
+    let source_data = tempdir().unwrap();
+    let destination_data = tempdir().unwrap();
+    let inspect_data = tempdir().unwrap();
+    let source_saves = tempdir().unwrap();
+    let source_saves_two = tempdir().unwrap();
+    let destination_saves = tempdir().unwrap();
+    let destination_saves_two = tempdir().unwrap();
+    fs::write(source_saves.path().join("save.dat"), b"source save").unwrap();
+    fs::write(
+        source_saves_two.path().join("save.dat"),
+        b"second source save",
+    )
+    .unwrap();
+    fs::write(
+        destination_saves.path().join("save.dat"),
+        b"keep destination save",
+    )
+    .unwrap();
+    fs::write(
+        destination_saves_two.path().join("save.dat"),
+        b"keep second destination save",
+    )
+    .unwrap();
+
+    cli(source_data.path())
+        .args([
+            "games",
+            "add",
+            "CLI History Fixture",
+            "--dir",
+            source_saves.path().to_str().unwrap(),
+            "--dir",
+            source_saves_two.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let mut watcher = start_watch(source_data.path());
+    std::thread::sleep(Duration::from_millis(200));
+    fs::write(source_saves.path().join("save.dat"), b"after source update").unwrap();
+    std::thread::sleep(Duration::from_millis(2500));
+    watcher.kill().ok();
+    watcher.wait().ok();
+    let source_save_after_checkpoint = fs::read(source_saves.path().join("save.dat")).unwrap();
+
+    let bundle_parent = tempdir().unwrap();
+    let bundle = bundle_parent.path().join("history-bundle");
+    cli(source_data.path())
+        .args([
+            "history",
+            "export",
+            "CLI History Fixture",
+            bundle.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Exported CLI History Fixture"));
+
+    let inspected = cli(inspect_data.path())
+        .args(["history", "inspect", bundle.to_str().unwrap()])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(inspect_data.path().read_dir().unwrap().next().is_none());
+    let inspected = String::from_utf8(inspected).unwrap();
+    assert!(inspected.contains("CLI History Fixture"));
+    assert!(inspected.contains("1 version(s)"));
+    let destination_paths = [destination_saves.path(), destination_saves_two.path()];
+    let mappings = inspected
+        .lines()
+        .filter(|line| line.contains("source hint:"))
+        .zip(destination_paths)
+        .map(|(line, path)| {
+            format!(
+                "{}={}",
+                line.split_whitespace().next().unwrap(),
+                path.display()
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(mappings.len(), 2);
+    let mut import = cli(destination_data.path());
+    import.args(["history", "import", bundle.to_str().unwrap()]);
+    for mapping in &mappings {
+        import.arg("--map").arg(mapping);
+    }
+    import
+        .assert()
+        .success()
+        .stdout(contains("Imported CLI History Fixture"))
+        .stdout(contains("1 version(s)"));
+
+    cli(destination_data.path())
+        .args(["games", "list"])
+        .assert()
+        .success()
+        .stdout(contains("CLI History Fixture"));
+    let slot_list = cli(destination_data.path())
+        .args(["slots", "list", "CLI History Fixture"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(!String::from_utf8_lossy(&slot_list).contains("* ["));
+    assert_eq!(
+        fs::read(destination_saves.path().join("save.dat")).unwrap(),
+        b"keep destination save"
+    );
+    assert_eq!(
+        fs::read(destination_saves_two.path().join("save.dat")).unwrap(),
+        b"keep second destination save"
+    );
+    assert_eq!(
+        fs::read(source_saves.path().join("save.dat")).unwrap(),
+        source_save_after_checkpoint
+    );
+    assert_eq!(
+        fs::read(source_saves_two.path().join("save.dat")).unwrap(),
+        b"second source save"
+    );
+
+    let reexported = bundle_parent.path().join("destination-reexport");
+    cli(destination_data.path())
+        .args([
+            "history",
+            "export",
+            "CLI History Fixture",
+            reexported.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("1 version(s)"));
+    cli(inspect_data.path())
+        .args(["history", "inspect", reexported.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("1 version(s)"));
+
+    for data_dir in [source_data.path(), destination_data.path()] {
+        let report =
+            savegame_timeline_core::integrity::check_repository(&data_dir.join("repository"), true);
+        assert!(report.issues.is_empty(), "{:#?}", report.issues);
+    }
 }
 
 #[test]

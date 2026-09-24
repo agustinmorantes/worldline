@@ -2,6 +2,8 @@ use anyhow::Result;
 use savegame_timeline_core::install_scanner::InstallScannerItem;
 use savegame_timeline_core::models::*;
 use savegame_timeline_core::TimelineCore;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{generate_handler, Emitter, State};
 
@@ -258,6 +260,56 @@ async fn run_pruning(
     Ok(report)
 }
 
+#[tauri::command]
+async fn inspect_history_bundle(
+    bundle_path: String,
+) -> Result<savegame_timeline_core::history_transfer::HistoryBundleSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        TimelineCore::inspect_history_bundle(std::path::Path::new(&bundle_path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_game_history(
+    game_id: i32,
+    destination: String,
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::history_transfer::HistoryTransferReport, String> {
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || {
+        core.export_game_history(game_id, std::path::Path::new(&destination))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn import_game_history(
+    bundle_path: String,
+    mappings: HashMap<String, String>,
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<savegame_timeline_core::history_transfer::HistoryTransferReport, String> {
+    let mappings = mappings
+        .into_iter()
+        .map(|(uuid, path)| {
+            uuid::Uuid::parse_str(&uuid)
+                .map(|uuid| (uuid, PathBuf::from(path)))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || {
+        core.import_game_history(std::path::Path::new(&bundle_path), &mappings)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
@@ -291,5 +343,8 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         update_pruning_settings,
         preview_pruning,
         run_pruning,
+        inspect_history_bundle,
+        export_game_history,
+        import_game_history,
     ])
 }
