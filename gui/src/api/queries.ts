@@ -2,8 +2,8 @@ import { UseQueryResult, useQuery } from '@tanstack/react-query';
 import { getGames, getGame, scanInstalled, getScanRoots } from './games';
 import { FullGame } from '@/models/game';
 import { InstallScannerItem } from '@/models/install_scanner_item';
-import { refreshSync } from './sync';
-import { SyncReport } from '@/models/sync';
+import { getSyncSettings, refreshSync } from './sync';
+import { SyncReport, SyncSettings } from '@/models/sync';
 import { getRetiredVersions } from './pruning';
 
 export const useGames = (): UseQueryResult<FullGame[]> => {
@@ -39,13 +39,26 @@ export const useScanRoots = (): UseQueryResult<string[]> => {
   });
 };
 
-export const useSyncReport = (enabled = true): UseQueryResult<SyncReport> => {
+export const useSyncSettings = (): UseQueryResult<SyncSettings> => {
+  return useQuery({ queryKey: ['sync-settings'], queryFn: getSyncSettings });
+};
+
+/**
+ * The last sync report. It syncs once when first needed; after that the
+ * cache is fed by the backend's periodic `sync-complete` events, and callers
+ * `refetch()` only on explicit user action. Disabled while sync is off.
+ */
+export const useSyncReport = (): UseQueryResult<SyncReport> => {
+  const { data: settings } = useSyncSettings();
+  const remote = settings?.remote_path;
   return useQuery({
     queryKey: ['sync-report'],
     queryFn: refreshSync,
-    enabled,
+    enabled: typeof remote === 'string' && remote !== '',
     retry: false,
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 };
 

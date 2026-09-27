@@ -24,6 +24,8 @@ dirs = "5.0"
 keyvalues-parser = "0.2"
 glob = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
+fastcdc = "3"
+zstd = "0.14.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

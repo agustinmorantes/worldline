@@ -30,6 +30,7 @@ export const SyncReportSchema = z.object({
   })),
   devices: z.array(DeviceMetadataSchema),
   remote_versions: z.record(z.string(), z.string()),
+  problems: z.array(z.string()).default([]),
 });
 
 export type DeviceMetadata = z.infer<typeof DeviceMetadataSchema>;

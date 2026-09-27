@@ -1,604 +1,370 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin;
-use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::tempdir;
 
-fn cli(data_dir: &std::path::Path) -> Command {
+fn cli(data_dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("cli").unwrap();
     cmd.arg("--data-dir").arg(data_dir);
     cmd
 }
 
-/// Start a `watch` subprocess in the background (0s debounce) and return the handle.
-/// The caller must kill + wait on the handle when done.
-fn start_watch(data_dir: &std::path::Path) -> std::process::Child {
-    std::process::Command::new(cargo_bin("cli"))
-        .arg("--data-dir")
-        .arg(data_dir)
-        .arg("--debounce-secs")
-        .arg("0")
-        .arg("watch")
-        .spawn()
-        .expect("failed to spawn watch process")
-}
-
-/// Add a game with a tracked dir, trigger a file change via the background watcher,
-/// and return (save_dir, save_file). The caller is responsible for the data_dir lifetime.
-fn add_game_and_trigger_version(
-    data_dir: &std::path::Path,
-    title: &str,
-) -> (std::path::PathBuf, std::path::PathBuf) {
-    let save_dir = tempdir().unwrap().keep();
-    let save_file = save_dir.join("save.dat");
-    std::fs::write(&save_file, "initial save").unwrap();
-
-    cli(data_dir)
-        .args(["games", "add", title, "--dir", save_dir.to_str().unwrap()])
-        .assert()
-        .success();
-
-    let mut watch_proc = start_watch(data_dir);
-    std::thread::sleep(Duration::from_millis(200));
-
-    std::fs::write(&save_file, "after change").unwrap();
-    std::thread::sleep(Duration::from_millis(2500));
-
-    watch_proc.kill().ok();
-    watch_proc.wait().ok();
-
-    (save_dir, save_file)
-}
-
-// ── Games ────────────────────────────────────────────────────────────────────
-
-#[test]
-fn games_list_empty() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "list"])
-        .assert()
-        .success()
-        .stdout("No games.\n");
-}
-
-#[test]
-fn prune_preview_empty_repository() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["prune", "preview"])
-        .assert()
-        .success()
-        .stdout(contains("0 checkpoint(s) eligible for retirement"));
-    cli(dir.path())
-        .args(["prune", "run"])
-        .assert()
-        .success()
-        .stdout(contains(
-            "Retired 0 checkpoint(s); reclaimed 0 local blob(s)",
-        ));
-}
-
-#[test]
-fn games_add_and_list() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "add", "Hollow Knight"])
-        .assert()
-        .success()
-        .stdout(contains("Hollow Knight"));
-
-    cli(dir.path())
-        .args(["games", "list"])
-        .assert()
-        .success()
-        .stdout(contains("Hollow Knight"));
-}
-
-#[test]
-fn games_add_with_dirs() {
-    let dir = tempdir().unwrap();
-    let save_dir = tempdir().unwrap();
-    let save_path = save_dir.path().to_str().unwrap();
-
-    cli(dir.path())
-        .args(["games", "add", "Dark Souls", "--dir", save_path])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["games", "show", "1"])
-        .assert()
-        .success()
-        .stdout(contains(save_path));
-}
-
-#[test]
-fn history_cli_round_trips_between_independent_data_dirs() {
-    let source_data = tempdir().unwrap();
-    let destination_data = tempdir().unwrap();
-    let inspect_data = tempdir().unwrap();
-    let source_saves = tempdir().unwrap();
-    let source_saves_two = tempdir().unwrap();
-    let destination_saves = tempdir().unwrap();
-    let destination_saves_two = tempdir().unwrap();
-    fs::write(source_saves.path().join("save.dat"), b"source save").unwrap();
-    fs::write(
-        source_saves_two.path().join("save.dat"),
-        b"second source save",
-    )
-    .unwrap();
-    fs::write(
-        destination_saves.path().join("save.dat"),
-        b"keep destination save",
-    )
-    .unwrap();
-    fs::write(
-        destination_saves_two.path().join("save.dat"),
-        b"keep second destination save",
-    )
-    .unwrap();
-
-    cli(source_data.path())
-        .args([
-            "games",
-            "add",
-            "CLI History Fixture",
-            "--dir",
-            source_saves.path().to_str().unwrap(),
-            "--dir",
-            source_saves_two.path().to_str().unwrap(),
-        ])
-        .assert()
-        .success();
-
-    let mut watcher = start_watch(source_data.path());
-    std::thread::sleep(Duration::from_millis(200));
-    fs::write(source_saves.path().join("save.dat"), b"after source update").unwrap();
-    std::thread::sleep(Duration::from_millis(2500));
-    watcher.kill().ok();
-    watcher.wait().ok();
-    let source_save_after_checkpoint = fs::read(source_saves.path().join("save.dat")).unwrap();
-
-    let bundle_parent = tempdir().unwrap();
-    let bundle = bundle_parent.path().join("history-bundle");
-    cli(source_data.path())
-        .args([
-            "history",
-            "export",
-            "CLI History Fixture",
-            bundle.to_str().unwrap(),
-        ])
-        .assert()
-        .success()
-        .stdout(contains("Exported CLI History Fixture"));
-
-    let inspected = cli(inspect_data.path())
-        .args(["history", "inspect", bundle.to_str().unwrap()])
+fn stdout(data_dir: &Path, args: &[&str]) -> String {
+    let output = cli(data_dir)
+        .args(args)
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
-    assert!(inspect_data.path().read_dir().unwrap().next().is_none());
-    let inspected = String::from_utf8(inspected).unwrap();
-    assert!(inspected.contains("CLI History Fixture"));
-    assert!(inspected.contains("1 version(s)"));
-    let destination_paths = [destination_saves.path(), destination_saves_two.path()];
-    let mappings = inspected
+    String::from_utf8(output).unwrap()
+}
+
+/// The first `[id]` on a line that contains `needle`.
+fn id_on_line(text: &str, needle: &str) -> i32 {
+    let line = text
         .lines()
-        .filter(|line| line.contains("source hint:"))
-        .zip(destination_paths)
-        .map(|(line, path)| {
-            format!(
-                "{}={}",
-                line.split_whitespace().next().unwrap(),
-                path.display()
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(mappings.len(), 2);
-    let mut import = cli(destination_data.path());
-    import.args(["history", "import", bundle.to_str().unwrap()]);
-    for mapping in &mappings {
-        import.arg("--map").arg(mapping);
-    }
-    import
-        .assert()
-        .success()
-        .stdout(contains("Imported CLI History Fixture"))
-        .stdout(contains("1 version(s)"));
+        .find(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} not in {text}"));
+    let start = line.find('[').unwrap() + 1;
+    let end = line[start..].find(']').unwrap() + start;
+    line[start..end].parse().unwrap()
+}
 
-    cli(destination_data.path())
-        .args(["games", "list"])
-        .assert()
-        .success()
-        .stdout(contains("CLI History Fixture"));
-    let slot_list = cli(destination_data.path())
-        .args(["slots", "list", "CLI History Fixture"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    assert!(!String::from_utf8_lossy(&slot_list).contains("* ["));
-    assert_eq!(
-        fs::read(destination_saves.path().join("save.dat")).unwrap(),
-        b"keep destination save"
+fn add_game(data_dir: &Path, title: &str, save_dir: &Path) -> i32 {
+    let out = stdout(
+        data_dir,
+        &["games", "add", title, "--dir", save_dir.to_str().unwrap()],
     );
-    assert_eq!(
-        fs::read(destination_saves_two.path().join("save.dat")).unwrap(),
-        b"keep second destination save"
-    );
-    assert_eq!(
-        fs::read(source_saves.path().join("save.dat")).unwrap(),
-        source_save_after_checkpoint
-    );
-    assert_eq!(
-        fs::read(source_saves_two.path().join("save.dat")).unwrap(),
-        b"second source save"
-    );
-
-    let reexported = bundle_parent.path().join("destination-reexport");
-    cli(destination_data.path())
-        .args([
-            "history",
-            "export",
-            "CLI History Fixture",
-            reexported.to_str().unwrap(),
-        ])
-        .assert()
-        .success()
-        .stdout(contains("1 version(s)"));
-    cli(inspect_data.path())
-        .args(["history", "inspect", reexported.to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(contains("1 version(s)"));
-
-    for data_dir in [source_data.path(), destination_data.path()] {
-        let report =
-            savegame_timeline_core::integrity::check_repository(&data_dir.join("repository"), true);
-        assert!(report.issues.is_empty(), "{:#?}", report.issues);
-    }
+    id_on_line(&out, "Added game")
 }
 
 #[test]
-fn games_show() {
+fn games_crud() {
     let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "add", "Celeste"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["games", "show", "1"])
-        .assert()
-        .success()
-        .stdout(contains("Celeste"))
-        .stdout(contains("Tracked dirs"))
-        .stdout(contains("Versions (0)"));
-}
-
-#[test]
-fn games_delete() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "add", "Delete Me"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["games", "delete", "1"])
-        .assert()
-        .success()
-        .stdout(contains("Deleted game 1"));
-
     cli(dir.path())
         .args(["games", "list"])
         .assert()
         .success()
-        .stdout("No games.\n");
-}
-
-#[test]
-fn games_edit() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "add", "Old Title"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["games", "edit", "1", "New Title"])
-        .assert()
-        .success()
-        .stdout(contains("New Title"));
-
+        .stdout(contains("No games."));
+    let saves = tempdir().unwrap();
+    fs::write(saves.path().join("save.dat"), "x").unwrap();
+    let id = add_game(dir.path(), "Test Game", saves.path());
     cli(dir.path())
         .args(["games", "list"])
         .assert()
         .success()
-        .stdout(contains("New Title"))
-        .stdout(predicates::str::contains("Old Title").not());
-}
-
-// ── Versions ─────────────────────────────────────────────────────────────────
-
-#[test]
-fn version_created_after_file_change() {
-    let dir = tempdir().unwrap();
-    add_game_and_trigger_version(dir.path(), "Watcher Game");
-
-    let output = cli(dir.path())
-        .args(["games", "show", "1"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-
-    let text = String::from_utf8_lossy(&output);
-    assert!(
-        text.contains("Versions (1)") || text.contains("Versions (2)"),
-        "expected at least one version, got: {text}"
-    );
-}
-
-#[test]
-fn versions_tag() {
-    let dir = tempdir().unwrap();
-    add_game_and_trigger_version(dir.path(), "Tag Game");
-
-    // Get the version id from show output (first version listed as [N])
-    let output = cli(dir.path())
-        .args(["games", "show", "1"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let text = String::from_utf8_lossy(&output);
-    let version_id = parse_first_version_id(&text).expect("no version found");
-
+        .stdout(contains("Test Game — 1 version(s), 1 tracked dir(s)"));
     cli(dir.path())
-        .args(["versions", "tag", &version_id.to_string(), "before-boss"])
+        .args(["games", "edit", &id.to_string(), "Renamed"])
         .assert()
-        .success()
-        .stdout(contains("before-boss"));
-
+        .success();
     cli(dir.path())
-        .args(["games", "show", "1"])
+        .args(["games", "show", &id.to_string()])
         .assert()
         .success()
-        .stdout(contains("before-boss"));
+        .stdout(contains("Renamed"));
+    cli(dir.path())
+        .args(["games", "add", "renamed"])
+        .assert()
+        .failure()
+        .stderr(contains("already exists"));
+    cli(dir.path())
+        .args(["games", "delete", &id.to_string()])
+        .assert()
+        .success();
+    cli(dir.path())
+        .args(["games", "list"])
+        .assert()
+        .success()
+        .stdout(contains("No games."));
 }
 
 #[test]
-fn versions_restore() {
+fn versions_checkpoint_tag_and_restore() {
     let dir = tempdir().unwrap();
-    let (_, save_file) = add_game_and_trigger_version(dir.path(), "Restore Game");
-
-    let output = cli(dir.path())
-        .args(["games", "show", "1"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let text = String::from_utf8_lossy(&output);
-    let version_id = parse_first_version_id(&text).expect("no version found");
-
-    std::fs::write(&save_file, "corrupted!").unwrap();
-
+    let saves = tempdir().unwrap();
+    let save = saves.path().join("save.dat");
+    fs::write(&save, "first").unwrap();
+    let id = add_game(dir.path(), "Versions", saves.path());
     cli(dir.path())
-        .args(["versions", "restore", &version_id.to_string()])
+        .args(["versions", "checkpoint", "Versions"])
         .assert()
         .success()
-        .stdout(contains(format!("Restored version {version_id}")));
-
-    let content = std::fs::read_to_string(&save_file).unwrap();
-    assert_eq!(content, "after change");
-}
-
-#[test]
-fn versions_restore_nonexistent_fails() {
-    let dir = tempdir().unwrap();
+        .stdout(contains("Unchanged"));
+    fs::write(&save, "second").unwrap();
+    cli(dir.path())
+        .args(["versions", "checkpoint", "Versions"])
+        .assert()
+        .success()
+        .stdout(contains("Created version"));
+    let show = stdout(dir.path(), &["games", "show", &id.to_string()]);
+    let first = id_on_line(&show, "#1 ");
+    cli(dir.path())
+        .args(["versions", "tag", &first.to_string(), "start"])
+        .assert()
+        .success()
+        .stdout(contains("\"start\""));
+    cli(dir.path())
+        .args(["versions", "restore", &first.to_string()])
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&save).unwrap(), "first");
     cli(dir.path())
         .args(["versions", "restore", "9999"])
         .assert()
         .failure();
 }
 
-// ── Slots ────────────────────────────────────────────────────────────────────
-
 #[test]
-fn slots_list_shows_the_default_slot() {
+fn slots_lifecycle() {
     let dir = tempdir().unwrap();
+    let saves = tempdir().unwrap();
+    fs::write(saves.path().join("save.dat"), "main").unwrap();
+    add_game(dir.path(), "Slots", saves.path());
     cli(dir.path())
-        .args(["games", "add", "Slot CLI Game"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["slots", "list", "Slot CLI Game"])
+        .args(["slots", "list", "Slots"])
         .assert()
         .success()
-        .stdout(contains("Default Slot"));
-}
-
-#[test]
-fn slots_create_adds_a_new_slot() {
-    let dir = tempdir().unwrap();
+        .stdout(contains("* ["));
     cli(dir.path())
-        .args(["games", "add", "Create Slot Game"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["slots", "create", "Create Slot Game", "New Game Plus"])
+        .args(["slots", "create", "Slots", "Speedrun"])
         .assert()
         .success()
-        .stdout(contains("New Game Plus"));
-
+        .stdout(contains("Created slot"));
+    assert!(!saves.path().join("save.dat").exists());
     cli(dir.path())
-        .args(["slots", "list", "Create Slot Game"])
-        .assert()
-        .success()
-        .stdout(contains("Default Slot"))
-        .stdout(contains("New Game Plus"));
-}
-
-#[test]
-fn slots_switch_changes_the_active_slot() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "add", "Switch Slot Game"])
+        .args(["slots", "switch", "Slots", "Default Slot"])
         .assert()
         .success();
-    // create_slot activates the new slot, so slot 2 (New Game Plus) starts active.
+    assert_eq!(
+        fs::read_to_string(saves.path().join("save.dat")).unwrap(),
+        "main"
+    );
     cli(dir.path())
-        .args(["slots", "create", "1", "New Game Plus"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["slots", "switch", "Switch Slot Game", "Default Slot"])
-        .assert()
-        .success()
-        .stdout(contains("Default Slot"));
-
-    cli(dir.path())
-        .args(["slots", "list", "1"])
-        .assert()
-        .success()
-        .stdout(contains("* [1] Default Slot"));
-}
-
-#[test]
-fn slots_rename_changes_the_name() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "add", "Rename Slot Game"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args([
-            "slots",
-            "rename",
-            "Rename Slot Game",
-            "Default Slot",
-            "Renamed Slot",
-        ])
-        .assert()
-        .success()
-        .stdout(contains("Renamed Slot"));
-
-    cli(dir.path())
-        .args(["slots", "list", "1"])
-        .assert()
-        .success()
-        .stdout(contains("Renamed Slot"))
-        .stdout(contains("Default Slot").not());
-}
-
-#[test]
-fn slots_rename_to_duplicate_name_fails_with_message() {
-    let dir = tempdir().unwrap();
-    cli(dir.path())
-        .args(["games", "add", "Dup Rename Game"])
-        .assert()
-        .success();
-    cli(dir.path())
-        .args(["slots", "create", "1", "Second Slot"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["slots", "rename", "1", "1", "Second Slot"])
+        .args(["slots", "rename", "Slots", "Speedrun", "default slot"])
         .assert()
         .failure()
         .stderr(contains("already exists"));
-}
-
-#[test]
-fn slots_delete_last_slot_fails_with_message() {
-    let dir = tempdir().unwrap();
     cli(dir.path())
-        .args(["games", "add", "Last Slot Game"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["slots", "delete", "1", "1"])
+        .args(["slots", "delete", "Slots", "Default Slot"])
         .assert()
         .failure()
-        .stderr(contains("must keep at least one slot"));
-}
-
-#[test]
-fn slots_delete_active_slot_without_replacement_fails_with_message() {
-    let dir = tempdir().unwrap();
+        .stderr(contains("replacement"));
     cli(dir.path())
-        .args(["games", "add", "Active Delete Game"])
+        .args([
+            "slots",
+            "delete",
+            "Slots",
+            "Default Slot",
+            "--replacement",
+            "Speedrun",
+        ])
         .assert()
         .success();
-    // create_slot activates slot 2, so it is now the active slot.
     cli(dir.path())
-        .args(["slots", "create", "1", "Second Slot"])
-        .assert()
-        .success();
-
-    cli(dir.path())
-        .args(["slots", "delete", "1", "2"])
+        .args(["slots", "delete", "Slots", "Speedrun"])
         .assert()
         .failure()
-        .stderr(contains("requires a replacement slot"));
+        .stderr(contains("at least one slot"));
 }
 
 #[test]
-fn slots_delete_with_replacement_succeeds() {
+fn prune_settings_preview_and_run() {
     let dir = tempdir().unwrap();
     cli(dir.path())
-        .args(["games", "add", "Delete With Replacement Game"])
-        .assert()
-        .success();
-    cli(dir.path())
-        .args(["slots", "create", "1", "Second Slot"])
-        .assert()
-        .success();
-
-    // Slot 2 is active; replace it with slot 1 before deleting it.
-    cli(dir.path())
-        .args(["slots", "delete", "1", "2", "--replacement", "1"])
+        .args(["prune", "preview"])
         .assert()
         .success()
-        .stdout(contains("Deleted slot 2"));
-
+        .stdout(contains("0 checkpoint(s)"));
     cli(dir.path())
-        .args(["slots", "list", "1"])
+        .args([
+            "prune",
+            "settings",
+            "--max-bytes",
+            "1000000",
+            "--branch-expiry-days",
+            "0",
+        ])
         .assert()
         .success()
-        .stdout(contains("Second Slot").not());
+        .stdout(contains("Disk budget: 1000000"))
+        .stdout(contains("never expire"));
+    cli(dir.path())
+        .args(["prune", "run"])
+        .assert()
+        .success()
+        .stdout(contains("Retired 0"));
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+#[test]
+fn repo_check_extract_and_reindex() {
+    let dir = tempdir().unwrap();
+    let saves = tempdir().unwrap();
+    fs::write(saves.path().join("save.dat"), "recover me").unwrap();
+    let id = add_game(dir.path(), "Recover", saves.path());
+    let version = id_on_line(
+        &stdout(dir.path(), &["games", "show", &id.to_string()]),
+        "#1 ",
+    );
+    cli(dir.path())
+        .args(["repo", "check", "--deep"])
+        .assert()
+        .success()
+        .stdout(contains("0 missing, 0 corrupt"));
+    let out = tempdir().unwrap();
+    cli(dir.path())
+        .args([
+            "repo",
+            "extract",
+            &version.to_string(),
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Extracted 1 file(s)"));
+    fs::remove_file(dir.path().join("database.db")).unwrap();
+    cli(dir.path())
+        .args(["games", "list"])
+        .assert()
+        .success()
+        .stdout(contains("Recover"));
+    cli(dir.path()).args(["repo", "reindex"]).assert().success();
+}
 
-/// Parse the first version id from `games show` output.
-/// Lines under "Versions" look like: "    [7] #1 at ... tag=..."
-fn parse_first_version_id(text: &str) -> Option<i32> {
-    let in_versions = text.lines().skip_while(|l| !l.contains("Versions ("));
-    for line in in_versions.skip(1) {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix('[')
-            && let Some(id_str) = rest.split(']').next()
-            && let Ok(id) = id_str.parse::<i32>()
-        {
-            return Some(id);
+/// Checkpoint → sync between two data dirs → prune → export → import → restore.
+#[test]
+fn end_to_end_across_two_data_dirs() {
+    let (a, b, c) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
+    let remote = tempdir().unwrap();
+    let saves = tempdir().unwrap();
+    let save = saves.path().join("save.dat");
+    fs::write(&save, "one").unwrap();
+    add_game(a.path(), "Journey", saves.path());
+    fs::write(&save, "two").unwrap();
+    cli(a.path())
+        .args(["versions", "checkpoint", "Journey"])
+        .assert()
+        .success();
+
+    for data in [a.path(), b.path()] {
+        cli(data)
+            .args(["sync", "configure", remote.path().to_str().unwrap()])
+            .assert()
+            .success();
+    }
+    cli(a.path()).args(["sync", "refresh"]).assert().success();
+    let status = stdout(b.path(), &["sync", "status"]);
+    assert!(
+        status.contains("Journey") && status.contains("Not tracked here"),
+        "{status}"
+    );
+    let uuid = status.lines().find(|l| l.contains("Journey")).unwrap();
+    let uuid = &uuid[uuid.find('(').unwrap() + 1..uuid.find(')').unwrap()];
+    cli(b.path())
+        .args(["sync", "adopt", uuid])
+        .assert()
+        .success()
+        .stdout(contains("2 version(s)"));
+    cli(b.path())
+        .args(["devices", "list"])
+        .assert()
+        .success()
+        .stdout(contains("last seen"));
+
+    cli(a.path())
+        .args([
+            "prune",
+            "settings",
+            "--keep-all-hours",
+            "0",
+            "--hourly-until-hours",
+            "0",
+            "--daily-until-days",
+            "0",
+            "--weekly-until-days",
+            "0",
+        ])
+        .assert()
+        .success();
+    cli(a.path())
+        .args(["prune", "run"])
+        .assert()
+        .success()
+        .stdout(contains("Remote:"));
+
+    let bundle = c.path().join("journey-bundle");
+    cli(b.path())
+        .args(["history", "export", "Journey", bundle.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("Exported Journey"));
+    let inspect = stdout(c.path(), &["history", "inspect", bundle.to_str().unwrap()]);
+    let dir_uuid = inspect
+        .lines()
+        .find(|l| l.contains("source hint"))
+        .unwrap()
+        .trim();
+    let dir_uuid = &dir_uuid[..36];
+    let restored = tempdir().unwrap();
+    let map = format!("{dir_uuid}={}", restored.path().display());
+    cli(c.path())
+        .args(["history", "import", bundle.to_str().unwrap(), "--map", &map])
+        .assert()
+        .success()
+        .stdout(contains("Imported Journey"));
+    let show = stdout(c.path(), &["games", "show", "1"]);
+    let first = id_on_line(&show, "#1 ");
+    cli(c.path())
+        .args(["versions", "restore", &first.to_string()])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(restored.path().join("save.dat")).unwrap(),
+        "one"
+    );
+}
+
+#[test]
+fn watch_captures_changes() {
+    let dir = tempdir().unwrap();
+    let saves = tempdir().unwrap();
+    fs::write(saves.path().join("save.dat"), "start").unwrap();
+    // No cooldown, so the change right after the first version is captured.
+    fs::write(
+        dir.path().join("monitoring_settings.json"),
+        r#"{"version_cooldown_minutes":0,"snapshot_debounce_seconds":0.1}"#,
+    )
+    .unwrap();
+    let id = add_game(dir.path(), "Watched", saves.path());
+    struct KillOnDrop(std::process::Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
         }
     }
-    None
+    let _watch = KillOnDrop(
+        std::process::Command::new(cargo_bin("cli"))
+            .arg("--data-dir")
+            .arg(dir.path())
+            .arg("watch")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut captured = false;
+    for n in 0..30 {
+        fs::write(saves.path().join("save.dat"), format!("change {n}")).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        if stdout(dir.path(), &["games", "show", &id.to_string()]).contains("#2 ") {
+            captured = true;
+            break;
+        }
+    }
+    assert!(captured, "the watcher never captured a change");
 }

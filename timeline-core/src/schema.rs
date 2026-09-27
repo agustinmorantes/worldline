@@ -3,14 +3,21 @@
 diesel::table! {
     games (id) {
         id -> Integer,
-        uuid -> Nullable<Text>,
+        uuid -> Text,
         title -> Text,
-        title_normalized -> Nullable<Text>,
-        folder_slug -> Nullable<Text>,
+        title_normalized -> Text,
+        folder_slug -> Text,
         active_slot_id -> Nullable<Integer>,
         icon_path -> Nullable<Text>,
         created_at -> Timestamp,
         updated_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    scan_roots (id) {
+        id -> Integer,
+        path -> Text,
     }
 }
 
@@ -31,10 +38,10 @@ diesel::table! {
 diesel::table! {
     tracked_dirs (id) {
         id -> Integer,
-        uuid -> Nullable<Text>,
-        folder_slug -> Nullable<Text>,
-        path -> Text,
+        uuid -> Text,
         game_id -> Integer,
+        folder_slug -> Text,
+        path -> Text,
         label -> Nullable<Text>,
         exclusions -> Text,
         retired_at -> Nullable<Timestamp>,
@@ -46,27 +53,20 @@ diesel::table! {
 diesel::table! {
     versions (id) {
         id -> Integer,
-        uuid -> Nullable<Text>,
-        folder_slug -> Nullable<Text>,
-        version_number -> Integer,
+        uuid -> Text,
         slot_id -> Integer,
-        tag -> Nullable<Text>,
-        reason -> Text,
-        content_hash -> Nullable<Text>,
-        created_at -> Timestamp,
         parent_id -> Nullable<Integer>,
+        version_number -> Integer,
+        folder_slug -> Text,
+        reason -> Text,
+        tag -> Nullable<Text>,
+        retired -> Bool,
+        created_at -> Timestamp,
     }
 }
 
-diesel::table! {
-    scan_roots (id) {
-        id -> Integer,
-        path -> Text,
-    }
-}
-
-diesel::joinable!(tracked_dirs -> games (game_id));
 diesel::joinable!(slots -> games (game_id));
+diesel::joinable!(tracked_dirs -> games (game_id));
 diesel::joinable!(versions -> slots (slot_id));
 
 diesel::allow_tables_to_appear_in_same_query!(games, scan_roots, slots, tracked_dirs, versions,);

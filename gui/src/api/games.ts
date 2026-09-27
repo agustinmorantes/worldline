@@ -1,7 +1,6 @@
 import {Game, FullGame} from "@/models/game.ts";
 import {invoke} from "@tauri-apps/api/core";
 import {InstallScannerItem, InstallScannerItemSchema} from "@/models/install_scanner_item.ts";
-import {Slot} from "@/models/slot.ts";
 import {z} from "zod";
 
 export async function getGames(): Promise<FullGame[]> {
@@ -32,15 +31,6 @@ export async function switchSlot(gameId: number, slotId: number): Promise<FullGa
   const game = Game.fromData(response);
   if (game?.id === undefined) throw new Error('Invalid game returned from switch_slot');
   return game as FullGame;
-}
-
-export async function getSlots(gameId: number): Promise<Slot[]> {
-  const response = await invoke("get_slots", { gameId });
-  if(!Array.isArray(response)) throw new Error("Invalid response")
-
-  return response
-    .map(e => Slot.fromData(e))
-    .filter((s): s is Slot => s !== undefined)
 }
 
 export async function renameSlot(slotId: number, name: string): Promise<FullGame> {

@@ -1,62 +1,53 @@
-mod fs_event_handler;
+//! Automatic capture. The notify watcher only reports "game changed"; the
+//! scheduler decides when to capture; captures go through `CaptureTarget`.
+
+pub mod scheduler;
 mod watcher;
 
-use crate::models::{FullGame, MonitoringSettings};
-use crate::persistence::{GameRepository, VersionRepository};
-use anyhow::{Context, Result};
-use std::path::PathBuf;
+use crate::history::CheckpointOutcome;
+use crate::models::FullGame;
+use anyhow::Result;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
-pub fn init(
-    games_repo: Arc<dyn GameRepository>,
-    versions_repo: Arc<dyn VersionRepository>,
-    working_base: PathBuf,
-    monitoring_settings: MonitoringSettings,
-) -> Result<(CommandSender, NotificationReceiver)> {
-    let (command_tx, command_rx): (CommandSender, CommandReceiver) = mpsc::channel();
-    let (notification_tx, notification_rx): (NotificationSender, NotificationReceiver) =
-        mpsc::channel();
+pub use watcher::Watcher;
 
-    let games = games_repo.get_games().context("failed to get games")?;
-
-    let cmd_tx_clone = command_tx.clone();
-
-    std::thread::spawn(move || {
-        watcher::watch(watcher::WatcherContext {
-            cmd_rx: command_rx,
-            _cmd_tx: cmd_tx_clone,
-            notification_tx,
-            games,
-            working_base: &working_base,
-            games_repo,
-            versions_repo,
-            monitoring_settings,
-        });
-    });
-
-    Ok((command_tx, notification_rx))
+/// What the watcher needs from the core.
+pub trait CaptureTarget: Send + Sync + 'static {
+    fn games(&self) -> Result<Vec<FullGame>>;
+    fn capture(&self, game_id: i32) -> Result<CheckpointOutcome>;
 }
 
-type CommandReceiver = mpsc::Receiver<Command>;
-type NotificationSender = mpsc::Sender<Notification>;
-
-pub type CommandSender = mpsc::Sender<Command>;
 pub type NotificationReceiver = mpsc::Receiver<Notification>;
 
-pub enum Command {
-    /// Pause event processing. The watcher drains whatever is already queued and
-    /// then sends `()` on this channel, so the caller knows no pre-operation event
-    /// is left in flight before it starts writing to tracked directories.
-    Pause(mpsc::Sender<()>),
-    Resume,
-    ReregisterGames(Vec<FullGame>),
-    UpdateMonitoringSettings(MonitoringSettings),
-    Shutdown,
-}
-
+#[derive(Debug, Clone, PartialEq)]
 pub enum Notification {
     ChangeDetected { game_id: i32 },
     VersionCreated { game_id: i32, version_number: i32 },
     Error(String),
+}
+
+/// A nesting suppression counter: while any guard is alive, nothing is
+/// captured automatically. Pending changes are kept and handled on resume.
+#[derive(Clone, Default)]
+pub struct Suppression(Arc<AtomicUsize>);
+
+impl Suppression {
+    pub fn is_active(&self) -> bool {
+        self.0.load(Ordering::SeqCst) > 0
+    }
+
+    pub fn hold(&self) -> SuppressionGuard {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        SuppressionGuard(self.clone())
+    }
+}
+
+pub struct SuppressionGuard(Suppression);
+
+impl Drop for SuppressionGuard {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }

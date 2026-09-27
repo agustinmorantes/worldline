@@ -1,1178 +1,524 @@
-use crate::detection::{self, Command, CommandSender, NotificationReceiver};
+use crate::bundle::{HistoryBundleSummary, HistoryTransferReport};
+use crate::detection::{CaptureTarget, NotificationReceiver, Suppression, Watcher};
+use crate::history::{CheckpointOutcome, History, game_uuid};
+use crate::index::{DbPool, Index};
 use crate::install_scanner::InstallScannerItem;
+use crate::maintenance::{self, GcReport, RetentionSettings};
 use crate::models::*;
-use crate::persistence::{GameRepository, ScanRootsRepository, VersionRepository};
-use crate::repository::VersionReason;
-use anyhow::{Context, Result, anyhow};
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use crate::restore;
+use crate::store::{self, GameRecord, Store, VersionReason, read_json, write_json};
+use crate::sync::{
+    self, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
+};
+use crate::transfer::{Completeness, Heal, Transfer};
+use anyhow::{Context, Result, anyhow, bail};
+use chrono::{DateTime, Utc};
+use diesel::SqliteConnection;
+use diesel::r2d2::{ConnectionManager, Pool};
+use diesel_migrations::MigrationHarness;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 use uuid::Uuid;
 
-/// How long a caller waits for the watcher to acknowledge a pause before giving
-/// up and proceeding unsuppressed. Generous, because it should only ever be hit
-/// by a wedged watcher thread: a dead one drops the acknowledgement channel and
-/// fails the wait immediately. A spurious version is a far better outcome than a
-/// restore that hangs the UI.
-const WATCHER_PAUSE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Automatic pruning runs at most this often.
+const PRUNE_INTERVAL: chrono::Duration = chrono::Duration::hours(4);
 
-/// How long to stay paused after mutating tracked directories, so the OS has time
-/// to deliver events for our own writes while they are still being discarded.
-/// Chosen to comfortably exceed filesystem notification latency without being
-/// noticeable in a restore; the debouncer is rebuilt on `Resume` as well, which
-/// covers anything still buffered when this elapses.
-const WATCHER_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
-
-struct PreparedRestore {
-    restore_roots: std::collections::BTreeMap<PathBuf, Vec<glob::Pattern>>,
-    files: Vec<(PathBuf, PathBuf, PathBuf)>,
+#[derive(Debug, Clone, Default)]
+pub struct OpenOptions {
+    /// Start the watcher (GUI and `watch`); one-shot CLI commands don't.
+    pub watch: bool,
+    /// Overrides the debounce from the monitoring settings (tests).
+    pub debounce_seconds: Option<f32>,
 }
 
-enum PreparedSlotActivation {
-    Restore(PreparedRestore),
-    Clear,
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PruningPreview {
+    pub retire_versions: Vec<Uuid>,
+    pub live_bytes_before: u64,
+    pub live_bytes_after: u64,
+    pub budget_unreachable: bool,
+    /// What a local garbage collection would reclaim right now.
+    pub local_gc: GcReport,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PruningRunReport {
+    pub retired_versions: Vec<Uuid>,
+    pub budget_unreachable: bool,
+    pub local_gc: GcReport,
+    pub remote_gc: Option<GcReport>,
+}
+
+impl PruningRunReport {
+    pub fn changed_history(&self) -> bool {
+        !self.retired_versions.is_empty()
+            || self.local_gc.chunks_deleted > 0
+            || self
+                .remote_gc
+                .as_ref()
+                .is_some_and(|gc| gc.chunks_deleted > 0)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SyncState {
+    last_full_heal: Option<DateTime<Utc>>,
+}
+
+/// State shared with the watcher thread.
+struct Inner {
+    history: History,
+    suppression: Suppression,
+}
+
+impl CaptureTarget for Inner {
+    fn games(&self) -> Result<Vec<FullGame>> {
+        self.history.index.get_games()
+    }
+
+    fn capture(&self, game_id: i32) -> Result<CheckpointOutcome> {
+        store::with_lock(self.history.root(), || {
+            let game = self.history.index.get_game(game_id)?;
+            self.history
+                .checkpoint_locked(&game, VersionReason::Watcher)
+        })
+    }
 }
 
 pub struct TimelineCore {
-    games_repo: Arc<dyn GameRepository>,
-    versions_repo: Arc<dyn VersionRepository>,
-    scan_roots_repo: Arc<dyn ScanRootsRepository>,
-    cmd_tx: CommandSender,
-    pub working_base: PathBuf,
+    inner: Arc<Inner>,
+    watcher: Mutex<Option<Watcher>>,
+    pub data_dir: PathBuf,
     pub icons_dir: PathBuf,
-    data_dir: PathBuf,
-    monitoring_settings_path: PathBuf,
-    pruning_settings_path: PathBuf,
-    sync_settings_path: PathBuf,
-    device_metadata: RwLock<crate::sync::DeviceMetadata>,
+    device: RwLock<DeviceMetadata>,
     sync_lock: Mutex<()>,
+    last_prune: Mutex<Option<DateTime<Utc>>>,
+    moved_old_data: Option<PathBuf>,
 }
 
 impl TimelineCore {
-    pub fn new(
-        games_repo: Arc<dyn GameRepository>,
-        versions_repo: Arc<dyn VersionRepository>,
-        scan_roots_repo: Arc<dyn ScanRootsRepository>,
-        working_base: PathBuf,
-        icons_dir: PathBuf,
-        new_version_seconds: Option<f32>,
-    ) -> Result<(Self, NotificationReceiver)> {
-        crate::repository::ensure_repository_root(&working_base)
-            .context("Failed to initialize repository root")?;
-
-        let data_dir = if working_base
-            .file_name()
-            .is_some_and(|name| name == "repository")
-        {
-            working_base.parent().unwrap_or(&working_base).to_path_buf()
-        } else {
-            working_base.clone()
-        };
-        let monitoring_settings_path = data_dir.join("monitoring_settings.json");
-        let pruning_settings_path = data_dir.join("pruning_settings.json");
-        let sync_settings_path = data_dir.join("sync_settings.json");
-        let device_metadata = crate::sync::load_or_create_device(&data_dir)?;
-        let mut monitoring_settings = load_monitoring_settings(&monitoring_settings_path)?;
-        if let Some(seconds) = new_version_seconds {
-            monitoring_settings.snapshot_debounce_seconds = seconds;
-        }
-
-        let (cmd_tx, notif_rx) = detection::init(
-            games_repo.clone(),
-            versions_repo.clone(),
-            working_base.clone(),
-            monitoring_settings,
+    /// Opens (creating when needed) the data directory used by the GUI and CLI.
+    pub fn open(data_dir: &Path, options: OpenOptions) -> Result<(Self, NotificationReceiver)> {
+        std::fs::create_dir_all(data_dir).context("Failed to create the data directory")?;
+        let moved_old_data = move_aside_old_data(data_dir)?;
+        let pool = open_database(&data_dir.join("database.db"))?;
+        let device = sync::load_or_create_device(data_dir)?;
+        let history = History::open(
+            &data_dir.join("repository"),
+            Index::new(pool),
+            device.device_uuid,
         )?;
-
-        Ok((
-            Self {
-                games_repo,
-                versions_repo,
-                scan_roots_repo,
-                cmd_tx,
-                working_base,
-                icons_dir,
-                data_dir,
-                monitoring_settings_path,
-                pruning_settings_path,
-                sync_settings_path,
-                device_metadata: RwLock::new(device_metadata),
-                sync_lock: Mutex::new(()),
-            },
-            notif_rx,
-        ))
-    }
-
-    pub fn device_metadata(&self) -> crate::sync::DeviceMetadata {
-        self.device_metadata
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    pub fn update_device_name(&self, name: &str) -> Result<crate::sync::DeviceMetadata> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(anyhow!("Device name cannot be empty"));
-        }
-        let mut device = self
-            .device_metadata
-            .write()
-            .map_err(|_| anyhow!("Device metadata lock poisoned"))?;
-        device.name = name.to_string();
-        crate::sync::save_device(&self.data_dir, &device)?;
-        Ok(device.clone())
-    }
-
-    pub fn get_sync_settings(&self) -> Result<crate::sync::SyncSettings> {
-        crate::sync::load_settings(&self.sync_settings_path)
-    }
-
-    pub fn get_pruning_settings(&self) -> Result<crate::pruning::PruningSettings> {
-        crate::pruning::load_settings(&self.pruning_settings_path)
-    }
-
-    pub fn update_pruning_settings(
-        &self,
-        settings: crate::pruning::PruningSettings,
-    ) -> Result<crate::pruning::PruningSettings> {
-        if settings.automatic
-            && let Some(remote) = self.get_sync_settings()?.remote_path
-            && crate::sync::load_catalog(Path::new(&remote))?
-                .devices
-                .iter()
-                .any(|device| device.device_uuid != self.device_metadata().device_uuid)
-        {
-            return Err(anyhow!(
-                "Automatic pruning requires other sync devices to be removed"
-            ));
-        }
-        crate::pruning::save_settings(&self.pruning_settings_path, settings)?;
-        Ok(settings)
-    }
-
-    pub fn preview_pruning(&self) -> Result<crate::pruning::PruningPreview> {
-        let (catalog, state, _) = self.pruning_context(false)?;
-        let active = state
-            .games
-            .values()
-            .flat_map(|game| game.slots.values())
-            .filter_map(|slot| slot.active_version_uuid)
-            .collect();
-        Ok(crate::pruning::PruningPreview {
-            retire_versions: crate::pruning::plan_retirement(&catalog, &state, chrono::Utc::now())?,
-            local_gc: crate::pruning::preview_local_gc(&self.working_base, &active)?,
-        })
-    }
-
-    pub fn retired_versions(&self) -> Result<Vec<Uuid>> {
-        let mut versions = crate::pruning::read_markers(&self.working_base)?
-            .into_keys()
-            .collect::<Vec<_>>();
-        versions.sort_unstable();
-        Ok(versions)
-    }
-
-    pub fn run_pruning(&self) -> Result<crate::pruning::PruningRunReport> {
-        let _sync_guard = self
-            .sync_lock
-            .lock()
-            .map_err(|_| anyhow!("Sync lock poisoned"))?;
-        if self.get_sync_settings()?.remote_path.is_some() {
-            self.push_sync_unlocked()?;
-        }
-        crate::repository::with_exclusive_lock(&self.working_base, || {
-            let (catalog, state, remote) = self.pruning_context(true)?;
-            if remote.is_some()
-                && catalog
-                    .devices
-                    .iter()
-                    .any(|device| device.device_uuid != state.device_uuid)
-            {
-                return Err(anyhow!(
-                    "Pruning requires every other sync device to be explicitly removed"
-                ));
-            }
-            let retired_versions =
-                crate::pruning::plan_retirement(&catalog, &state, chrono::Utc::now())?;
-            for uuid in &retired_versions {
-                let version = catalog
-                    .games
-                    .iter()
-                    .flat_map(|game| &game.slots)
-                    .flat_map(|slot| &slot.versions)
-                    .find(|version| version.version.uuid == *uuid)
-                    .context("Planned version is missing from catalog")?;
-                let marker = crate::pruning::RetirementMarker {
-                    version_uuid: *uuid,
-                    slot_uuid: version
-                        .version
-                        .slot_uuid
-                        .context("Version is missing slot UUID")?,
-                    content_hash: version.version.content_hash.clone(),
-                    retired_at: chrono::Utc::now(),
-                };
-                if let Some(root) = &remote {
-                    crate::pruning::write_marker(root, &marker)?;
-                }
-                crate::pruning::write_marker(&self.working_base, &marker)?;
-            }
-            let active = self
-                .device_state(&self.games_repo.get_games()?)?
-                .games
-                .values()
-                .flat_map(|game| game.slots.values())
-                .filter_map(|slot| slot.active_version_uuid)
-                .collect();
-            let local_gc = crate::pruning::run_local_gc_unlocked(&self.working_base, &active)?;
-            let remote_gc = remote
-                .as_deref()
-                .map(|root| {
-                    crate::pruning::validate_catalog_complete(root)?;
-                    let current = crate::sync::load_catalog(root)?;
-                    if current
-                        .devices
-                        .iter()
-                        .any(|device| device.device_uuid != state.device_uuid)
-                    {
-                        return Err(anyhow!(
-                            "Remote cleanup requires every other sync device to be explicitly removed"
-                        ));
-                    }
-                    let mut remote_active = active.clone();
-                    for state in &current.states {
-                        remote_active.extend(
-                            state
-                                .games
-                                .values()
-                                .flat_map(|game| game.slots.values())
-                                .filter_map(|slot| slot.active_version_uuid),
-                        );
-                    }
-                    crate::pruning::run_local_gc(root, &remote_active)
-                })
-                .transpose()?;
-            Ok(crate::pruning::PruningRunReport {
-                retired_versions,
-                local_gc,
-                remote_gc,
-            })
-        })
-    }
-
-    fn pruning_context(
-        &self,
-        strict: bool,
-    ) -> Result<(
-        crate::sync::RemoteCatalog,
-        crate::sync::DeviceState,
-        Option<PathBuf>,
-    )> {
-        if strict {
-            crate::pruning::validate_catalog_complete(&self.working_base)?;
-        }
-        let games = self.games_repo.get_games()?;
-        let state = self.device_state(&games)?;
-        let local_catalog = crate::sync::load_catalog(&self.working_base)?;
-        let settings = self.get_sync_settings()?;
-        let remote = settings.remote_path.map(PathBuf::from);
-        let mut catalog = if let Some(remote) = &remote {
-            if strict {
-                crate::pruning::validate_catalog_complete(remote)?;
-            }
-            crate::sync::load_catalog(remote)?
-        } else {
-            crate::sync::RemoteCatalog {
-                devices: Vec::new(),
-                states: Vec::new(),
-                games: Vec::new(),
-                retired_versions: Default::default(),
-            }
-        };
-        crate::pruning::merge_local_history(&mut catalog, local_catalog)?;
-        Ok((catalog, state, remote))
-    }
-
-    pub fn update_sync_settings(
-        &self,
-        settings: crate::sync::SyncSettings,
-    ) -> Result<crate::sync::SyncSettings> {
-        let _sync_guard = self
-            .sync_lock
-            .lock()
-            .map_err(|_| anyhow!("Sync lock poisoned"))?;
-        if let Some(path) = settings.remote_path.as_deref()
-            && path.trim().is_empty()
-        {
-            return Err(anyhow!("Remote path cannot be empty"));
-        }
-        if let Some(path) = settings.remote_path.as_deref() {
-            let remote = std::fs::canonicalize(path)
-                .context("Sync folder must already exist and be reachable")?;
-            if !remote.is_dir() {
-                return Err(anyhow!("Sync folder must be a directory"));
-            }
-            let data_dir = std::fs::canonicalize(&self.data_dir)?;
-            if remote.starts_with(&data_dir) || data_dir.starts_with(&remote) {
-                return Err(anyhow!(
-                    "The sync folder must not overlap local application data"
-                ));
-            }
-        }
-        crate::sync::save_settings(&self.sync_settings_path, &settings)?;
-        Ok(settings)
-    }
-
-    pub fn refresh_sync(&self) -> Result<crate::sync::SyncReport> {
-        let _guard = self
-            .sync_lock
-            .lock()
-            .map_err(|_| anyhow!("Sync lock poisoned"))?;
-        let settings = self.get_sync_settings()?;
-        let remote_root = PathBuf::from(
-            settings
-                .remote_path
-                .as_deref()
-                .context("Sync remote is not configured")?,
-        );
-        let device = self.device_metadata();
-        let initial_games = self.games_repo.get_games()?;
-        self.push_sync_unlocked()?;
-
-        let catalog = crate::sync::load_catalog(&remote_root)?;
-        for marker in catalog.retired_versions.values() {
-            crate::pruning::write_marker(&self.working_base, marker)?;
-        }
-        let mut local_uuids = initial_games
-            .iter()
-            .filter_map(|game| game.game.uuid.as_deref())
-            .filter_map(|uuid| Uuid::parse_str(uuid).ok())
-            .collect::<std::collections::HashSet<_>>();
-        let needs_adoption_scan = catalog.games.iter().any(|remote| {
-            !local_uuids.contains(&remote.metadata.uuid)
-                || initial_games
-                    .iter()
-                    .find(|local| {
-                        local.game.uuid.as_deref() == Some(&remote.metadata.uuid.to_string())
-                    })
-                    .is_some_and(|local| {
-                        self.remote_relation(&catalog, remote, local)
-                            == crate::sync::Divergence::FastForward
-                    })
+        let inner = Arc::new(Inner {
+            history,
+            suppression: Suppression::default(),
         });
-        let installed = if needs_adoption_scan {
-            crate::install_scanner::scan_installed_candidates(
-                &self.data_dir.join("cache"),
-                &self.scan_roots_repo.get_scan_roots()?,
-            )?
-        } else {
-            Vec::new()
+        let (tx, rx) = mpsc::channel();
+        let core = Self {
+            inner,
+            watcher: Mutex::new(None),
+            data_dir: data_dir.to_path_buf(),
+            icons_dir: data_dir.join("icons"),
+            device: RwLock::new(device),
+            sync_lock: Mutex::new(()),
+            last_prune: Mutex::new(None),
+            moved_old_data,
         };
-        let installed_titles = installed
-            .iter()
-            .map(|item| crate::repository::normalize_display_name(&item.title))
-            .collect::<std::collections::HashSet<_>>();
-        let installed_by_title = installed
-            .iter()
-            .map(|item| (crate::repository::normalize_display_name(&item.title), item))
-            .collect::<std::collections::HashMap<_, _>>();
-        let mut auto_applied = std::collections::HashSet::new();
-
-        for remote_game in &catalog.games {
-            let adopted = local_uuids.contains(&remote_game.metadata.uuid);
-            let installed = installed_titles.contains(&crate::repository::normalize_display_name(
-                &remote_game.metadata.title,
+        if options.watch {
+            let mut settings = core.get_monitoring_settings()?;
+            if let Some(seconds) = options.debounce_seconds {
+                settings.snapshot_debounce_seconds = seconds;
+            }
+            let target: Arc<dyn CaptureTarget> = core.inner.clone();
+            *core.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watcher::start(
+                target,
+                settings,
+                core.inner.suppression.clone(),
+                tx,
             ));
-            if !adopted && !installed {
-                continue;
-            }
-            let mut apply = !adopted
-                && !crate::sync::remote_heads_diverge(
-                    &catalog,
-                    device.device_uuid,
-                    remote_game.metadata.uuid,
-                );
-            if adopted
-                && let Some(local) = initial_games.iter().find(|game| {
-                    game.game.uuid.as_deref() == Some(&remote_game.metadata.uuid.to_string())
-                })
-                && self.remote_relation(&catalog, remote_game, local)
-                    == crate::sync::Divergence::FastForward
-            {
-                let checkpoint = crate::checkpoint::checkpoint_current_state(
-                    &self.working_base,
-                    self.versions_repo.as_ref(),
-                    local,
-                    VersionReason::Watcher,
-                )?;
-                let unchanged = matches!(
-                    checkpoint,
-                    crate::checkpoint::CheckpointOutcome::Unchanged(_)
-                );
-                let install_path = installed_by_title
-                    .get(&crate::repository::normalize_display_name(
-                        &remote_game.metadata.title,
-                    ))
-                    .and_then(|item| item.install_path.as_deref());
-                apply = crate::sync::decide_apply(
-                    true,
-                    crate::sync::Divergence::FastForward,
-                    !unchanged,
-                    crate::sync::game_is_running(install_path),
-                ) == crate::sync::ApplyDecision::AutoApply;
-            }
-            apply = self.import_remote_game(&remote_root, &catalog, remote_game, apply)?;
-            if apply {
-                auto_applied.insert(remote_game.metadata.uuid);
-            }
-            local_uuids.insert(remote_game.metadata.uuid);
         }
-
-        let games = self.games_repo.get_games()?;
-        self.cmd_tx.send(Command::ReregisterGames(games.clone()))?;
-        let state = self.device_state(&games)?;
-        let published = crate::sync::push(&self.working_base, &remote_root, &device, &state)?;
-        *self
-            .device_metadata
-            .write()
-            .map_err(|_| anyhow!("Device metadata lock poisoned"))? = published;
-        crate::sync::save_device(&self.data_dir, &self.device_metadata())?;
-
-        let catalog = crate::sync::load_catalog(&remote_root)?;
-        self.sync_report(&catalog, &installed_titles, &games, &auto_applied)
+        Ok((core, rx))
     }
 
-    pub fn push_sync(&self) -> Result<()> {
-        let _guard = self
-            .sync_lock
+    /// Where pre-Fase-III data was moved on this start, if any.
+    pub fn moved_old_data(&self) -> Option<&Path> {
+        self.moved_old_data.as_deref()
+    }
+
+    fn history(&self) -> &History {
+        &self.inner.history
+    }
+
+    pub fn repository_root(&self) -> &Path {
+        self.history().root()
+    }
+
+    fn reload_watcher(&self) {
+        if let Some(watcher) = self
+            .watcher
             .lock()
-            .map_err(|_| anyhow!("Sync lock poisoned"))?;
-        self.push_sync_unlocked()
-    }
-
-    fn push_sync_unlocked(&self) -> Result<()> {
-        let settings = self.get_sync_settings()?;
-        let remote_root = PathBuf::from(
-            settings
-                .remote_path
-                .as_deref()
-                .context("Sync remote is not configured")?,
-        );
-        let device = self.device_metadata();
-        let games = self.games_repo.get_games()?;
-        let state = self.device_state(&games)?;
-        let published = crate::sync::push(&self.working_base, &remote_root, &device, &state)?;
-        *self
-            .device_metadata
-            .write()
-            .map_err(|_| anyhow!("Device metadata lock poisoned"))? = published;
-        crate::sync::save_device(&self.data_dir, &self.device_metadata())
-    }
-
-    pub fn adopt_remote_game(&self, game_uuid: Uuid) -> Result<FullGame> {
-        let settings = self.get_sync_settings()?;
-        let remote_root = PathBuf::from(
-            settings
-                .remote_path
-                .as_deref()
-                .context("Sync remote is not configured")?,
-        );
-        let catalog = crate::sync::load_catalog(&remote_root)?;
-        for marker in catalog.retired_versions.values() {
-            crate::pruning::write_marker(&self.working_base, marker)?;
-        }
-        let remote_game = catalog
-            .games
-            .iter()
-            .find(|game| game.metadata.uuid == game_uuid)
-            .context("Remote game not found")?;
-        self.import_remote_game(&remote_root, &catalog, remote_game, true)?;
-        let game = self
-            .games_repo
-            .get_games()?
-            .into_iter()
-            .find(|game| game.game.uuid.as_deref() == Some(&game_uuid.to_string()))
-            .context("Adopted game was not persisted")?;
-        let all_games = self.games_repo.get_games()?;
-        self.cmd_tx.send(Command::ReregisterGames(all_games))?;
-        Ok(game)
-    }
-
-    pub fn remove_sync_device(&self, device_uuid: Uuid) -> Result<()> {
-        if device_uuid == self.device_metadata().device_uuid {
-            return Err(anyhow!("The current device cannot remove itself"));
-        }
-        let settings = self.get_sync_settings()?;
-        let remote_root = PathBuf::from(
-            settings
-                .remote_path
-                .as_deref()
-                .context("Sync remote is not configured")?,
-        );
-        crate::sync::remove_remote_device(&remote_root, device_uuid)
-    }
-
-    fn import_remote_game(
-        &self,
-        remote_root: &Path,
-        catalog: &crate::sync::RemoteCatalog,
-        remote_game: &crate::sync::RemoteGame,
-        apply: bool,
-    ) -> Result<bool> {
-        let new_game =
-            !self.games_repo.get_games()?.iter().any(|game| {
-                game.game.uuid.as_deref() == Some(&remote_game.metadata.uuid.to_string())
-            });
-        let existing_saves = new_game && !Self::remote_save_dirs_empty(remote_game)?;
-        let tip = crate::sync::latest_remote_tip(
-            catalog,
-            self.device_metadata().device_uuid,
-            remote_game.metadata.uuid,
-        );
-        let apply = apply
-            && !existing_saves
-            && tip
-                .as_ref()
-                .and_then(|tip| tip.version_uuid)
-                .is_some_and(|uuid| !catalog.retired_versions.contains_key(&uuid));
-        let pulled = crate::sync::pull_game(
-            &self.working_base,
-            remote_root,
-            remote_game,
-            &catalog.retired_versions,
-        )?;
-        let state = tip.as_ref().map(|tip| {
-            let mut state = tip.game_state.clone();
-            if !apply {
-                for slot in state.slots.values_mut() {
-                    slot.active_version_uuid = None;
-                }
-            }
-            state
-        });
-        let imported = self
-            .games_repo
-            .import_remote_game(&pulled, if new_game || apply { state } else { None })?;
-        if existing_saves {
-            crate::checkpoint::checkpoint_current_state(
-                &self.working_base,
-                self.versions_repo.as_ref(),
-                &imported,
-                VersionReason::Initial,
-            )?;
-        }
-        if apply
-            && let Some(version_uuid) = tip.and_then(|tip| tip.version_uuid)
-            && let Some(version_id) = self.find_version_id(&imported, version_uuid)?
-        {
-            self.restore_version(version_id)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    fn remote_save_dirs_empty(game: &crate::sync::RemoteGame) -> Result<bool> {
-        for tracked in game
-            .tracked_dirs
-            .iter()
-            .filter(|dir| dir.retired_at.is_none())
-        {
-            let path = PathBuf::from(crate::path_placeholders::expand_path_placeholders(
-                &tracked.path,
-            ));
-            match std::fs::symlink_metadata(&path) {
-                Ok(metadata) if !metadata.file_type().is_dir() => return Ok(false),
-                Ok(_) if std::fs::read_dir(&path)?.next().is_some() => return Ok(false),
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("Failed to inspect local save directory"),
-            }
-        }
-        Ok(true)
-    }
-
-    fn find_version_id(&self, game: &FullGame, version_uuid: Uuid) -> Result<Option<i32>> {
-        for slot in &game.slots {
-            if let Some(version) = self
-                .games_repo
-                .get_slot(slot.id)?
-                .versions
-                .into_iter()
-                .find(|version| version.uuid.as_deref() == Some(&version_uuid.to_string()))
-            {
-                return Ok(Some(version.id));
-            }
-        }
-        Ok(None)
-    }
-
-    fn sync_report(
-        &self,
-        catalog: &crate::sync::RemoteCatalog,
-        installed_titles: &std::collections::HashSet<String>,
-        games: &[FullGame],
-        auto_applied: &std::collections::HashSet<Uuid>,
-    ) -> Result<crate::sync::SyncReport> {
-        let local_by_uuid = games
-            .iter()
-            .filter_map(|game| {
-                Uuid::parse_str(game.game.uuid.as_deref()?)
-                    .ok()
-                    .map(|uuid| (uuid, game))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        let device = self.device_metadata();
-        let mut statuses = Vec::new();
-        for remote_game in &catalog.games {
-            let Some(local) = local_by_uuid.get(&remote_game.metadata.uuid) else {
-                continue;
-            };
-            let Some(tip) = crate::sync::latest_remote_tip(
-                catalog,
-                device.device_uuid,
-                remote_game.metadata.uuid,
-            ) else {
-                continue;
-            };
-            let remote_version_id = tip
-                .version_uuid
-                .map(|uuid| self.find_version_id(local, uuid))
-                .transpose()?
-                .flatten();
-            statuses.push(crate::sync::GameSyncStatus {
-                game_uuid: remote_game.metadata.uuid,
-                relation: self.remote_relation(catalog, remote_game, local),
-                remote_device: Some(tip.device_name),
-                remote_version_uuid: tip.version_uuid,
-                remote_version_id,
-                auto_applied: auto_applied.contains(&remote_game.metadata.uuid),
-            });
-        }
-        let remote_games = catalog
-            .games
-            .iter()
-            .map(|game| crate::sync::RemoteGameSummary {
-                uuid: game.metadata.uuid,
-                title: game.metadata.title.clone(),
-                installed: installed_titles.contains(&crate::repository::normalize_display_name(
-                    &game.metadata.title,
-                )),
-                adopted: local_by_uuid.contains_key(&game.metadata.uuid),
-            })
-            .collect();
-        Ok(crate::sync::SyncReport {
-            synced_at: chrono::Utc::now(),
-            games: statuses,
-            remote_games,
-            devices: catalog.devices.clone(),
-            remote_versions: crate::sync::remote_version_devices(catalog, device.device_uuid),
-        })
-    }
-
-    fn remote_relation(
-        &self,
-        catalog: &crate::sync::RemoteCatalog,
-        remote_game: &crate::sync::RemoteGame,
-        local: &FullGame,
-    ) -> crate::sync::Divergence {
-        if crate::sync::remote_heads_diverge(
-            catalog,
-            self.device_metadata().device_uuid,
-            remote_game.metadata.uuid,
-        ) {
-            return crate::sync::Divergence::Diverged;
-        }
-        let remote_tip = crate::sync::latest_remote_tip(
-            catalog,
-            self.device_metadata().device_uuid,
-            remote_game.metadata.uuid,
-        )
-        .and_then(|tip| tip.version_uuid);
-        let local_tip = local
-            .active_slot
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|slot| {
-                local
-                    .versions
-                    .iter()
-                    .find(|version| Some(version.id) == slot.active_version_id)
-            })
-            .and_then(|version| version.uuid.as_deref())
-            .and_then(|uuid| Uuid::parse_str(uuid).ok());
-        let versions = remote_game
-            .slots
-            .iter()
-            .flat_map(|slot| &slot.versions)
-            .map(|version| (version.version.uuid, version.version.parent_version_uuid))
-            .collect::<std::collections::HashMap<_, _>>();
-        crate::sync::classify(local_tip, remote_tip, &versions)
+        {
+            watcher.reload();
+        }
     }
 
-    fn device_state(&self, games: &[FullGame]) -> Result<crate::sync::DeviceState> {
-        let slots = games
-            .iter()
-            .flat_map(|game| &game.slots)
-            .map(|slot| {
-                self.games_repo
-                    .get_slot(slot.id)
-                    .map(|full| (slot.id, full))
-            })
-            .collect::<Result<std::collections::HashMap<_, _>>>()?;
-        crate::sync::DeviceState::from_games(self.device_metadata().device_uuid, games, &slots)
+    /// Captures pending changes and stops the watcher. Also runs on drop.
+    pub fn shutdown(&self) {
+        let watcher = self
+            .watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        drop(watcher);
     }
+
+    // ---- games, slots, versions ------------------------------------------------
 
     pub fn get_games(&self) -> Result<Vec<FullGame>> {
-        self.games_repo.get_games()
+        self.history().index.get_games()
     }
 
     pub fn get_game(&self, id: i32) -> Result<FullGame> {
-        self.games_repo.get_game(id)
+        self.history().index.get_game(id)
     }
 
-    pub fn get_slots(&self, game_id: i32) -> Result<Vec<FullSlot>> {
-        self.games_repo.list_slots(game_id)
+    pub fn get_slot(&self, id: i32) -> Result<FullSlot> {
+        self.history().index.get_slot(id)
     }
 
-    pub fn inspect_history_bundle(
-        path: &Path,
-    ) -> Result<crate::history_transfer::HistoryBundleSummary> {
-        crate::history_transfer::inspect(path)
+    pub fn get_version(&self, id: i32) -> Result<FullVersion> {
+        self.history().index.get_version(id)
+    }
+
+    /// Creates a game (capturing its current saves as the first version) or
+    /// edits one. `dirs`, when given, becomes the set of tracked directories.
+    pub fn save_game(&self, form: GameForm, dirs: Option<Vec<String>>) -> Result<Game> {
+        let game = match form.id {
+            None => {
+                let game = self
+                    .history()
+                    .create_game(&form.title, dirs.as_deref().unwrap_or_default())?;
+                if !game.tracked_dirs.is_empty() {
+                    store::with_lock(self.repository_root(), || {
+                        self.history()
+                            .checkpoint_locked(&game, VersionReason::Initial)
+                    })?;
+                }
+                game
+            }
+            Some(id) => self
+                .history()
+                .update_game(id, &form.title, dirs.as_deref())?,
+        };
+        self.reload_watcher();
+        Ok(game.game)
+    }
+
+    pub fn delete_game(&self, id: i32) -> Result<()> {
+        self.history().delete_game(id)?;
+        self.reload_watcher();
+        Ok(())
+    }
+
+    pub fn tag_version(&self, id: i32, tag: String) -> Result<Version> {
+        self.history().tag_version(id, Some(tag))
+    }
+
+    /// Checkpoints the live saves now (a no-op when unchanged).
+    pub fn checkpoint(&self, game_id: i32) -> Result<CheckpointOutcome> {
+        store::with_lock(self.repository_root(), || {
+            let game = self.get_game(game_id)?;
+            self.history()
+                .checkpoint_locked(&game, VersionReason::Manual)
+        })
+    }
+
+    /// Runs a write to live saves with capture suppressed, under the
+    /// repository lock, after checkpointing the live state, so uncaptured
+    /// progress is never overwritten.
+    fn guarded<T>(
+        &self,
+        game_id: i32,
+        reason: VersionReason,
+        apply: impl FnOnce(&FullGame) -> Result<T>,
+    ) -> Result<T> {
+        let suppressed = self.inner.suppression.hold();
+        let result = store::with_lock(self.repository_root(), || {
+            let game = self.get_game(game_id)?;
+            if !game.tracked_dirs.is_empty() {
+                self.history()
+                    .checkpoint_locked(&game, reason)
+                    .context("Failed to checkpoint the current saves first")?;
+            }
+            apply(&self.get_game(game_id)?)
+        });
+        drop(suppressed);
+        self.reload_watcher();
+        result
+    }
+
+    /// Writes `version` into the live directories and makes it (and its slot) active.
+    fn restore_locked(&self, game: &FullGame, version: &FullVersion) -> Result<()> {
+        let history = self.history();
+        let record = history.record(&game.game)?;
+        let meta = history.version_meta(version)?;
+        let prepared = restore::prepare(
+            &history.store,
+            &record,
+            &game.tracked_dirs,
+            &meta,
+            version.version.retired,
+        )?;
+        restore::apply(&history.store, prepared)?;
+        history
+            .index
+            .set_active_version(version.slot.id, Some(version.version.id))?;
+        history.index.set_active_slot(game.game.id, version.slot.id)
+    }
+
+    pub fn restore_version(&self, version_id: i32) -> Result<()> {
+        let version = self.get_version(version_id)?;
+        self.guarded(version.game.id, VersionReason::PreRestore, |game| {
+            self.restore_locked(game, &version)
+        })
+    }
+
+    /// Applies another device's progress: the same as a restore, but only
+    /// while the game has an active slot here.
+    pub fn apply_remote_version(&self, version_id: i32) -> Result<()> {
+        let version = self.get_version(version_id)?;
+        if self.get_game(version.game.id)?.active_slot.is_none() {
+            bail!("Cannot apply remote progress without an active local slot");
+        }
+        self.restore_version(version_id)
+    }
+
+    pub fn create_slot(&self, game_id: i32, name: &str) -> Result<FullGame> {
+        self.guarded(game_id, VersionReason::PreSlotCreate, |game| {
+            let slot = self.history().create_slot(game_id, name)?;
+            let prepared = restore::clear_only(&game.tracked_dirs)?;
+            restore::apply(&self.history().store, prepared)?;
+            self.history().index.set_active_slot(game_id, slot.id)?;
+            let game = self.get_game(game_id)?;
+            if !game.tracked_dirs.is_empty() {
+                self.history()
+                    .checkpoint_locked(&game, VersionReason::Initial)?;
+            }
+            self.get_game(game_id)
+        })
+    }
+
+    pub fn switch_slot(&self, game_id: i32, slot_id: i32) -> Result<FullGame> {
+        if self
+            .get_game(game_id)?
+            .active_slot
+            .is_some_and(|slot| slot.id == slot_id)
+        {
+            return self.get_game(game_id);
+        }
+        self.guarded(game_id, VersionReason::PreSwitch, |game| {
+            self.activate_slot(game, slot_id)?;
+            self.get_game(game_id)
+        })
+    }
+
+    fn activate_slot(&self, game: &FullGame, slot_id: i32) -> Result<()> {
+        let slot = game
+            .slots
+            .iter()
+            .find(|slot| slot.id == slot_id)
+            .context("The slot does not belong to this game")?;
+        match slot.active_version_id {
+            Some(version_id) => self.restore_locked(game, &self.get_version(version_id)?),
+            None => {
+                restore::apply(
+                    &self.history().store,
+                    restore::clear_only(&game.tracked_dirs)?,
+                )?;
+                self.history().index.set_active_slot(game.game.id, slot_id)
+            }
+        }
+    }
+
+    pub fn rename_slot(&self, slot_id: i32, name: &str) -> Result<FullGame> {
+        let slot = self.history().rename_slot(slot_id, name)?;
+        self.get_game(slot.game_id)
+    }
+
+    /// Deletes a slot. The last slot can't be deleted, and deleting the active
+    /// one first switches to `replacement_slot_id`.
+    pub fn delete_slot(&self, slot_id: i32, replacement_slot_id: Option<i32>) -> Result<FullGame> {
+        let slot = self.get_slot(slot_id)?.slot;
+        let game = self.get_game(slot.game_id)?;
+        if game.slots.len() <= 1 {
+            bail!(
+                "Cannot delete '{}': a game must keep at least one slot",
+                slot.name
+            );
+        }
+        if game
+            .active_slot
+            .as_ref()
+            .is_some_and(|active| active.id == slot_id)
+        {
+            let replacement = replacement_slot_id.context(
+                "Deleting the active slot requires a replacement slot to switch to first",
+            )?;
+            if replacement == slot_id {
+                bail!("The replacement slot must not be the slot being deleted");
+            }
+            if !game
+                .slots
+                .iter()
+                .any(|candidate| candidate.id == replacement)
+            {
+                bail!("Replacement slot {replacement} does not belong to this game");
+            }
+            self.guarded(game.game.id, VersionReason::PreSwitch, |game| {
+                self.activate_slot(game, replacement)
+            })?;
+        }
+        self.history().delete_slot(slot_id)?;
+        self.get_game(game.game.id)
+    }
+
+    pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
+        std::fs::create_dir_all(&self.icons_dir).context("Failed to create icons directory")?;
+        let game = self.get_game(game_id)?;
+        let source = Path::new(source_path);
+        let destination = self.icons_dir.join(format!("{}.png", game.game.uuid));
+        let is_exe = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+        if is_exe {
+            extract_exe_icon(source, &destination)?;
+        } else {
+            image::open(source)
+                .context("Failed to open image file")?
+                .save(&destination)
+                .context("Failed to save icon as PNG")?;
+        }
+        let icon_path = destination.to_string_lossy().into_owned();
+        self.history().index.set_icon(game_id, Some(&icon_path))?;
+        Ok(icon_path)
+    }
+
+    /// Rebuilds a version's files under `destination` without touching live
+    /// saves: one folder per tracked directory.
+    pub fn extract_version(&self, version_id: i32, destination: &Path) -> Result<usize> {
+        let version = self.get_version(version_id)?;
+        if version.version.retired {
+            bail!("This checkpoint was retired and can no longer be extracted");
+        }
+        let history = self.history();
+        let record = history.record(&version.game)?;
+        let meta = history.version_meta(&version)?;
+        for file in &meta.files {
+            let folder = record
+                .tracked_dirs
+                .iter()
+                .find(|dir| dir.uuid == file.tracked_dir_uuid)
+                .map(|dir| dir.folder_slug.clone())
+                .unwrap_or_else(|| file.tracked_dir_uuid.to_string());
+            let target = destination.join(folder).join(&file.path);
+            std::fs::create_dir_all(target.parent().context("invalid target")?)?;
+            let mut out = std::fs::File::create(&target)?;
+            crate::chunks::write_file(&history.store, file, &mut out)?;
+        }
+        Ok(meta.files.len())
+    }
+
+    pub fn check_integrity(&self, deep: bool) -> Result<crate::integrity::IntegrityReport> {
+        crate::integrity::check(&self.history().store, deep)
+    }
+
+    /// Rebuilds the index from the repository files.
+    pub fn reindex(&self) -> Result<()> {
+        self.history().reindex()?;
+        self.reload_watcher();
+        Ok(())
+    }
+
+    // ---- export / import ---------------------------------------------------------
+
+    pub fn inspect_history_bundle(path: &Path) -> Result<HistoryBundleSummary> {
+        crate::bundle::inspect(path)
     }
 
     pub fn export_game_history(
         &self,
         game_id: i32,
         destination: &Path,
-    ) -> Result<crate::history_transfer::HistoryTransferReport> {
-        crate::repository::with_exclusive_lock(&self.working_base, || {
-            crate::history_transfer::export_game(
-                &self.working_base,
-                self.games_repo.as_ref(),
-                game_id,
-                destination,
-            )
+    ) -> Result<HistoryTransferReport> {
+        store::with_lock(self.repository_root(), || {
+            crate::bundle::export(self.history(), game_id, destination)
         })
     }
 
     pub fn import_game_history(
         &self,
         bundle_path: &Path,
-        mappings: &std::collections::HashMap<Uuid, PathBuf>,
-    ) -> Result<crate::history_transfer::HistoryTransferReport> {
-        let report = crate::repository::with_exclusive_lock(&self.working_base, || {
-            crate::history_transfer::import_game(
-                &self.working_base,
-                self.games_repo.as_ref(),
-                bundle_path,
-                mappings,
-            )
+        mappings: &HashMap<Uuid, PathBuf>,
+    ) -> Result<HistoryTransferReport> {
+        let report = store::with_lock(self.repository_root(), || {
+            crate::bundle::import(self.history(), bundle_path, mappings)
         })?;
-        let games = self.games_repo.get_games()?;
-        self.cmd_tx.send(Command::ReregisterGames(games))?;
+        self.reload_watcher();
         Ok(report)
     }
 
-    pub fn save_game(&self, form: GameForm, dirs: Option<Vec<&str>>) -> Result<Game> {
-        let game = self.games_repo.save_game(form, dirs)?;
-        let all_games = self.games_repo.get_games()?;
-        self.cmd_tx.send(Command::ReregisterGames(all_games))?;
-        Ok(game)
-    }
-
-    pub fn delete_game(&self, id: i32) -> Result<()> {
-        self.games_repo.delete_game(id)?;
-        let all_games = self.games_repo.get_games()?;
-        self.cmd_tx.send(Command::ReregisterGames(all_games))?;
-        Ok(())
-    }
-
-    pub fn tag_version(&self, id: i32, tag: String) -> Result<Version> {
-        crate::repository::with_exclusive_lock(&self.working_base, || {
-            self.versions_repo.tag_version(id, tag)
-        })
-    }
-
-    pub fn create_slot(&self, game_id: i32, name: &str) -> Result<FullGame> {
-        self.run_with_paused_watcher(|| {
-            let current_game = self
-                .games_repo
-                .get_game(game_id)
-                .context("Failed to load game before slot creation")?;
-
-            self.checkpoint_current_state(&current_game, VersionReason::PreSlotCreate)
-                .context("Failed to checkpoint current slot before creating a new slot")?;
-
-            let slot = self
-                .games_repo
-                .create_slot(game_id, name)
-                .context("Failed to create slot")?;
-
-            self.games_repo
-                .set_active_slot(game_id, slot.slot.id)
-                .context("Failed to activate new slot")?;
-
-            let active_game = self
-                .games_repo
-                .get_game(game_id)
-                .context("Failed to reload game after activating new slot")?;
-
-            self.clear_tracked_dirs(&active_game)
-                .context("Failed to clear tracked directories for new slot")?;
-
-            crate::repository::with_exclusive_lock(&self.working_base, || {
-                let empty_snapshot =
-                    crate::content_store::capture_snapshot(&self.working_base, &[])
-                        .context("Failed to capture empty baseline")?;
-                self.versions_repo
-                    .create_version_from_snapshot(game_id, VersionReason::Initial, empty_snapshot)
-                    .context("Failed to create empty baseline for new slot")
-            })?;
-
-            self.resync_game_metadata(game_id)
-                .context("Failed to sync metadata after creating slot")?;
-
-            self.games_repo
-                .get_game(game_id)
-                .context("Failed to reload game after creating slot")
-        })
-    }
-
-    pub fn switch_slot(&self, game_id: i32, slot_id: i32) -> Result<FullGame> {
-        self.run_with_paused_watcher(|| {
-            let current_game = self
-                .games_repo
-                .get_game(game_id)
-                .context("Failed to load game before slot switch")?;
-
-            if current_game
-                .active_slot
-                .as_ref()
-                .is_some_and(|slot| slot.id == slot_id)
-            {
-                return Ok(current_game);
-            }
-
-            self.prepare_slot_activation(&current_game, slot_id)
-                .context("Failed to validate target slot before switching")?;
-
-            self.checkpoint_current_state(&current_game, VersionReason::PreSwitch)
-                .context("Failed to checkpoint current slot before switching")?;
-
-            crate::repository::with_exclusive_lock(&self.working_base, || {
-                let prepared = self.prepare_slot_activation(&current_game, slot_id)?;
-                self.activate_slot(&current_game, slot_id, prepared)
-            })
-        })
-    }
-
-    /// Makes `slot_id` the game's active slot and materialises its files into
-    /// the live tracked directories. The caller owns the decision of whether
-    /// the outgoing slot's live state is worth checkpointing first, and must
-    /// have the watcher paused: this writes to tracked directories.
-    fn prepare_slot_activation(
-        &self,
-        game: &FullGame,
-        slot_id: i32,
-    ) -> Result<PreparedSlotActivation> {
-        let target_slot = game
-            .slots
-            .iter()
-            .find(|slot| slot.id == slot_id)
-            .context("Target slot not found before switching")?;
-
-        if let Some(active_version_id) = target_slot.active_version_id {
-            let full_version = self
-                .versions_repo
-                .get_version(active_version_id)
-                .context("Failed to load active version for target slot")?;
-            Ok(PreparedSlotActivation::Restore(
-                self.prepare_restore_version_files(game, &full_version)
-                    .context("Failed to validate target slot snapshot")?,
-            ))
-        } else {
-            self.validate_tracked_dirs(game)
-                .context("Failed to validate tracked directories for empty slot")?;
-            Ok(PreparedSlotActivation::Clear)
-        }
-    }
-
-    fn activate_slot(
-        &self,
-        game: &FullGame,
-        slot_id: i32,
-        prepared: PreparedSlotActivation,
-    ) -> Result<FullGame> {
-        match prepared {
-            PreparedSlotActivation::Restore(restore) => self
-                .apply_prepared_restore(restore)
-                .context("Failed to restore target slot snapshot")?,
-            PreparedSlotActivation::Clear => self
-                .clear_tracked_dirs(game)
-                .context("Failed to clear tracked directories for empty slot")?,
-        }
-
-        self.games_repo
-            .set_active_slot(game.game.id, slot_id)
-            .context("Failed to activate target slot")?;
-
-        self.resync_game_metadata(game.game.id)
-            .context("Failed to sync metadata after switching slots")?;
-
-        self.games_repo
-            .get_game(game.game.id)
-            .context("Failed to reload game after switching slots")
-    }
-
-    pub fn rename_slot(&self, slot_id: i32, name: &str) -> Result<FullGame> {
-        let slot = self
-            .games_repo
-            .rename_slot(slot_id, name)
-            .context("Failed to rename slot")?;
-
-        self.games_repo
-            .get_game(slot.slot.game_id)
-            .context("Failed to reload game after renaming slot")
-    }
-
-    /// Deletes a slot and the whole version history it owns.
-    ///
-    /// A game with no active slot has no coherent state, so two rules are
-    /// enforced here rather than in the UI: the last remaining slot can never
-    /// be deleted, and deleting the *active* slot requires naming the slot to
-    /// switch to first. The replacement is switched into (restoring its files)
-    /// before the target is dropped, so the live save directory always ends up
-    /// holding some slot's real state.
-    pub fn delete_slot(&self, slot_id: i32, replacement_slot_id: Option<i32>) -> Result<FullGame> {
-        let slot = self
-            .games_repo
-            .get_slot(slot_id)
-            .context("Failed to load slot for deletion")?;
-        let game_id = slot.slot.game_id;
-        let game = self
-            .games_repo
-            .get_game(game_id)
-            .context("Failed to load game before slot deletion")?;
-
-        if game.slots.len() <= 1 {
-            return Err(anyhow!(
-                "Cannot delete '{}': a game must keep at least one slot",
-                slot.slot.name
-            ));
-        }
-
-        let is_active = game
-            .active_slot
-            .as_ref()
-            .is_some_and(|active| active.id == slot_id);
-
-        if is_active {
-            let replacement_slot_id = replacement_slot_id.context(
-                "Deleting the active slot requires a replacement slot to switch to first",
-            )?;
-            if replacement_slot_id == slot_id {
-                return Err(anyhow!(
-                    "The replacement slot must not be the slot being deleted"
-                ));
-            }
-            if !game
-                .slots
-                .iter()
-                .any(|candidate| candidate.id == replacement_slot_id)
-            {
-                return Err(anyhow!(
-                    "Replacement slot {replacement_slot_id} does not belong to this game"
-                ));
-            }
-
-            // Deliberately no checkpoint of the outgoing slot: it is about to be
-            // discarded, so capturing its live state would only mint a version
-            // that the delete below immediately removes.
-            self.prepare_slot_activation(&game, replacement_slot_id)
-                .context("Failed to validate replacement slot before deleting")?;
-            self.run_with_paused_watcher(|| {
-                crate::repository::with_exclusive_lock(&self.working_base, || {
-                    let prepared = self.prepare_slot_activation(&game, replacement_slot_id)?;
-                    self.activate_slot(&game, replacement_slot_id, prepared)
-                })
-            })
-            .context("Failed to switch to the replacement slot before deleting")?;
-        }
-
-        // The slot's directory under the repository is deliberately left on
-        // disk, matching `delete_game`. Nothing in the app can bring a deleted
-        // timeline back, so keeping the bytes is the reversible failure mode;
-        // orphaned slot directories accumulate until a repository GC pass
-        // reclaims them.
-        self.games_repo
-            .delete_slot(slot_id)
-            .context("Failed to delete slot")?;
-
-        self.games_repo
-            .get_game(game_id)
-            .context("Failed to reload game after deleting slot")
-    }
-
-    pub fn restore_version(&self, version_id: i32) -> Result<()> {
-        self.run_with_paused_watcher(|| {
-            crate::repository::with_exclusive_lock(&self.working_base, || {
-                self.restore_version_unpaused(version_id)
-            })
-        })
-    }
-
-    pub fn apply_remote_version(&self, version_id: i32) -> Result<()> {
-        self.run_with_paused_watcher(|| {
-            let version = self.versions_repo.get_version(version_id)?;
-            let game = self.games_repo.get_game(version.game.id)?;
-            if game.active_slot.is_none() {
-                return Err(anyhow!(
-                    "Cannot apply remote progress without an active local slot"
-                ));
-            }
-            crate::checkpoint::checkpoint_current_state(
-                &self.working_base,
-                self.versions_repo.as_ref(),
-                &game,
-                VersionReason::PreRestore,
-            )?;
-            crate::repository::with_exclusive_lock(&self.working_base, || {
-                self.restore_version_unpaused(version_id)
-            })
-        })
-    }
-
-    fn restore_version_unpaused(&self, version_id: i32) -> Result<()> {
-        // Read and validate BEFORE any filesystem mutation.
-        let version = self
-            .versions_repo
-            .get_version(version_id)
-            .context("Failed to load version for restoration")?;
-        let game = self
-            .games_repo
-            .get_game(version.game.id)
-            .context("Failed to reload game for restoration")?;
-
-        if !game
-            .slots
-            .iter()
-            .any(|slot| slot.id == version.version.slot_id)
-        {
-            return Err(anyhow!(
-                "Version {} does not belong to game {}",
-                version_id,
-                game.game.id
-            ));
-        }
-
-        let prepared = self
-            .prepare_restore_version_files(&game, &version)
-            .context("Failed to validate version files")?;
-        self.apply_prepared_restore(prepared)
-            .context("Failed to restore version files")?;
-        self.versions_repo
-            .set_active_version(version_id)
-            .context("Failed to activate version for restoration")?;
-        self.resync_game_metadata(game.game.id)
-            .context("Failed to sync metadata after restoration")?;
-
-        Ok(())
-    }
-
-    pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
-        std::fs::create_dir_all(&self.icons_dir).context("Failed to create icons directory")?;
-
-        let source = std::path::Path::new(source_path);
-        let ext = source
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let dest_path = self.icons_dir.join(format!("{}.png", game_id));
-
-        if ext == "exe" {
-            #[cfg(target_os = "windows")]
-            extract_exe_icon(source, &dest_path)
-                .context("Failed to extract icon from executable")?;
-
-            #[cfg(not(target_os = "windows"))]
-            anyhow::bail!("Executable icon extraction is only supported on Windows");
-        } else {
-            let img = image::open(source).context("Failed to open image file")?;
-            img.save(&dest_path).context("Failed to save icon as PNG")?;
-        }
-
-        let icon_path = dest_path.to_string_lossy().into_owned();
-        let game = self.games_repo.get_game(game_id)?;
-        self.games_repo.save_game(
-            GameForm {
-                id: Some(game_id),
-                uuid: game.game.uuid.clone(),
-                title: &game.game.title,
-                title_normalized: game.game.title_normalized.clone(),
-                folder_slug: game.game.folder_slug.clone(),
-                active_slot_id: game.game.active_slot_id,
-                icon_path: Some(icon_path.clone()),
-            },
-            None,
-        )?;
-
-        Ok(icon_path)
-    }
-
-    pub fn get_scan_roots(&self) -> Result<Vec<String>> {
-        self.scan_roots_repo.get_scan_roots()
-    }
-
-    pub fn add_scan_root(&self, path: &str) -> Result<()> {
-        self.scan_roots_repo.add_scan_root(path)
-    }
-
-    pub fn remove_scan_root(&self, path: &str) -> Result<()> {
-        self.scan_roots_repo.remove_scan_root(path)
-    }
-
-    /// Stops the watcher thread and everything it owns (the debouncer and its
-    /// notification threads). Nothing else ever ends a watcher's life, so a
-    /// process that builds several cores accumulates live debouncers, each one
-    /// ticking and delivering events for directories nobody is looking at.
-    pub fn shutdown(&self) {
-        let _ = self.cmd_tx.send(Command::Shutdown);
-    }
+    // ---- settings ------------------------------------------------------------------
 
     pub fn get_monitoring_settings(&self) -> Result<MonitoringSettings> {
-        load_monitoring_settings(&self.monitoring_settings_path)
+        let path = self.data_dir.join("monitoring_settings.json");
+        Ok(read_json(&path).unwrap_or_default())
     }
 
     pub fn update_monitoring_settings(
         &self,
-        monitoring_settings: MonitoringSettings,
+        settings: MonitoringSettings,
     ) -> Result<MonitoringSettings> {
-        save_monitoring_settings(&self.monitoring_settings_path, monitoring_settings)?;
-        self.cmd_tx
-            .send(Command::UpdateMonitoringSettings(monitoring_settings))
-            .context("Failed to update monitoring settings in watcher")?;
-        Ok(monitoring_settings)
+        if settings.snapshot_debounce_seconds < 1.0 || settings.version_cooldown_minutes < 1 {
+            bail!("The debounce must be at least 1 second and the cooldown at least 1 minute");
+        }
+        write_json(&self.data_dir.join("monitoring_settings.json"), &settings)?;
+        if let Some(watcher) = self
+            .watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            watcher.update_settings(settings);
+        }
+        Ok(settings)
+    }
+
+    pub fn get_scan_roots(&self) -> Result<Vec<String>> {
+        self.history().index.get_scan_roots()
+    }
+
+    pub fn add_scan_root(&self, path: &str) -> Result<()> {
+        self.history().index.add_scan_root(path)
+    }
+
+    pub fn remove_scan_root(&self, path: &str) -> Result<()> {
+        self.history().index.remove_scan_root(path)
     }
 
     pub fn scan_installed(&self) -> Result<Vec<InstallScannerItem>> {
-        let cache_dir = self
-            .working_base
-            .parent()
-            .unwrap_or(&self.working_base)
-            .join("cache");
-        let custom_roots = self.scan_roots_repo.get_scan_roots()?;
-        let mut items = crate::install_scanner::scan_installed(&cache_dir, &custom_roots)?;
-
+        let cache_dir = self.data_dir.join("cache");
+        let mut items =
+            crate::install_scanner::scan_installed(&cache_dir, &self.get_scan_roots()?)?;
         let icon_cache_dir = cache_dir.join("icon_cache");
         let _ = std::fs::create_dir_all(&icon_cache_dir);
-
         for item in &mut items {
             let Some(source_path) = &item.icon_path else {
                 continue;
             };
-
             let safe_title: String = item
                 .title
                 .chars()
@@ -1185,396 +531,935 @@ impl TimelineCore {
                 })
                 .collect();
             let cache_png = icon_cache_dir.join(format!("{safe_title}.png"));
-
-            if cache_png.exists() {
-                item.icon_path = Some(cache_png.to_string_lossy().into_owned());
-                continue;
-            }
-
-            let source = std::path::Path::new(source_path);
-            let ext = source
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            let extracted = if ext == "exe" {
-                #[cfg(target_os = "windows")]
-                {
+            if !cache_png.exists() {
+                let source = Path::new(source_path);
+                let is_exe = source
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+                let extracted = if is_exe {
                     extract_exe_icon(source, &cache_png).is_ok()
+                } else {
+                    image::open(source)
+                        .and_then(|img| img.save(&cache_png))
+                        .is_ok()
+                };
+                if !extracted {
+                    item.icon_path = None;
+                    continue;
                 }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    false
-                }
-            } else {
-                image::open(source)
-                    .and_then(|img| img.save(&cache_png))
-                    .is_ok()
-            };
-
-            item.icon_path = if extracted {
-                Some(cache_png.to_string_lossy().into_owned())
-            } else {
-                None
-            };
+            }
+            item.icon_path = Some(cache_png.to_string_lossy().into_owned());
         }
-
         Ok(items)
     }
 
-    /// Runs `operation` with the watcher suppressed, so the writes it makes to
-    /// tracked directories are not mistaken for the user playing the game.
-    ///
-    /// The contract is: pause and wait for the watcher to confirm it, mutate, let
-    /// trailing OS events arrive while still paused, resume.
-    /// Every wait is bounded and the watcher is always resumed — including when
-    /// `operation` returns `Err` or panics, since leaving suppression latched
-    /// would silently stop versioning for the rest of the session. A watcher that
-    /// is gone or wedged costs suppression, never the operation itself.
-    fn run_with_paused_watcher<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
-        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-        // A stopped watcher must not make restoring impossible. Propagating here
-        // would fail every restore and slot switch for the rest of the session;
-        // a spurious version is the better failure by a wide margin, so this logs
-        // and falls through. The wait below then fails immediately (the ack sender
-        // went with the dropped command) and the operation runs unsuppressed.
-        if let Err(err) = self.cmd_tx.send(Command::Pause(ack_tx)) {
-            eprintln!("Watcher is not accepting commands ({err}); continuing unsuppressed");
-        }
+    // ---- devices and sync ------------------------------------------------------------
 
-        // Block until the watcher confirms it has seen the pause. Without this the
-        // operation races an event the debouncer has already promoted to the queue
-        // but the watcher has not dequeued yet: that event is still judged unpaused
-        // and becomes a version. Rebuilding the debouncer on `Resume` cannot help
-        // there — it only discards what is still buffered inside the debouncer.
-        // Bounded: a watcher thread that died drops the ack sender and this returns
-        // at once, and one that is wedged costs a bounded wait instead of hanging
-        // the UI forever. Either way suppression degrades rather than deadlocks.
-        if let Err(err) = ack_rx.recv_timeout(WATCHER_PAUSE_ACK_TIMEOUT) {
-            // Distinguishes a wedged watcher (timed out) from a stopped one
-            // (sending half closed), which are very different things to debug.
-            eprintln!("Watcher did not acknowledge pause ({err}); continuing unsuppressed");
-        }
-
-        // `catch_unwind` so a panicking operation still reaches the resume below.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
-
-        // Let trailing OS events for our own writes arrive while still paused, so
-        // they are discarded instead of being delivered once watching resumes.
-        std::thread::sleep(WATCHER_SETTLE_DELAY);
-
-        let reregister_result = self
-            .games_repo
-            .get_games()
-            .context("Failed to reload games after mutation")
-            .and_then(|all_games| {
-                self.cmd_tx
-                    .send(Command::ReregisterGames(all_games))
-                    .context("Failed to reregister games")
-            });
-        let resume_result = self
-            .cmd_tx
-            .send(Command::Resume)
-            .context("Failed to send resume command");
-
-        match result {
-            Ok(Ok(value)) => {
-                reregister_result?;
-                resume_result?;
-                Ok(value)
-            }
-            Ok(Err(err)) => {
-                let _ = reregister_result;
-                let _ = resume_result;
-                Err(err)
-            }
-            // The watcher has been resumed; let the panic carry on unchanged.
-            Err(panic) => std::panic::resume_unwind(panic),
-        }
+    pub fn device_metadata(&self) -> DeviceMetadata {
+        self.device
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
-    fn checkpoint_current_state(
-        &self,
-        game: &FullGame,
-        reason: VersionReason,
-    ) -> Result<Option<FullVersion>> {
-        if game.tracked_dirs.is_empty() {
+    pub fn update_device_name(&self, name: &str) -> Result<DeviceMetadata> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("Device name cannot be empty");
+        }
+        let mut device = self.device.write().unwrap_or_else(|e| e.into_inner());
+        device.name = name.to_string();
+        sync::save_device(&self.data_dir, &device)?;
+        Ok(device.clone())
+    }
+
+    pub fn get_sync_settings(&self) -> Result<SyncSettings> {
+        sync::load_settings(&self.data_dir.join("sync_settings.json"))
+    }
+
+    pub fn update_sync_settings(&self, settings: SyncSettings) -> Result<SyncSettings> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let settings = SyncSettings {
+            remote_path: settings.remote_path.map(|p| p.trim().to_string()),
+        };
+        if let Some(path) = settings.remote_path.as_deref() {
+            if path.is_empty() {
+                bail!("Remote path cannot be empty");
+            }
+            Remote::open(Path::new(path), &self.data_dir)?;
+        }
+        sync::save_settings(&self.data_dir.join("sync_settings.json"), &settings)?;
+        Ok(settings)
+    }
+
+    fn remote(&self) -> Result<Option<Remote>> {
+        self.get_sync_settings()?
+            .remote_path
+            .map(|path| Remote::open(Path::new(&path), &self.data_dir))
+            .transpose()
+    }
+
+    fn require_remote(&self) -> Result<Remote> {
+        self.remote()?.context("Sync remote is not configured")
+    }
+
+    pub fn remove_sync_device(&self, device_uuid: Uuid) -> Result<()> {
+        if device_uuid == self.device_metadata().device_uuid {
+            bail!("The current device cannot remove itself");
+        }
+        self.require_remote()?.remove_device(device_uuid)
+    }
+
+    /// Runs a full sync when a remote is configured.
+    pub fn sync_if_configured(&self) -> Result<Option<SyncReport>> {
+        if self.get_sync_settings()?.remote_path.is_none() {
             return Ok(None);
         }
+        self.refresh_sync().map(Some)
+    }
 
-        let outcome = crate::checkpoint::checkpoint_current_state(
-            &self.working_base,
-            self.versions_repo.as_ref(),
-            game,
-            reason,
-        )?;
-        let version = match outcome {
-            crate::checkpoint::CheckpointOutcome::Unchanged(version)
-            | crate::checkpoint::CheckpointOutcome::Created(version) => version,
+    /// Publishes local history and pointers (after a new version).
+    pub fn push_sync(&self) -> Result<()> {
+        let Some(remote) = self.remote()? else {
+            return Ok(());
         };
-        let _ = self.push_sync();
-        Ok(Some(version))
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.push_locked(&remote)
     }
 
-    fn clear_tracked_dirs(&self, game: &FullGame) -> Result<()> {
-        self.validate_tracked_dirs(game)?;
-
-        for dir in &game.tracked_dirs {
-            let live_dir = Path::new(&dir.path);
-            if live_dir.exists() {
-                crate::fs_utils::clear_dir_except(
-                    live_dir,
-                    &crate::exclusions::parse(&dir.exclusions),
-                )
-                .with_context(|| format!("Failed to clear tracked dir {}", live_dir.display()))?;
-            }
-
-            std::fs::create_dir_all(live_dir).with_context(|| {
-                format!("Failed to recreate tracked dir {}", live_dir.display())
-            })?;
+    fn push_locked(&self, remote: &Remote) -> Result<()> {
+        let history = self.history();
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        let now = Utc::now();
+        let full = state
+            .last_full_heal
+            .is_none_or(|at| now - at > chrono::Duration::days(1));
+        let heal = if full {
+            Heal::All
+        } else {
+            Heal::CreatedSince(now - maintenance::GRACE * 2)
+        };
+        let markers = history.store.markers()?;
+        let mut transfer = Transfer::new(&history.store, &remote.store, Completeness::Partial);
+        for game in history.store.catalog()? {
+            transfer.copy_game(&game, &markers, heal)?;
         }
-
+        let device = self.device_metadata();
+        let pointers = DeviceState::from_pointers(device.device_uuid, &history.index.pointers()?);
+        let published = remote.publish(&device, &pointers)?;
+        sync::save_device(&self.data_dir, &published)?;
+        *self.device.write().unwrap_or_else(|e| e.into_inner()) = published;
+        if full {
+            state.last_full_heal = Some(now);
+            write_json(&state_path, &state)?;
+        }
         Ok(())
     }
 
-    fn validate_tracked_dirs(&self, game: &FullGame) -> Result<()> {
-        for dir in &game.tracked_dirs {
-            crate::fs_utils::validate_restore_path(Path::new(&dir.path), Path::new(""))
-                .with_context(|| format!("Unsafe tracked dir {}", dir.path))?;
-        }
-        Ok(())
+    fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
+        let history = self.history();
+        let markers = remote.store.markers()?;
+        let not_arrived = store::with_lock(history.root(), || {
+            let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial);
+            transfer.copy_game(game, &markers, Heal::None)?;
+            Ok(transfer.report.not_arrived)
+        })?;
+        history.refresh_game(game.meta.uuid)?;
+        Ok(not_arrived)
     }
 
-    fn prepare_restore_version_files(
-        &self,
-        game: &FullGame,
-        version: &FullVersion,
-    ) -> Result<PreparedRestore> {
-        if let Some(uuid) = version
-            .version
-            .uuid
-            .as_deref()
-            .and_then(|uuid| Uuid::parse_str(uuid).ok())
-            && crate::pruning::read_markers(&self.working_base)?.contains_key(&uuid)
-        {
-            return Err(anyhow!(
-                "This checkpoint was retired and can no longer be restored"
-            ));
-        }
-        let game_folder_slug = game
-            .game
-            .folder_slug
-            .as_deref()
-            .context("Game is missing a folder slug")?;
-        let version_folder_slug = version
-            .version
-            .folder_slug
-            .as_deref()
-            .context("Version is missing a folder slug")?;
-        let version_dir = crate::repository::version_dir(
-            &crate::repository::slot_dir(
-                &crate::repository::game_dir(&self.working_base, game_folder_slug),
-                &version.slot.folder_slug,
-            ),
-            version_folder_slug,
-        );
-        let metadata: crate::repository::VersionMetadata =
-            crate::repository::read_metadata_json(&version_dir)
-                .context("Failed to read version metadata")?;
-        let game_uuid = uuid::Uuid::parse_str(
-            game.game
-                .uuid
-                .as_deref()
-                .context("Game is missing a UUID")?,
-        )?;
-        let mut roots = std::collections::HashMap::new();
-        let mut restore_roots = std::collections::BTreeMap::new();
-        for dir in &game.tracked_dirs {
-            let uuid = uuid::Uuid::parse_str(
-                dir.uuid
-                    .as_deref()
-                    .context("Tracked directory is missing a UUID")?,
-            )?;
-            let path = PathBuf::from(&dir.path);
-            let exclusions = crate::exclusions::parse(&dir.exclusions);
-            if let Some((previous, _)) = roots.insert(uuid, (path.clone(), exclusions.clone())) {
-                anyhow::ensure!(
-                    previous == path,
-                    "Conflicting paths for tracked directory {uuid}"
-                );
-            }
-            restore_roots.entry(path).or_insert(exclusions);
-        }
-        let tracked_root = crate::repository::tracked_dirs_dir(&crate::repository::game_dir(
-            &self.working_base,
-            game_folder_slug,
-        ));
-        if tracked_root.exists() {
-            for entry in std::fs::read_dir(tracked_root)? {
-                let entity_dir = entry?.path();
-                if !entity_dir.is_dir() {
-                    continue;
-                }
-                let dir: crate::repository::TrackedDirMetadata =
-                    crate::repository::read_metadata_json(&entity_dir)?;
-                anyhow::ensure!(
-                    dir.game_uuid == game_uuid,
-                    "Tracked directory metadata belongs to another game"
-                );
-                let path = PathBuf::from(crate::path_placeholders::expand_path_placeholders(
-                    &dir.path,
-                ));
-                if let Some((previous, _)) = roots.get(&dir.uuid) {
-                    anyhow::ensure!(
-                        *previous == path,
-                        "Conflicting paths for tracked directory {}",
-                        dir.uuid
-                    );
-                } else {
-                    let exclusions = dir
-                        .exclusions
-                        .iter()
-                        .filter_map(|pattern| glob::Pattern::new(pattern).ok())
-                        .collect();
-                    roots.insert(dir.uuid, (path, exclusions));
-                }
-            }
-        }
-        for file in &metadata.files {
-            let (path, exclusions) = roots.get(&file.tracked_dir_uuid).with_context(|| {
-                format!(
-                    "Version references unknown tracked directory {}",
-                    file.tracked_dir_uuid
-                )
-            })?;
-            restore_roots
-                .entry(path.clone())
-                .or_insert_with(|| exclusions.clone());
-        }
-        let validated_files =
-            crate::content_store::validate_snapshot_blobs(&self.working_base, &metadata)
-                .context("Failed to validate snapshot manifest")?;
-        let mut files = Vec::new();
-        for (file, blob) in validated_files {
-            let (path, exclusions) = &roots[&file.tracked_dir_uuid];
-            let relative = Path::new(&file.relative_path);
-            if crate::exclusions::is_excluded(exclusions, relative) {
+    /// Pull, adopt, fast-forward, push, report.
+    pub fn refresh_sync(&self) -> Result<SyncReport> {
+        let remote = self.require_remote()?;
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut problems = Vec::new();
+        let remote_games = remote.store.catalog()?;
+
+        // Link games tracked on both devices before sync was enabled.
+        for remote_game in remote_games.iter().filter(|g| g.meta.deleted_at.is_none()) {
+            if self
+                .history()
+                .index
+                .game_id(remote_game.meta.uuid)?
+                .is_some()
+            {
                 continue;
             }
-            files.push((path.clone(), relative.to_path_buf(), blob));
+            match self.match_local_game(remote_game)? {
+                LocalMatch::None => {}
+                LocalMatch::Same(local) => {
+                    if let Err(error) = self.link_game(&local, remote_game) {
+                        problems.push(format!("{}: {error:#}", remote_game.meta.title));
+                    }
+                }
+                LocalMatch::Collision(reason) => {
+                    problems.push(format!("{}: {reason}", remote_game.meta.title))
+                }
+            }
         }
 
-        for path in restore_roots.keys() {
-            crate::fs_utils::validate_restore_path(path, Path::new(""))
-                .with_context(|| format!("Unsafe tracked dir {}", path.display()))?;
+        // Pull every game this device tracks (tombstones included).
+        let local_uuids: HashSet<Uuid> = self
+            .history()
+            .store
+            .game_metas()?
+            .iter()
+            .map(|g| g.uuid)
+            .collect();
+        for remote_game in remote_games
+            .iter()
+            .filter(|g| local_uuids.contains(&g.meta.uuid))
+        {
+            match self.pull_game(&remote, remote_game) {
+                Ok(not_arrived) if !not_arrived.is_empty() => problems.push(format!(
+                    "{}: {} version(s) have not fully arrived yet",
+                    remote_game.meta.title,
+                    not_arrived.len()
+                )),
+                Ok(_) => {}
+                Err(error) => problems.push(format!("{}: {error:#}", remote_game.meta.title)),
+            }
         }
-        for (live_dir, relative, _) in &files {
-            crate::fs_utils::validate_restore_path(live_dir, relative).with_context(|| {
-                format!(
-                    "Unsafe restore destination {}",
-                    live_dir.join(relative).display()
+
+        // Adopt remote games installed here.
+        let unknown: Vec<&GameRecord> = remote_games
+            .iter()
+            .filter(|g| g.meta.deleted_at.is_none() && !local_uuids.contains(&g.meta.uuid))
+            .collect();
+        let installed = if unknown.is_empty() {
+            Vec::new()
+        } else {
+            crate::install_scanner::scan_installed_candidates(
+                &self.data_dir.join("cache"),
+                &self.get_scan_roots()?,
+            )
+            .unwrap_or_default()
+        };
+        let installed_titles: HashMap<String, Option<String>> = installed
+            .iter()
+            .map(|item| {
+                (
+                    store::normalize_display_name(&item.title),
+                    item.install_path.clone(),
                 )
+            })
+            .collect();
+        let mut auto_applied = HashSet::new();
+        for remote_game in unknown {
+            if !installed_titles
+                .contains_key(&store::normalize_display_name(&remote_game.meta.title))
+            {
+                continue;
+            }
+            if !matches!(self.match_local_game(remote_game)?, LocalMatch::None) {
+                continue;
+            }
+            match self.adopt(&remote, remote_game) {
+                Ok(true) => {
+                    auto_applied.insert(remote_game.meta.uuid);
+                }
+                Ok(false) => {}
+                Err(error) => problems.push(format!("{}: {error:#}", remote_game.meta.title)),
+            }
+        }
+
+        // Fast-forward slots other devices moved ahead.
+        let remote_games = remote.store.catalog()?;
+        for game in self.get_games()? {
+            let Some(remote_game) = remote_games
+                .iter()
+                .find(|g| g.meta.uuid.to_string() == game.game.uuid)
+            else {
+                continue;
+            };
+            let install = installed_titles
+                .get(&game.game.title_normalized)
+                .cloned()
+                .flatten();
+            match self.fast_forward(&remote, remote_game, &game, install.as_deref()) {
+                Ok(true) => {
+                    auto_applied.insert(remote_game.meta.uuid);
+                }
+                Ok(false) => {}
+                Err(error) => problems.push(format!("{}: {error:#}", game.game.title)),
+            }
+        }
+
+        self.push_locked(&remote)?;
+        self.reload_watcher();
+        let remote = self.require_remote()?;
+        self.sync_report(&remote, &auto_applied, &installed_titles, problems)
+    }
+
+    /// The sync state as last published, without pulling or pushing.
+    pub fn sync_status(&self) -> Result<SyncReport> {
+        let remote = self.require_remote()?;
+        self.sync_report(&remote, &HashSet::new(), &HashMap::new(), Vec::new())
+    }
+
+    /// Adopts the remote game `uuid` on this device.
+    pub fn adopt_remote_game(&self, uuid: Uuid) -> Result<FullGame> {
+        let remote = self.require_remote()?;
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let game = remote.store.game(uuid)?.context("Remote game not found")?;
+        if game.meta.deleted_at.is_some() {
+            bail!("This game was deleted on another device");
+        }
+        match self.match_local_game(&game)? {
+            LocalMatch::None => {
+                self.adopt(&remote, &game)?;
+            }
+            LocalMatch::Same(local) => {
+                self.link_game(&local, &game)?;
+                self.pull_game(&remote, &game)?;
+            }
+            LocalMatch::Collision(reason) => bail!(reason),
+        }
+        self.push_locked(&remote)?;
+        self.reload_watcher();
+        let id = self
+            .history()
+            .index
+            .game_id(uuid)?
+            .context("Adopted game is not indexed")?;
+        self.get_game(id)
+    }
+
+    fn match_local_game(&self, remote_game: &GameRecord) -> Result<LocalMatch> {
+        let title = store::normalize_display_name(&remote_game.meta.title);
+        let remote_paths: Vec<String> = remote_game
+            .tracked_dirs
+            .iter()
+            .filter(|dir| dir.retired_at.is_none())
+            .map(|dir| crate::path_placeholders::expand_path_placeholders(&dir.path))
+            .collect();
+        let shares_path = |game: &FullGame| {
+            game.tracked_dirs.iter().any(|dir| {
+                remote_paths
+                    .iter()
+                    .any(|path| crate::history::same_path(path, &dir.path))
+            })
+        };
+        let games = self.get_games()?;
+        if let Some(local) = games.iter().find(|g| g.game.title_normalized == title) {
+            return Ok(if shares_path(local) {
+                LocalMatch::Same(Box::new(local.clone()))
+            } else {
+                LocalMatch::Collision(format!(
+                    "a different local game is also named '{}'; rename one of them to sync it",
+                    local.game.title
+                ))
+            });
+        }
+        if let Some(local) = games.iter().find(|g| shares_path(g)) {
+            return Ok(LocalMatch::Collision(format!(
+                "its save folder is already tracked by '{}'",
+                local.game.title
+            )));
+        }
+        Ok(LocalMatch::None)
+    }
+
+    /// Re-keys a local game that was never synced to the remote game it
+    /// duplicates, so both histories become slots of one game.
+    fn link_game(&self, local: &FullGame, remote_game: &GameRecord) -> Result<()> {
+        let history = self.history();
+        let old = history.record(&local.game)?;
+        let new_uuid = remote_game.meta.uuid;
+        let slug = remote_game.meta.folder_slug.clone();
+        let dir_map: HashMap<Uuid, Uuid> = old
+            .tracked_dirs
+            .iter()
+            .filter_map(|dir| {
+                let path = crate::path_placeholders::expand_path_placeholders(&dir.path);
+                remote_game
+                    .tracked_dirs
+                    .iter()
+                    .find(|r| {
+                        crate::history::same_path(
+                            &crate::path_placeholders::expand_path_placeholders(&r.path),
+                            &path,
+                        )
+                    })
+                    .map(|r| (dir.uuid, r.uuid))
+            })
+            .collect();
+        let pointers: Vec<_> = history
+            .index
+            .pointers()?
+            .into_iter()
+            .filter(|p| p.game == old.meta.uuid)
+            .collect();
+        let icon = local.game.icon_path.clone();
+
+        store::with_lock(history.root(), || {
+            history.store.write_game(&remote_game.meta)?;
+            for dir in old
+                .tracked_dirs
+                .iter()
+                .filter(|dir| !dir_map.contains_key(&dir.uuid))
+            {
+                history.store.write_tracked_dir(
+                    &slug,
+                    &store::TrackedDirMeta {
+                        game_uuid: new_uuid,
+                        ..dir.clone()
+                    },
+                )?;
+            }
+            for dir in remote_game
+                .tracked_dirs
+                .iter()
+                .filter(|r| dir_map.values().any(|v| *v == r.uuid))
+            {
+                history.store.write_tracked_dir(&slug, dir)?;
+            }
+            let markers = history.store.markers()?;
+            for slot in &old.slots {
+                history.store.write_slot(
+                    &slug,
+                    &store::SlotMeta {
+                        game_uuid: new_uuid,
+                        ..slot.meta.clone()
+                    },
+                )?;
+                for version in &slot.versions {
+                    let mut version = version.clone();
+                    version.game_uuid = new_uuid;
+                    for file in &mut version.files {
+                        if let Some(mapped) = dir_map.get(&file.tracked_dir_uuid) {
+                            file.tracked_dir_uuid = *mapped;
+                        }
+                    }
+                    version.files.sort();
+                    history
+                        .store
+                        .publish_version(&slug, &slot.meta.folder_slug, &version)?;
+                    if let Some(marker) = markers.get(&version.uuid) {
+                        write_json(
+                            &history
+                                .root()
+                                .join("retired-versions")
+                                .join(format!("{}.json", version.uuid)),
+                            &store::RetirementMarker {
+                                game_uuid: new_uuid,
+                                ..marker.clone()
+                            },
+                        )?;
+                    }
+                }
+            }
+            std::fs::remove_dir_all(history.store.game_dir(&old.meta.folder_slug))?;
+            Ok(())
+        })?;
+        history.index.remove_game(old.meta.uuid)?;
+        history.refresh_game(new_uuid)?;
+        let id = history
+            .index
+            .game_id(new_uuid)?
+            .context("linked game is not indexed")?;
+        for pointer in pointers {
+            let Some(slot_id) = history.index.slot_id(pointer.slot)? else {
+                continue;
+            };
+            let version_id = pointer
+                .version
+                .map(|v| history.index.version_id(v))
+                .transpose()?
+                .flatten();
+            history.index.set_active_version(slot_id, version_id)?;
+            if pointer.active {
+                history.index.set_active_slot(id, slot_id)?;
+            }
+        }
+        history.index.set_icon(id, icon.as_deref())
+    }
+
+    /// Starts tracking a remote game here. Existing local saves are kept as
+    /// a new version; otherwise the newest device's progress is restored.
+    /// Returns whether progress was applied.
+    fn adopt(&self, remote: &Remote, remote_game: &GameRecord) -> Result<bool> {
+        let saves_exist = remote_game
+            .tracked_dirs
+            .iter()
+            .filter(|dir| dir.retired_at.is_none())
+            .any(|dir| {
+                let path = crate::path_placeholders::expand_path_placeholders(&dir.path);
+                std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
+            });
+        self.pull_game(remote, remote_game)?;
+        let history = self.history();
+        let game_id = history
+            .index
+            .game_id(remote_game.meta.uuid)?
+            .context("Adopted game is not indexed")?;
+        let me = self.device_metadata().device_uuid;
+        if let Some(state) = remote
+            .other_states(me)
+            .into_iter()
+            .find_map(|state| state.games.get(&remote_game.meta.uuid))
+        {
+            for (slot_uuid, slot_state) in &state.slots {
+                let Some(slot_id) = history.index.slot_id(*slot_uuid)? else {
+                    continue;
+                };
+                let version_id = match slot_state.active_version_uuid {
+                    Some(uuid) => history.index.version_id(uuid)?,
+                    None => None,
+                };
+                let usable = match version_id {
+                    Some(id) => !history.index.get_version(id)?.version.retired,
+                    None => false,
+                };
+                if usable {
+                    history.index.set_active_version(slot_id, version_id)?;
+                }
+                if state.active_slot_uuid == Some(*slot_uuid) {
+                    history.index.set_active_slot(game_id, slot_id)?;
+                }
+            }
+        }
+        let game = self.get_game(game_id)?;
+        if saves_exist {
+            // Keep what is on disk: identical saves just join the remote
+            // history; different ones become a new version on top of it.
+            store::with_lock(history.root(), || {
+                history.checkpoint_locked(&game, VersionReason::Initial)
+            })?;
+            return Ok(false);
+        }
+        let Some(active) = game.last_version.clone() else {
+            return Ok(false);
+        };
+        // The live folders are empty, so there is nothing to checkpoint first.
+        let suppressed = self.inner.suppression.hold();
+        let version = self.get_version(active.id)?;
+        store::with_lock(history.root(), || self.restore_locked(&game, &version))?;
+        drop(suppressed);
+        Ok(true)
+    }
+
+    /// Moves slots other devices advanced: inactive slots by pointer only, the
+    /// active slot by a guarded restore when the game is not running.
+    fn fast_forward(
+        &self,
+        remote: &Remote,
+        remote_game: &GameRecord,
+        game: &FullGame,
+        install: Option<&str>,
+    ) -> Result<bool> {
+        let me = self.device_metadata().device_uuid;
+        let parents = sync::parents(&self.history().record(&game.game)?);
+        let pointers = self.history().index.pointers()?;
+        let mut applied = false;
+        for pointer in pointers.iter().filter(|p| p.game == remote_game.meta.uuid) {
+            let tips: Vec<Uuid> = remote
+                .other_states(me)
+                .iter()
+                .filter_map(|state| state.slot_tip(pointer.game, pointer.slot))
+                .collect();
+            let (relation, target) = sync::classify(pointer.version, &tips, &parents);
+            if relation != Divergence::FastForward {
+                continue;
+            }
+            let Some(target_id) = target
+                .map(|t| self.history().index.version_id(t))
+                .transpose()?
+                .flatten()
+            else {
+                continue;
+            };
+            let target = self.get_version(target_id)?;
+            if target.version.retired {
+                continue;
+            }
+            if !pointer.active {
+                self.history()
+                    .index
+                    .set_active_version(target.slot.id, Some(target_id))?;
+                continue;
+            }
+            // Unknown process state counts as running: fail closed.
+            if sync::game_is_running(install) != Some(false) {
+                continue;
+            }
+            let expected_tip = pointer.version.map(|v| v.to_string());
+            applied |= self.guarded(game.game.id, VersionReason::PreRestore, |game| {
+                // A checkpoint that just captured new local progress turns this into a divergence.
+                if game.last_version.as_ref().map(|v| v.uuid.clone()) != expected_tip {
+                    return Ok(false);
+                }
+                self.restore_locked(game, &target)?;
+                Ok(true)
             })?;
         }
+        Ok(applied)
+    }
 
-        Ok(PreparedRestore {
-            restore_roots,
-            files,
+    fn sync_report(
+        &self,
+        remote: &Remote,
+        auto_applied: &HashSet<Uuid>,
+        installed_titles: &HashMap<String, Option<String>>,
+        problems: Vec<String>,
+    ) -> Result<SyncReport> {
+        let me = self.device_metadata().device_uuid;
+        let catalog = remote.store.catalog()?;
+        let pointers = self.history().index.pointers()?;
+        let games = self.get_games()?;
+        let mut statuses = Vec::new();
+        for game in &games {
+            let uuid = game_uuid(&game.game)?;
+            let Some(remote_game) = catalog.iter().find(|g| g.meta.uuid == uuid) else {
+                continue;
+            };
+            let Some(pointer) = pointers.iter().find(|p| p.game == uuid && p.active) else {
+                continue;
+            };
+            let parents = sync::parents(remote_game);
+            let others = remote.other_states(me);
+            let tips: Vec<(Uuid, Uuid)> = others
+                .iter()
+                .filter_map(|state| {
+                    state
+                        .slot_tip(uuid, pointer.slot)
+                        .map(|tip| (state.device_uuid, tip))
+                })
+                .collect();
+            let (relation, target) = sync::classify(
+                pointer.version,
+                &tips.iter().map(|(_, tip)| *tip).collect::<Vec<_>>(),
+                &parents,
+            );
+            let device = target
+                .and_then(|t| tips.iter().find(|(_, tip)| *tip == t))
+                .map(|(device, _)| remote.device_name(*device));
+            statuses.push(sync::GameSyncStatus {
+                game_uuid: uuid,
+                relation,
+                remote_device: device,
+                remote_version_uuid: target,
+                remote_version_id: target
+                    .map(|t| self.history().index.version_id(t))
+                    .transpose()?
+                    .flatten(),
+                auto_applied: auto_applied.contains(&uuid),
+            });
+        }
+        let local: HashSet<String> = games.iter().map(|g| g.game.uuid.clone()).collect();
+        Ok(SyncReport {
+            synced_at: Utc::now(),
+            games: statuses,
+            remote_games: catalog
+                .iter()
+                .filter(|g| g.meta.deleted_at.is_none())
+                .map(|g| sync::RemoteGameSummary {
+                    uuid: g.meta.uuid,
+                    title: g.meta.title.clone(),
+                    installed: installed_titles
+                        .contains_key(&store::normalize_display_name(&g.meta.title)),
+                    adopted: local.contains(&g.meta.uuid.to_string()),
+                })
+                .collect(),
+            devices: remote.devices.clone(),
+            remote_versions: catalog
+                .iter()
+                .flat_map(|g| g.versions())
+                .filter_map(|v| {
+                    let origin = v.origin_device.filter(|d| *d != me)?;
+                    Some((v.uuid, remote.device_name(origin)))
+                })
+                .collect(),
+            problems,
         })
     }
 
-    fn apply_prepared_restore(&self, prepared: PreparedRestore) -> Result<()> {
-        for (live_dir, exclusions) in &prepared.restore_roots {
-            if live_dir.exists() {
-                crate::fs_utils::clear_dir_except(live_dir, exclusions).with_context(|| {
-                    format!("Failed to clear live tracked dir {}", live_dir.display())
-                })?;
-            }
+    // ---- retention -----------------------------------------------------------------
 
-            std::fs::create_dir_all(live_dir).with_context(|| {
-                format!(
-                    "Failed to recreate empty tracked dir {}",
-                    live_dir.display()
-                )
-            })?;
-        }
-
-        for (live_dir, relative, blob) in prepared.files {
-            let destination = live_dir.join(relative);
-            if let Some(parent) = destination.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create restore directory {}", parent.display())
-                })?;
-            }
-            std::fs::copy(&blob, &destination).with_context(|| {
-                format!(
-                    "Failed to restore blob {} to {}",
-                    blob.display(),
-                    destination.display()
-                )
-            })?;
-        }
-
-        Ok(())
+    fn retention_path(&self) -> PathBuf {
+        self.data_dir.join("retention_settings.json")
     }
 
-    fn resync_game_metadata(&self, game_id: i32) -> Result<()> {
-        let game = self
-            .games_repo
-            .get_game(game_id)
-            .context("Failed to load game for metadata sync")?;
-        self.games_repo
-            .save_game(
-                GameForm {
-                    id: Some(game.game.id),
-                    uuid: game.game.uuid.clone(),
-                    title: &game.game.title,
-                    title_normalized: game.game.title_normalized.clone(),
-                    folder_slug: game.game.folder_slug.clone(),
-                    active_slot_id: game.game.active_slot_id,
-                    icon_path: game.game.icon_path.clone(),
-                },
-                None,
-            )
-            .context("Failed to persist metadata sync")?;
+    pub fn get_pruning_settings(&self) -> Result<RetentionSettings> {
+        maintenance::sync_settings(&self.retention_path(), None)
+    }
 
-        Ok(())
+    pub fn update_pruning_settings(
+        &self,
+        settings: RetentionSettings,
+    ) -> Result<RetentionSettings> {
+        if settings.keep_all_hours > settings.hourly_until_hours
+            || settings.hourly_until_hours > settings.daily_until_days * 24
+            || settings.daily_until_days > settings.weekly_until_days
+        {
+            bail!("Retention tiers must not overlap: keep-all ≤ hourly ≤ daily ≤ weekly");
+        }
+        let settings = RetentionSettings {
+            updated_at: Utc::now(),
+            ..settings
+        };
+        write_json(&self.retention_path(), &settings)?;
+        if let Ok(Some(remote)) = self.remote() {
+            maintenance::sync_settings(&self.retention_path(), Some(&remote.store))?;
+        }
+        Ok(settings)
+    }
+
+    pub fn retired_versions(&self) -> Result<Vec<String>> {
+        self.history().index.retired_version_uuids()
+    }
+
+    /// The union catalog, retired set and protected pointers used for planning.
+    fn retention_inputs(&self, remote: Option<&Remote>) -> Result<RetentionInputs> {
+        let history = self.history();
+        let mut games = remote
+            .map(|r| r.store.catalog())
+            .transpose()?
+            .unwrap_or_default();
+        for local in history.store.catalog()? {
+            match games.iter_mut().find(|g| g.meta.uuid == local.meta.uuid) {
+                None => games.push(local),
+                Some(merged) => {
+                    for slot in local.slots {
+                        match merged
+                            .slots
+                            .iter_mut()
+                            .find(|s| s.meta.uuid == slot.meta.uuid)
+                        {
+                            None => merged.slots.push(slot),
+                            Some(target) => {
+                                for version in slot.versions {
+                                    if !target.versions.iter().any(|v| v.uuid == version.uuid) {
+                                        target.versions.push(version);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut retired: HashSet<Uuid> = history.store.markers()?.into_keys().collect();
+        let local_pointed: HashSet<Uuid> = history
+            .index
+            .pointers()?
+            .iter()
+            .filter_map(|p| p.version)
+            .collect();
+        let mut pointed = local_pointed.clone();
+        if let Some(remote) = remote {
+            retired.extend(remote.store.markers()?.into_keys());
+            pointed.extend(remote.states.iter().flat_map(|s| s.pointed_versions()));
+        }
+        Ok(RetentionInputs {
+            games,
+            retired,
+            pointed,
+            local_pointed,
+        })
+    }
+
+    pub fn preview_pruning(&self) -> Result<PruningPreview> {
+        let remote = self.remote()?;
+        let settings =
+            maintenance::sync_settings(&self.retention_path(), remote.as_ref().map(|r| &r.store))?;
+        let inputs = self.retention_inputs(remote.as_ref())?;
+        let plan = maintenance::plan(&maintenance::PlanInput {
+            games: &inputs.games,
+            retired: &inputs.retired,
+            pointed: &inputs.pointed,
+            chunk_sizes: &self.history().store.chunk_sizes()?,
+            settings: &settings,
+            now: Utc::now(),
+        });
+        Ok(PruningPreview {
+            retire_versions: plan.retire.iter().map(|(_, _, v)| *v).collect(),
+            live_bytes_before: plan.live_bytes_before,
+            live_bytes_after: plan.live_bytes_after,
+            budget_unreachable: plan.budget_unreachable,
+            local_gc: maintenance::gc_preview(&self.history().store, &inputs.local_pointed)?,
+        })
+    }
+
+    /// Retires versions per the retention settings, then garbage-collects the
+    /// local store and (condemn → sweep) the remote.
+    pub fn run_pruning(&self) -> Result<PruningRunReport> {
+        let remote = self.remote()?;
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(remote) = &remote {
+            self.push_locked(remote)?;
+        }
+        let history = self.history();
+        let settings =
+            maintenance::sync_settings(&self.retention_path(), remote.as_ref().map(|r| &r.store))?;
+        let now = Utc::now();
+        let (retired, budget_unreachable, local_gc) = store::with_lock(history.root(), || {
+            let inputs = self.retention_inputs(remote.as_ref())?;
+            let plan = maintenance::plan(&maintenance::PlanInput {
+                games: &inputs.games,
+                retired: &inputs.retired,
+                pointed: &inputs.pointed,
+                chunk_sizes: &history.store.chunk_sizes()?,
+                settings: &settings,
+                now,
+            });
+            maintenance::apply(&history.store, &plan, now)?;
+            if let Some(remote) = &remote {
+                maintenance::apply(&remote.store, &plan, now)?;
+            }
+            let local_gc = maintenance::gc_local(&history.store, &inputs.local_pointed)?;
+            Ok((
+                plan.retire.iter().map(|(_, _, v)| *v).collect::<Vec<_>>(),
+                plan.budget_unreachable,
+                local_gc,
+            ))
+        })?;
+        let remote_gc = match &remote {
+            Some(remote) => {
+                let mut pointed: HashSet<Uuid> = history
+                    .index
+                    .pointers()?
+                    .iter()
+                    .filter_map(|p| p.version)
+                    .collect();
+                pointed.extend(remote.states.iter().flat_map(|s| s.pointed_versions()));
+                Some(maintenance::gc_remote(
+                    &remote.store,
+                    &pointed,
+                    self.device_metadata().device_uuid,
+                    now,
+                )?)
+            }
+            None => None,
+        };
+        history.reindex()?;
+        *self.last_prune.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+        Ok(PruningRunReport {
+            retired_versions: retired,
+            budget_unreachable,
+            local_gc,
+            remote_gc,
+        })
+    }
+
+    /// Runs pruning when automatic retention is on and the last run is older
+    /// than the interval. Returns the report when it ran.
+    pub fn prune_if_due(&self) -> Result<Option<PruningRunReport>> {
+        if !self.get_pruning_settings()?.automatic {
+            return Ok(None);
+        }
+        let last = *self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| Utc::now() - at < PRUNE_INTERVAL) {
+            return Ok(None);
+        }
+        self.run_pruning().map(Some)
     }
 }
 
-fn load_monitoring_settings(path: &std::path::Path) -> Result<MonitoringSettings> {
-    if !path.exists() {
-        let settings = MonitoringSettings::default();
-        save_monitoring_settings(path, settings)?;
-        return Ok(settings);
+impl Drop for TimelineCore {
+    fn drop(&mut self) {
+        self.shutdown();
     }
-
-    let contents = fs::read_to_string(path).context("Failed to read monitoring settings")?;
-    let settings =
-        serde_json::from_str(&contents).context("Failed to parse monitoring settings")?;
-    Ok(settings)
 }
 
-fn save_monitoring_settings(
-    path: &std::path::Path,
-    monitoring_settings: MonitoringSettings,
-) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("Failed to create monitoring settings directory")?;
-    }
+enum LocalMatch {
+    None,
+    Same(Box<FullGame>),
+    Collision(String),
+}
 
-    let contents = serde_json::to_string_pretty(&monitoring_settings)
-        .context("Failed to serialize monitoring settings")?;
-    fs::write(path, contents).context("Failed to write monitoring settings")?;
-    Ok(())
+/// What retention planning reads: the union catalog of local and remote,
+/// every retired version, and the pointers of all devices and of this one.
+struct RetentionInputs {
+    games: Vec<GameRecord>,
+    retired: HashSet<Uuid>,
+    pointed: HashSet<Uuid>,
+    local_pointed: HashSet<Uuid>,
+}
+
+fn open_database(path: &Path) -> Result<DbPool> {
+    let url = format!("file:{}?foreign_keys=on", path.display());
+    let pool = Pool::builder()
+        .max_size(4)
+        .connection_customizer(Box::new(SqlitePragmas))
+        .build(ConnectionManager::<SqliteConnection>::new(url))
+        .context("Failed to open the database")?;
+    pool.get()?
+        .run_pending_migrations(crate::MIGRATIONS)
+        .map_err(|error| anyhow!("Failed to migrate the database: {error}"))?;
+    Ok(pool)
+}
+
+#[derive(Debug)]
+struct SqlitePragmas;
+
+impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for SqlitePragmas {
+    fn on_acquire(
+        &self,
+        conn: &mut SqliteConnection,
+    ) -> std::result::Result<(), diesel::r2d2::Error> {
+        use diesel::connection::SimpleConnection;
+        conn.batch_execute("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+            .map_err(diesel::r2d2::Error::QueryError)
+    }
+}
+
+/// Pre-release data (an older schema or store format) is moved into
+/// `backup-pre-fase3-<timestamp>/`, never deleted, and the app starts fresh.
+fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
+    let db = data_dir.join("database.db");
+    let repository = data_dir.join("repository");
+    let old_db = db.exists() && {
+        use diesel::Connection;
+        use diesel::prelude::*;
+        let mut conn = SqliteConnection::establish(&db.to_string_lossy())?;
+        #[derive(QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            version: String,
+        }
+        use diesel::migration::MigrationSource;
+        let known: Vec<String> =
+            MigrationSource::<diesel::sqlite::Sqlite>::migrations(&crate::MIGRATIONS)
+                .map_err(|error| anyhow!("{error}"))?
+                .iter()
+                .map(|migration| migration.name().version().to_string())
+                .collect();
+        let applied: Vec<Row> = diesel::sql_query("SELECT version FROM __diesel_schema_migrations")
+            .load(&mut conn)
+            .unwrap_or_default();
+        applied.iter().any(|row| !known.contains(&row.version))
+    };
+    let old_repository =
+        repository.join("metadata.json").exists() && Store::open_existing(&repository).is_err();
+    if !old_db && !old_repository {
+        return Ok(None);
+    }
+    let backup = data_dir.join(format!(
+        "backup-pre-fase3-{}-{}",
+        Utc::now().format("%Y%m%d-%H%M%S"),
+        &store::short_random()[..4]
+    ));
+    std::fs::create_dir_all(&backup)?;
+    for name in [
+        "database.db",
+        "database.db-wal",
+        "database.db-shm",
+        "repository",
+    ] {
+        let source = data_dir.join(name);
+        if source.exists() {
+            std::fs::rename(&source, backup.join(name))
+                .with_context(|| format!("Failed to move {} aside", source.display()))?;
+        }
+    }
+    Ok(Some(backup))
 }
 
 #[cfg(target_os = "windows")]
-fn extract_exe_icon(
-    exe_path: &std::path::Path,
-    output_path: &std::path::Path,
-) -> anyhow::Result<()> {
+fn extract_exe_icon(exe_path: &Path, output_path: &Path) -> Result<()> {
     let script = "Add-Type -AssemblyName System.Drawing; \
                   $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:EXE_PATH); \
                   $icon.ToBitmap().Save($env:OUT_PATH)";
@@ -1586,4 +1471,9 @@ fn extract_exe_icon(
         .context("Failed to run PowerShell")?;
     anyhow::ensure!(status.success(), "PowerShell icon extraction failed");
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn extract_exe_icon(_: &Path, _: &Path) -> Result<()> {
+    bail!("Executable icon extraction is only supported on Windows")
 }

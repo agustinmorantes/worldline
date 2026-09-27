@@ -58,6 +58,8 @@ export function SlotSelector({
       setBusySlotId(slot.id);
       await onSwitch(slot);
       setPendingSwitch(null);
+    } catch {
+      // The caller reports the failure; the dialog stays open for a retry.
     } finally {
       setBusySlotId(null);
     }
@@ -72,6 +74,8 @@ export function SlotSelector({
       await onCreate(trimmedName);
       setSlotName('');
       setCreateOpen(false);
+    } catch {
+      // The caller reports the failure; the dialog stays open for a retry.
     } finally {
       setCreating(false);
     }
@@ -85,6 +89,8 @@ export function SlotSelector({
       setBusySlotId(renameTarget.id);
       await onRename(renameTarget, trimmedName);
       setRenameTarget(null);
+    } catch {
+      // The caller reports the failure; the dialog stays open for a retry.
     } finally {
       setBusySlotId(null);
     }
@@ -99,6 +105,8 @@ export function SlotSelector({
       setBusySlotId(deleteTarget.id);
       await onDelete(deleteTarget, deleteReplacement?.id);
       setDeleteTarget(null);
+    } catch {
+      // The caller reports the failure; the dialog stays open for a retry.
     } finally {
       setBusySlotId(null);
     }

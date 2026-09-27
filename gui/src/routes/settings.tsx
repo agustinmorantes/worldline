@@ -11,17 +11,34 @@ import { confirm, open } from '@tauri-apps/plugin-dialog';
 import {
   getDevice,
   getSyncSettings,
-  refreshSync,
   removeSyncDevice,
   updateDeviceName,
   updateSyncSettings,
 } from '@/api/sync';
-import { SyncReport } from '@/models/sync';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { formatDistanceToNow } from 'date-fns';
-import { getPruningSettings, previewPruning, runPruning, updatePruningSettings, type PruningPreview } from '@/api/pruning';
+import {
+  getPruningSettings,
+  presetOf,
+  previewPruning,
+  RETENTION_PRESETS,
+  runPruning,
+  updatePruningSettings,
+  type PruningPreview,
+  type RetentionPreset,
+  type RetentionSettings,
+} from '@/api/pruning';
 import { queryClient } from '@/lib/query-client';
+import { useSyncReport } from '@/api/queries';
+
+const MIB = 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * MIB) return `${(bytes / (1024 * MIB)).toFixed(1)} GiB`;
+  if (bytes >= MIB) return `${(bytes / MIB).toFixed(1)} MiB`;
+  return `${Math.round(bytes / 1024).toString()} KiB`;
+}
 import { ImportHistorySection } from '@/components/ImportHistorySection';
 
 export const Route = createFileRoute('/settings')({
@@ -34,11 +51,13 @@ function SettingsView(): ReactElement {
   const [remotePath, setRemotePath] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const [deviceUuid, setDeviceUuid] = useState('');
-  const [syncReport, setSyncReport] = useState<SyncReport>();
+  const { data: syncReport, refetch: refetchSyncReport } = useSyncReport();
   const [syncing, setSyncing] = useState(false);
   const [pruning, setPruning] = useState(false);
   const [pruningPreview, setPruningPreview] = useState<PruningPreview>();
-  const [automaticPruning, setAutomaticPruning] = useState(false);
+  const [retention, setRetention] = useState<RetentionSettings>();
+  const [budgetMiB, setBudgetMiB] = useState('');
+  const [branchDays, setBranchDays] = useState('');
 
   useEffect(() => {
     void getMonitoringSettings()
@@ -58,14 +77,7 @@ function SettingsView(): ReactElement {
         setDeviceName(device.name);
         setDeviceUuid(device.device_uuid);
         setRemotePath(settings.remote_path ?? '');
-        setAutomaticPruning(pruningSettings.automatic);
-        if (settings.remote_path !== null && settings.remote_path !== undefined) {
-          setSyncing(true);
-          void refreshSync()
-            .then(setSyncReport)
-            .catch((err: unknown) => { console.error(err); })
-            .finally(() => { setSyncing(false); });
-        }
+        applyRetention(pruningSettings);
       })
       .catch((err: unknown) => {
         console.error(err);
@@ -73,17 +85,48 @@ function SettingsView(): ReactElement {
       });
   }, []);
 
+  function applyRetention(settings: RetentionSettings): void {
+    setRetention(settings);
+    setBudgetMiB(settings.max_bytes === null ? '' : Math.round(settings.max_bytes / MIB).toString());
+    setBranchDays(settings.branch_expiry_days === null ? '' : settings.branch_expiry_days.toString());
+  }
+
+  /** The retention settings as edited, or an error message. */
+  function editedRetention(): RetentionSettings | string {
+    if (retention === undefined) return 'Retention settings are still loading';
+    const budget = budgetMiB.trim() === '' ? null : Number(budgetMiB);
+    if (budget !== null && (!Number.isFinite(budget) || budget <= 0)) return 'The disk budget must be a positive number of MiB';
+    const days = branchDays.trim() === '' ? null : Number(branchDays);
+    if (days !== null && (!Number.isInteger(days) || days < 1)) return 'Branch expiry must be a whole number of days';
+    return {
+      ...retention,
+      max_bytes: budget === null ? null : Math.round(budget * MIB),
+      branch_expiry_days: days,
+    };
+  }
+
+  async function syncNow(): Promise<void> {
+    await queryClient.invalidateQueries({ queryKey: ['sync-settings'] });
+    await refetchSyncReport();
+  }
+
   const handleSave = async (): Promise<void> => {
     const debounceSeconds = Number(debounce);
     const cooldownMinutes = Number(cooldown);
 
-    if (!Number.isFinite(debounceSeconds) || debounceSeconds < 0.1 || debounceSeconds > 30) {
-      toast.error('Snapshot delay must be between 0.1 and 30 seconds');
+    if (!Number.isFinite(debounceSeconds) || debounceSeconds < 1 || debounceSeconds > 30) {
+      toast.error('Snapshot delay must be between 1 and 30 seconds');
       return;
     }
 
-    if (!Number.isFinite(cooldownMinutes) || cooldownMinutes < 0 || cooldownMinutes > 60) {
-      toast.error('Version cooldown must be between 0 and 60 minutes');
+    if (!Number.isFinite(cooldownMinutes) || cooldownMinutes < 1 || cooldownMinutes > 60) {
+      toast.error('Version cooldown must be between 1 and 60 minutes');
+      return;
+    }
+
+    const retentionSettings = editedRetention();
+    if (typeof retentionSettings === 'string') {
+      toast.error(retentionSettings);
       return;
     }
 
@@ -96,10 +139,8 @@ function SettingsView(): ReactElement {
         updateDeviceName(deviceName),
       ]);
       await updateSyncSettings({ remote_path: remotePath.trim() === '' ? null : remotePath.trim() });
-      await updatePruningSettings({ automatic: automaticPruning });
-      if (remotePath.trim() !== '') {
-        setSyncReport(await refreshSync());
-      }
+      applyRetention(await updatePruningSettings(retentionSettings));
+      await syncNow();
     } catch (err) {
       console.error(err);
       toast.error(`Failed to save settings: ${String(err)}`);
@@ -118,7 +159,7 @@ function SettingsView(): ReactElement {
     try {
       setSyncing(true);
       await updateSyncSettings({ remote_path: remotePath.trim() === '' ? null : remotePath.trim() });
-      setSyncReport(await refreshSync());
+      await syncNow();
       toast.success('Sync complete');
     } catch (err) {
       console.error(err);
@@ -132,7 +173,7 @@ function SettingsView(): ReactElement {
     if (!await confirm(`Remove ${name} from this sync folder?`, { title: 'Remove Device', kind: 'warning' })) return;
     try {
       await removeSyncDevice(uuid);
-      setSyncReport(await refreshSync());
+      await refetchSyncReport();
       toast.success(`${name} removed`);
     } catch (err) {
       console.error(err);
@@ -141,8 +182,15 @@ function SettingsView(): ReactElement {
   };
 
   const handlePreviewPruning = async (): Promise<void> => {
+    const retentionSettings = editedRetention();
+    if (typeof retentionSettings === 'string') {
+      toast.error(retentionSettings);
+      return;
+    }
     try {
       setPruning(true);
+      // The preview uses the saved rules, so save the edited ones first.
+      applyRetention(await updatePruningSettings(retentionSettings));
       setPruningPreview(await previewPruning());
     } catch (err) {
       console.error(err);
@@ -153,7 +201,7 @@ function SettingsView(): ReactElement {
   };
 
   const handleRunPruning = async (): Promise<void> => {
-    if (!await confirm('Retire eligible checkpoints and remove unreferenced files locally and from the sync folder? Other registered devices must be explicitly removed first.', {
+    if (!await confirm('Retire eligible checkpoints and remove unreferenced files locally and from the sync folder? Files other devices still need are kept.', {
       title: 'Run History Cleanup', kind: 'warning',
     })) return;
     try {
@@ -162,7 +210,14 @@ function SettingsView(): ReactElement {
       setPruningPreview(await previewPruning());
       void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
       void queryClient.invalidateQueries({ queryKey: ['games'] });
-      toast.success(`Retired ${report.retired_versions.length.toString()} checkpoints; reclaimed ${report.local_gc.reclaimable_bytes.toLocaleString()} bytes locally${report.remote_gc === null ? '' : ` and ${report.remote_gc.reclaimable_bytes.toLocaleString()} bytes remotely`}`);
+      void queryClient.invalidateQueries({ queryKey: ['game'] });
+      const remote = report.remote_gc === null
+        ? ''
+        : ` and ${formatBytes(report.remote_gc.bytes_deleted)} from the sync folder (${report.remote_gc.chunks_condemned.toString()} more file(s) are removed after 3 days)`;
+      toast.success(`Retired ${report.retired_versions.length.toString()} checkpoints; reclaimed ${formatBytes(report.local_gc.bytes_deleted)} locally${remote}`);
+      if (report.budget_unreachable) {
+        toast.warning('The disk budget is smaller than the checkpoints that must be kept (tags, device positions and slot starts).');
+      }
     } catch (err) {
       console.error(err);
       toast.error(`Cleanup failed: ${String(err)}`);
@@ -174,11 +229,17 @@ function SettingsView(): ReactElement {
   const handleReset = (): void => {
     setDebounce('5');
     setCooldown('15');
-    setAutomaticPruning(false);
+    const defaults: RetentionSettings | undefined = retention === undefined ? undefined : {
+      ...retention,
+      ...RETENTION_PRESETS.balanced,
+      automatic: false,
+      branch_expiry_days: 30,
+      max_bytes: null,
+    };
     void Promise.all([updateMonitoringSettings({
       snapshot_debounce_seconds: 5,
       version_cooldown_minutes: 15,
-    }), updatePruningSettings({ automatic: false })])
+    }), defaults === undefined ? undefined : updatePruningSettings(defaults).then(applyRetention)])
       .then(() => {
         toast.success('Settings reset to defaults');
       })
@@ -218,9 +279,9 @@ function SettingsView(): ReactElement {
                   </label>
                   <Input
                     type="number"
-                    min={0.1}
+                    min={1}
                     max={30}
-                    step={0.1}
+                    step={0.5}
                     value={debounce}
                     onChange={(event) => { setDebounce(event.target.value); }}
                     className="bg-el border-border/40"
@@ -243,7 +304,7 @@ function SettingsView(): ReactElement {
                   </label>
                   <Input
                     type="number"
-                    min={0}
+                    min={1}
                     max={60}
                     step={1}
                     value={cooldown}
@@ -267,18 +328,26 @@ function SettingsView(): ReactElement {
             <div className="flex flex-col gap-3">
               <div>
                 <h3 className="text-sm font-bold">Smart Retention</h3>
-                <p className="mt-0.5 text-xs text-muted-foreground">Tagged, first, branch, and active checkpoints stay restorable. Older intermediate checkpoints can be retired while their timeline links remain.</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Older checkpoints are thinned out: all recent ones are kept, then one per hour, day, week and month.
+                  Tagged checkpoints, the start of each slot and the checkpoint every device is on are always kept.
+                  Retired checkpoints stay in the timeline but can no longer be restored.
+                </p>
               </div>
-              <div className="flex items-center justify-between gap-4 rounded-lg bg-el p-3">
-                <div>
-                  <label htmlFor="automatic-pruning" className="text-sm font-semibold">Automatic cleanup</label>
-                  <p className="text-xs text-muted-foreground">Runs every four hours when only this device is registered in the sync folder.</p>
-                </div>
-                <Switch id="automatic-pruning" checked={automaticPruning} onCheckedChange={setAutomaticPruning} />
-              </div>
+              {retention !== undefined ? (
+                <RetentionEditor
+                  retention={retention}
+                  onChange={setRetention}
+                  budgetMiB={budgetMiB}
+                  onBudgetChange={setBudgetMiB}
+                  branchDays={branchDays}
+                  onBranchDaysChange={setBranchDays}
+                />
+              ) : null}
               {pruningPreview !== undefined ? (
                 <p className="text-xs text-muted-foreground">
-                  {pruningPreview.retire_versions.length} eligible checkpoint(s) · {pruningPreview.local_gc.reclaimable_bytes.toLocaleString()} bytes already reclaimable locally
+                  {pruningPreview.retire_versions.length} checkpoint(s) would be retired · stored history {formatBytes(pruningPreview.live_bytes_before)} → {formatBytes(pruningPreview.live_bytes_after)} · {formatBytes(pruningPreview.local_gc.bytes_deleted)} already reclaimable
+                  {pruningPreview.budget_unreachable ? ' · the disk budget cannot be met' : ''}
                 </p>
               ) : null}
               <div className="flex gap-2">
@@ -377,6 +446,96 @@ function SettingsView(): ReactElement {
         </p>
       </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+interface RetentionEditorProps {
+  retention: RetentionSettings;
+  onChange: (settings: RetentionSettings) => void;
+  budgetMiB: string;
+  onBudgetChange: (value: string) => void;
+  branchDays: string;
+  onBranchDaysChange: (value: string) => void;
+}
+
+type TierKey = 'keep_all_hours' | 'hourly_until_hours' | 'daily_until_days' | 'weekly_until_days';
+
+const PRESET_LABELS: Record<RetentionPreset, string> = { dense: 'Dense', balanced: 'Balanced', sparse: 'Sparse' };
+const TIERS: { key: TierKey; label: string }[] = [
+  { key: 'keep_all_hours', label: 'Keep all (hours)' },
+  { key: 'hourly_until_hours', label: 'Hourly until (hours)' },
+  { key: 'daily_until_days', label: 'Daily until (days)' },
+  { key: 'weekly_until_days', label: 'Weekly until (days)' },
+];
+
+function RetentionEditor({
+  retention, onChange, budgetMiB, onBudgetChange, branchDays, onBranchDaysChange,
+}: RetentionEditorProps): ReactElement {
+  const preset = presetOf(retention);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-4 rounded-lg bg-el p-3">
+        <div>
+          <label htmlFor="automatic-pruning" className="text-sm font-semibold">Automatic cleanup</label>
+          <p className="text-xs text-muted-foreground">Runs after syncing, at most every four hours, locally and in the sync folder.</p>
+        </div>
+        <Switch
+          id="automatic-pruning"
+          checked={retention.automatic}
+          onCheckedChange={(automatic) => { onChange({ ...retention, automatic }); }}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {(Object.keys(RETENTION_PRESETS) as RetentionPreset[]).map(name => (
+          <Button
+            key={name}
+            size="sm"
+            variant={preset === name ? 'default' : 'outline'}
+            onClick={() => { onChange({ ...retention, ...RETENTION_PRESETS[name] }); }}
+          >
+            {PRESET_LABELS[name]}
+          </Button>
+        ))}
+        <Badge variant={preset === 'custom' ? 'default' : 'secondary'}>Custom</Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {TIERS.map(({ key, label }) => (
+          <label key={key} className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+            {label}
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={retention[key].toString()}
+              onChange={(event) => { onChange({ ...retention, [key]: Math.max(0, Math.floor(Number(event.target.value) || 0)) }); }}
+              className="bg-el border-border/40"
+            />
+          </label>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          Disk budget (MiB, empty for none)
+          <Input
+            type="number"
+            min={1}
+            value={budgetMiB}
+            onChange={(event) => { onBudgetChange(event.target.value); }}
+            className="bg-el border-border/40"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          Retire idle side branches after (days, empty for never)
+          <Input
+            type="number"
+            min={1}
+            value={branchDays}
+            onChange={(event) => { onBranchDaysChange(event.target.value); }}
+            className="bg-el border-border/40"
+          />
+        </label>
+      </div>
     </div>
   );
 }

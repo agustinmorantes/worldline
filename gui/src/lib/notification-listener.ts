@@ -3,6 +3,7 @@ import {toast} from "sonner";
 import {getGame} from "@/api/games.ts";
 import {queryClient} from "@/lib/query-client.ts";
 import { SyncReportSchema } from '@/models/sync';
+import { invoke } from '@tauri-apps/api/core';
 
 export function listenNotifications(): void {
   void listen<number[]>("version-created", event => {
@@ -33,12 +34,25 @@ export function listenNotifications(): void {
     if (report.success) {
       queryClient.setQueryData(['sync-report'], report.data);
       void queryClient.invalidateQueries({ queryKey: ['games'] });
+      void queryClient.invalidateQueries({ queryKey: ['game'] });
+      void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
     }
   });
 
-  void listen<string>('sync-error', () => {
-    void queryClient.invalidateQueries({ queryKey: ['sync-report'] });
+  // Background syncs retry every few minutes; an offline folder is not worth a toast each time.
+  void listen<string>('sync-error', event => {
+    console.warn('Sync failed:', event.payload);
   });
+
+  void listen<string>('pruning-error', event => {
+    toast.error('Automatic history cleanup failed', { description: event.payload });
+  });
+
+  void invoke<string | null>('get_startup_notice')
+    .then(notice => {
+      if (notice !== null) toast.info(notice, { duration: Infinity });
+    })
+    .catch((err: unknown) => { console.error(err); });
 
   void listen('history-pruned', () => {
     void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });

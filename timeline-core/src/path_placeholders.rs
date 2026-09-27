@@ -19,30 +19,43 @@ pub fn expand_path_placeholders(path: &str) -> String {
         expanded = expanded.replace(placeholder, &value);
     }
 
-    expanded.replace(
+    let expanded = expanded.replace(
         PLACEHOLDER_OS_USER,
         &std::env::var("USERNAME")
             .or_else(|_| std::env::var("USER"))
             .unwrap_or_default(),
-    )
+    );
+    // Stored paths use `/`; hand the platform its native separator back.
+    if cfg!(windows) {
+        expanded.replace('/', "\\")
+    } else {
+        expanded
+    }
 }
 
 pub fn substitute_path_placeholders(path: &Path) -> String {
     let raw_path = path_to_forward_slashes(path);
     let normalized_path = normalize_path_text_for_matching(&raw_path);
 
-    for (placeholder, root) in prioritized_placeholder_roots() {
-        let raw_root = path_to_forward_slashes(&root);
-        let normalized_root = normalize_path_text_for_matching(&raw_root);
-
-        if let Some(suffix) = strip_prefix_for_match(&raw_path, &normalized_path, &normalized_root)
-        {
-            if suffix.is_empty() {
-                return placeholder.to_string();
-            }
-
-            return format!("{placeholder}/{suffix}");
+    // The longest matching root wins, so `<winDocuments>` beats `<home>` for
+    // a path inside Documents (including OneDrive-redirected ones).
+    // On ties the earlier (more specific) placeholder wins; `max_by_key`
+    // keeps the last maximum, hence the reversal.
+    let best = prioritized_placeholder_roots()
+        .into_iter()
+        .rev()
+        .filter_map(|(placeholder, root)| {
+            let raw_root = path_to_forward_slashes(&root);
+            let normalized_root = normalize_path_text_for_matching(&raw_root);
+            let suffix = strip_prefix_for_match(&raw_path, &normalized_path, &normalized_root)?;
+            Some((normalized_root.len(), placeholder, suffix))
+        })
+        .max_by_key(|(len, _, _)| *len);
+    if let Some((_, placeholder, suffix)) = best {
+        if suffix.is_empty() {
+            return placeholder.to_string();
         }
+        return format!("{placeholder}/{suffix}");
     }
 
     path_to_forward_slashes(path)
@@ -176,7 +189,7 @@ mod tests {
     fn expands_known_placeholders() {
         let expanded = expand_path_placeholders("<home>/Saved Games/Test");
         assert!(!expanded.contains(PLACEHOLDER_HOME));
-        assert!(expanded.ends_with("Saved Games/Test"));
+        assert!(Path::new(&expanded).ends_with("Saved Games/Test"));
     }
 
     #[test]
@@ -186,6 +199,16 @@ mod tests {
         let substituted = substitute_path_placeholders(&target);
 
         assert_eq!(substituted, "<home>/Saved Games/Hollow Knight");
+    }
+
+    #[test]
+    fn prefers_the_most_specific_root() {
+        let Some(docs) = dirs::document_dir() else {
+            return;
+        };
+        let substituted = substitute_path_placeholders(&docs.join("My Games").join("Save"));
+        assert_eq!(substituted, "<winDocuments>/My Games/Save");
+        assert!(Path::new(&expand_path_placeholders(&substituted)).ends_with("My Games/Save"));
     }
 
     #[test]

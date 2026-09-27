@@ -8,8 +8,6 @@ license = "MIT"
 savegame-timeline-core = { path = "../timeline-core" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-diesel = { version = "2", features = ["sqlite", "r2d2"] }
-diesel_migrations = "2"
 dirs = "5"
 uuid = { version = "1", features = ["serde"] }
 

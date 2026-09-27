@@ -3,11 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { SlotSelector } from './SlotSelector';
 import { Slot } from '@/models/slot';
 
-// NOTE: the brief drove this test with `@testing-library/user-event`, which is
-// not a dependency of this project. Rather than add one for click and type, it
-// uses `fireEvent` like every other test here — the assertions below are on
-// rendered output either way.
-
 function slot(id: number, name: string): Slot {
   const s = new Slot(name);
   s.id = id;

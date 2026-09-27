@@ -29,7 +29,23 @@ Add a game and choose its save folders, or use the installed-game import screen 
 
 In Settings, choose a shared folder to sync between devices. Each device keeps its own active slot and version pointers. History cleanup can retire eligible checkpoints while preserving graph links. Export History on a game's detail screen creates a portable directory bundle; Import History in Settings inspects a bundle and asks where each tracked save folder belongs on this machine. Importing history does not restore live save files.
 
-The CLI also supports `history inspect`, `history export`, and `history import --map UUID=/absolute/path`. Run `cargo run -p cli -- history --help` for the exact arguments.
+The CLI also supports `history inspect`, `history export`, and `history import --map UUID=/absolute/path`. Run `cargo run -p cli -- history --help` for the exact arguments. `sync configure|status|refresh|push|adopt`, `devices list|remove` and `prune settings|preview|run` cover sync and history cleanup.
+
+## Storage and recovering files by hand
+
+History lives in `repository/` inside the app data directory; the SQLite database next to it is only an index (`repo reindex` rebuilds it). Each checkpoint is a `metadata.json` under `repository/games/<game>/slots/<slot>/versions/<version>/`. Its `files` list gives, for each saved file, its path, its SHA-256 and the `chunks` that rebuild it. Every chunk is stored once, zstd-compressed, at `repository/chunks/<first 2 hex digits>/<remaining 62>`.
+
+Without the app, a file is rebuilt by decompressing its chunks in order and concatenating them:
+
+```sh
+for chunk in <hashes from "chunks", in order>; do
+  hex=${chunk#sha256:}
+  zstd -d -c "repository/chunks/${hex:0:2}/${hex:2}"
+done > save.dat
+sha256sum save.dat   # compare with the file's "sha256"
+```
+
+`cargo run -p cli -- repo extract <version-id> <folder>` does the same for a whole checkpoint, and `repo check --deep` verifies every stored chunk.
 
 ## Development
 

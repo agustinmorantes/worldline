@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use glob::Pattern;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 /// Global exclusions: this is a pure name test with no knowledge of which game or
 /// directory it is filtering for, so it may only encode what is *never* save data.
@@ -21,93 +21,60 @@ pub fn is_excluded_file(name: &str) -> bool {
         || name_lower.ends_with(".cache")
 }
 
-/// Copies `src` into `dst`, skipping globally excluded files and anything matching
-/// `exclusions` (evaluated against paths relative to `src`).
-pub fn copy_dir_filtered(src: &Path, dst: &Path, exclusions: &[Pattern]) -> Result<()> {
-    copy_dir_inner(src, dst, exclusions, Path::new(""))
-}
-
-fn copy_dir_inner(src: &Path, dst: &Path, exclusions: &[Pattern], relative: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        if is_excluded_file(&file_name.to_string_lossy()) {
-            continue;
-        }
-        let entry_relative = relative.join(&file_name);
-        if crate::exclusions::is_excluded(exclusions, &entry_relative) {
-            continue;
-        }
-        let path = entry.path();
-        let dest_path = dst.join(&file_name);
-        if path.is_dir() {
-            copy_dir_inner(&path, &dest_path, exclusions, &entry_relative)?;
-        } else {
-            std::fs::copy(&path, &dest_path)?;
-        }
-    }
-    Ok(())
-}
-
 /// Removes everything inside `dir` except entries matching `exclusions`.
 /// Directories that still hold excluded entries are kept; empty ones are removed.
 ///
-/// This is the counterpart to `copy_dir_filtered`: a file the user excluded from
-/// capture must not be destroyed by a wipe, or the exclusion would lose the very
-/// data it was meant to protect.
+/// A file the user excluded from capture must not be destroyed by a wipe, or the
+/// exclusion would lose the very data it was meant to protect.
 pub fn clear_dir_except(dir: &Path, exclusions: &[Pattern]) -> Result<()> {
     validate_restore_path(dir, Path::new(""))?;
     clear_dir_inner(dir, exclusions, Path::new(""))?;
     Ok(())
 }
 
-/// Validates the existing directory chain from the filesystem root through the
-/// parent of a restore destination. Missing tail components are safe because
-/// restore creates them only after every tracked directory passes this check.
+/// Validates a restore destination. The tracked root and its ancestors may be
+/// links (redirected Documents, OneDrive, a junctioned drive): the user chose
+/// that path. Below the root, every existing component must be a real
+/// directory, so a restore can never be redirected outside the tracked tree.
 pub fn validate_restore_path(root: &Path, relative_path: &Path) -> Result<()> {
     if root
         .components()
+        .chain(relative_path.components())
         .any(|component| matches!(component, Component::ParentDir))
     {
         return Err(anyhow!(
-            "restore root contains parent traversal: {}",
-            root.display()
+            "restore path contains parent traversal: {}",
+            root.join(relative_path).display()
         ));
     }
-
-    let mut current = PathBuf::new();
-    for component in root.components() {
-        current.push(component.as_os_str());
-        let metadata = match std::fs::symlink_metadata(&current) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("failed to inspect restore path {}", current.display())
-                });
+    match std::fs::metadata(root) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(anyhow!(
+                "restore root is not a directory: {}",
+                root.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Missing roots are created; an existing ancestor must be a directory.
+            if let Some(ancestor) = root.ancestors().skip(1).find(|a| a.exists())
+                && !ancestor.is_dir()
+            {
+                return Err(anyhow!(
+                    "restore path ancestor is not a directory: {}",
+                    ancestor.display()
+                ));
             }
-        };
-        if is_link_or_reparse(&metadata) {
-            return Err(anyhow!(
-                "restore path contains a link or reparse point: {}",
-                current.display()
-            ));
+            return Ok(());
         }
-        if !metadata.is_dir() {
-            return Err(anyhow!(
-                "restore path ancestor is not a directory: {}",
-                current.display()
-            ));
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect restore root {}", root.display()));
         }
     }
 
-    if relative_path.as_os_str().is_empty() {
-        return Ok(());
-    }
-
-    let relative_parent = relative_path.parent().unwrap_or(Path::new(""));
-    for component in relative_parent.components() {
+    let mut current = root.to_path_buf();
+    for component in relative_path.parent().unwrap_or(Path::new("")).components() {
         current.push(component.as_os_str());
         let metadata = match std::fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
@@ -128,15 +95,13 @@ pub fn validate_restore_path(root: &Path, relative_path: &Path) -> Result<()> {
             return Ok(());
         }
     }
-
     Ok(())
 }
 
 /// Returns whether anything was kept inside `dir`.
 ///
-/// Deliberately checks ONLY the user exclusions, unlike its visual sibling
-/// `copy_dir_inner`, which also consults the global `is_excluded_file` list. Do not
-/// "fix" this for symmetry: globally excluded files (`.log`, `.tmp`, ...) are never
+/// Deliberately checks ONLY the user exclusions, not the global
+/// `is_excluded_file` list: globally excluded files (`.log`, `.tmp`, ...) are never
 /// captured into a snapshot, so preserving them here would mean they are never
 /// refreshed either — they would pile up in the live directory forever, across every
 /// slot switch and restore, with no way for the user to clear them. Anything a user
@@ -294,6 +259,19 @@ mod tests {
         std::fs::write(&file, b"blocking file").unwrap();
 
         assert!(validate_restore_path(&file.join("root"), Path::new("a/save.dat")).is_err());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn restore_accepts_a_linked_root_and_linked_ancestors() {
+        let parent = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(external.path().join("saves")).unwrap();
+        let link = parent.path().join("Documents");
+        create_directory_link(external.path(), &link);
+
+        validate_restore_path(&link.join("saves"), Path::new("slot/save.dat")).unwrap();
+        validate_restore_path(&link, Path::new("")).unwrap();
     }
 
     #[cfg(any(unix, windows))]

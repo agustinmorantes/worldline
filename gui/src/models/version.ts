@@ -12,6 +12,7 @@ export const VersionSchema = z.object({
   created_at: z.string().optional()
     .transform(s => s !== undefined ? new Date(s + 'Z') : undefined),
   parent_id: z.number().optional().nullable(),
+  retired: z.boolean().optional(),
 });
 
 export class Version {

@@ -18,14 +18,9 @@ fn get_game(id: i32, core: State<Arc<TimelineCore>>) -> Result<FullGame, String>
 }
 
 #[tauri::command]
-fn get_slots(game_id: i32, core: State<Arc<TimelineCore>>) -> Result<Vec<FullSlot>, String> {
-    core.get_slots(game_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn save_game(
     game: GameForm,
-    dirs: Option<Vec<&str>>,
+    dirs: Option<Vec<String>>,
     core: State<Arc<TimelineCore>>,
 ) -> Result<Game, String> {
     core.save_game(game, dirs).map_err(|err| err.to_string())
@@ -76,7 +71,7 @@ fn delete_slot(
 
 #[tauri::command]
 fn restore_version(id: i32, core: State<Arc<TimelineCore>>) -> Result<(), String> {
-    core.restore_version(id).map_err(|e| format!("{:?}", e))
+    core.restore_version(id).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -155,12 +150,15 @@ fn get_sync_settings(
 }
 
 #[tauri::command]
-fn update_sync_settings(
+async fn update_sync_settings(
     settings: savegame_timeline_core::sync::SyncSettings,
-    core: State<Arc<TimelineCore>>,
+    core: State<'_, Arc<TimelineCore>>,
 ) -> Result<savegame_timeline_core::sync::SyncSettings, String> {
-    core.update_sync_settings(settings)
-        .map_err(|e| e.to_string())
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.update_sync_settings(settings))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -200,29 +198,35 @@ async fn apply_remote_version(
 }
 
 #[tauri::command]
-fn remove_sync_device(device_uuid: String, core: State<Arc<TimelineCore>>) -> Result<(), String> {
+async fn remove_sync_device(
+    device_uuid: String,
+    core: State<'_, Arc<TimelineCore>>,
+) -> Result<(), String> {
     let device_uuid = uuid::Uuid::parse_str(&device_uuid).map_err(|e| e.to_string())?;
-    core.remove_sync_device(device_uuid)
-        .map_err(|e| e.to_string())
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.remove_sync_device(device_uuid))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
-fn get_retired_versions(core: State<Arc<TimelineCore>>) -> Result<Vec<uuid::Uuid>, String> {
+fn get_retired_versions(core: State<Arc<TimelineCore>>) -> Result<Vec<String>, String> {
     core.retired_versions().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_pruning_settings(
     core: State<Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::pruning::PruningSettings, String> {
+) -> Result<savegame_timeline_core::maintenance::RetentionSettings, String> {
     core.get_pruning_settings().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn update_pruning_settings(
-    settings: savegame_timeline_core::pruning::PruningSettings,
+    settings: savegame_timeline_core::maintenance::RetentionSettings,
     core: State<Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::pruning::PruningSettings, String> {
+) -> Result<savegame_timeline_core::maintenance::RetentionSettings, String> {
     core.update_pruning_settings(settings)
         .map_err(|e| e.to_string())
 }
@@ -230,7 +234,7 @@ fn update_pruning_settings(
 #[tauri::command]
 async fn preview_pruning(
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::pruning::PruningPreview, String> {
+) -> Result<savegame_timeline_core::core_facade::PruningPreview, String> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.preview_pruning())
         .await
@@ -242,19 +246,13 @@ async fn preview_pruning(
 async fn run_pruning(
     core: State<'_, Arc<TimelineCore>>,
     app: tauri::AppHandle,
-) -> Result<savegame_timeline_core::pruning::PruningRunReport, String> {
+) -> Result<savegame_timeline_core::core_facade::PruningRunReport, String> {
     let core = Arc::clone(&core);
     let report = tauri::async_runtime::spawn_blocking(move || core.run_pruning())
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    if !report.retired_versions.is_empty()
-        || report.local_gc.reclaimable_blobs > 0
-        || report
-            .remote_gc
-            .as_ref()
-            .is_some_and(|gc| gc.reclaimable_blobs > 0)
-    {
+    if report.changed_history() {
         app.emit("history-pruned", ()).map_err(|e| e.to_string())?;
     }
     Ok(report)
@@ -263,7 +261,7 @@ async fn run_pruning(
 #[tauri::command]
 async fn inspect_history_bundle(
     bundle_path: String,
-) -> Result<savegame_timeline_core::history_transfer::HistoryBundleSummary, String> {
+) -> Result<savegame_timeline_core::bundle::HistoryBundleSummary, String> {
     tauri::async_runtime::spawn_blocking(move || {
         TimelineCore::inspect_history_bundle(std::path::Path::new(&bundle_path))
     })
@@ -277,7 +275,7 @@ async fn export_game_history(
     game_id: i32,
     destination: String,
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::history_transfer::HistoryTransferReport, String> {
+) -> Result<savegame_timeline_core::bundle::HistoryTransferReport, String> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || {
         core.export_game_history(game_id, std::path::Path::new(&destination))
@@ -292,7 +290,7 @@ async fn import_game_history(
     bundle_path: String,
     mappings: HashMap<String, String>,
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::history_transfer::HistoryTransferReport, String> {
+) -> Result<savegame_timeline_core::bundle::HistoryTransferReport, String> {
     let mappings = mappings
         .into_iter()
         .map(|(uuid, path)| {
@@ -310,11 +308,21 @@ async fn import_game_history(
     .map_err(|e| e.to_string())
 }
 
+/// Shown once after pre-release data was moved aside on startup.
+#[tauri::command]
+fn get_startup_notice(core: State<Arc<TimelineCore>>) -> Option<String> {
+    core.moved_old_data().map(|backup| {
+        format!(
+            "Data from a pre-release version was moved to {} and the app started fresh.",
+            backup.display()
+        )
+    })
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
         get_game,
-        get_slots,
         save_game,
         delete_game,
         create_slot,
@@ -346,5 +354,6 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         inspect_history_bundle,
         export_game_history,
         import_game_history,
+        get_startup_notice,
     ])
 }

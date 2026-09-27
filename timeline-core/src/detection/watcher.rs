@@ -1,545 +1,283 @@
-use crate::detection::fs_event_handler::FsEventHandler;
-use crate::detection::{Command, CommandReceiver, CommandSender, Notification, NotificationSender};
+use super::scheduler::Scheduler;
+use super::{CaptureTarget, Notification, Suppression};
+use crate::history::CheckpointOutcome;
 use crate::models::{FullGame, MonitoringSettings};
-use crate::persistence::{GameRepository, VersionRepository};
-use chrono::{NaiveDateTime, Utc};
-use notify_debouncer_full::notify::{RecursiveMode, Watcher};
+use chrono::{Duration, NaiveDateTime, Utc};
+use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread::JoinHandle;
 
-pub struct WatcherContext<'a> {
-    pub cmd_rx: CommandReceiver,
-    pub _cmd_tx: CommandSender,
-    pub notification_tx: NotificationSender,
-    pub games: Vec<FullGame>,
-    pub working_base: &'a Path,
-    pub games_repo: Arc<dyn GameRepository>,
-    pub versions_repo: Arc<dyn VersionRepository>,
-    pub monitoring_settings: MonitoringSettings,
+/// How often a suppressed watcher re-checks whether it may capture again.
+const SUPPRESSED_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+enum Event {
+    Fs(DebounceEventResult),
+    Reload,
+    Settings(MonitoringSettings),
+    Shutdown,
 }
 
-type RecommendedDebouncer = Debouncer<notify_debouncer_full::notify::RecommendedWatcher, FileIdMap>;
+/// Handle to the watcher thread. Dropping it flushes pending captures.
+pub struct Watcher {
+    tx: mpsc::Sender<Event>,
+    thread: Option<JoinHandle<()>>,
+}
 
-pub fn watch(mut ctx: WatcherContext) {
-    let create_debouncer = |debounce_seconds: f32| {
-        let (fs_tx, fs_rx) = mpsc::channel();
-        let debouncer = new_debouncer(Duration::from_secs_f32(debounce_seconds), None, fs_tx)
-            .expect("couldn't create watcher");
-        (debouncer, fs_rx)
-    };
-
-    let spawn_fs_listener = |fs_rx: mpsc::Receiver<DebounceEventResult>,
-                             agg_tx: mpsc::Sender<AggregatedEvent>| {
-        std::thread::spawn(move || {
-            for event in fs_rx {
-                match agg_tx.send(AggregatedEvent::FsEvent(event)) {
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
+impl Watcher {
+    pub fn start(
+        target: Arc<dyn CaptureTarget>,
+        settings: MonitoringSettings,
+        suppression: Suppression,
+        notifications: mpsc::Sender<Notification>,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let loop_tx = tx.clone();
+        let thread = std::thread::spawn(move || {
+            Loop {
+                target,
+                settings,
+                suppression,
+                notifications,
+                tx: loop_tx,
+                games: Vec::new(),
+                scheduler: Scheduler::default(),
             }
+            .run(rx)
         });
-    };
-
-    let register_games = |debouncer: &mut RecommendedDebouncer, games: &[FullGame]| {
-        for game in games {
-            for dir in &game.tracked_dirs {
-                let res = debouncer
-                    .watcher()
-                    .watch(Path::new(&dir.path), RecursiveMode::Recursive)
-                    .map_err(|err| print!("Error watching '{}': {}", dir.path, err));
-
-                if res.is_ok() {
-                    println!("Watching '{}'", dir.path);
-                }
-            }
+        Self {
+            tx,
+            thread: Some(thread),
         }
-    };
+    }
 
-    let unregister_games = |debouncer: &mut RecommendedDebouncer, games: &[FullGame]| {
-        for game in games {
-            for dir in &game.tracked_dirs {
-                debouncer
-                    .watcher()
-                    .unwatch(Path::new(&dir.path))
-                    .map_err(|err| println!("Error unwatching '{}': {}", dir.path, err))
-                    .ok();
-            }
+    /// Re-reads the game list (after games or tracked directories change).
+    pub fn reload(&self) {
+        if self.tx.send(Event::Reload).is_err() {
+            eprintln!("Watcher is not running; tracked directories were not re-registered");
         }
-    };
+    }
 
-    let mut monitoring_settings = ctx.monitoring_settings;
-    let (mut debouncer, fs_rx) = create_debouncer(monitoring_settings.snapshot_debounce_seconds);
-    register_games(&mut debouncer, &ctx.games);
-
-    let fs_event_handler = FsEventHandler::new(
-        ctx.working_base.to_path_buf(),
-        ctx.games_repo,
-        ctx.versions_repo,
-    );
-
-    // Aggregated event channel
-    let (agg_tx, agg_rx) = mpsc::channel();
-
-    // Command listener
-    let agg_tx_cmd = agg_tx.clone();
-    std::thread::spawn(move || {
-        for command in ctx.cmd_rx {
-            let shutdown = matches!(command, Command::Shutdown);
-            match agg_tx_cmd.send(AggregatedEvent::Command(command)) {
-                Ok(_) => {}
-                Err(_) => break,
-            }
-            if shutdown {
-                break;
-            }
+    pub fn update_settings(&self, settings: MonitoringSettings) {
+        if self.tx.send(Event::Settings(settings)).is_err() {
+            eprintln!("Watcher is not running; monitoring settings apply on restart");
         }
-    });
+    }
 
-    // Filesystem event listener
-    spawn_fs_listener(fs_rx, agg_tx.clone());
+    /// Captures every pending change and stops the thread.
+    pub fn shutdown(&mut self) {
+        let _ = self.tx.send(Event::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 
-    // Global listener
-    let mut paused = false;
-    let mut deadlines = HashMap::new();
-    'events: loop {
-        let event = match next_timeout(&deadlines, paused, Utc::now().naive_utc()) {
-            Some(timeout) => agg_rx.recv_timeout(timeout),
-            None => agg_rx
-                .recv()
-                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
-        };
-        let event = match event {
-            Ok(event) => event,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let now = Utc::now().naive_utc();
-                let due: HashSet<_> = deadlines
-                    .iter()
-                    .filter_map(|(&id, &deadline)| (deadline <= now).then_some(id))
-                    .collect();
-                for id in due {
-                    if !ctx.games.iter().any(|game| game.game.id == id) {
-                        deadlines.remove(&id);
-                        continue;
-                    }
-                    match fs_event_handler.process_modified_games(
-                        &HashSet::from([id]),
-                        ctx.notification_tx.clone(),
-                        &ctx.games,
-                        monitoring_settings,
-                    ) {
-                        Ok(result) => {
-                            update_deadlines(&mut deadlines, &result.completed, result.deferred);
-                            ctx.games = result.games;
-                        }
-                        Err(err) => {
-                            if ctx
-                                .notification_tx
-                                .send(Notification::Error(format!(
-                                    "FS event handler error: {}",
-                                    err
-                                )))
-                                .is_err()
-                            {
-                                break 'events;
-                            }
-                            // Keep failed work, but avoid spinning on an expired deadline.
-                            deadlines
-                                .insert(id, Utc::now().naive_utc() + chrono::Duration::seconds(1));
-                        }
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+struct Loop {
+    target: Arc<dyn CaptureTarget>,
+    settings: MonitoringSettings,
+    suppression: Suppression,
+    notifications: mpsc::Sender<Notification>,
+    tx: mpsc::Sender<Event>,
+    games: Vec<FullGame>,
+    scheduler: Scheduler,
+}
+
+impl Loop {
+    fn run(mut self, rx: mpsc::Receiver<Event>) {
+        let mut debouncer = self.debouncer();
+        self.reload(&mut debouncer, false);
+        // One checkpoint per game on startup catches edits made while closed;
+        // it is a no-op when nothing changed.
+        for game in &self.games {
+            self.scheduler.changed(game.game.id);
+        }
+        loop {
+            let now = Utc::now().naive_utc();
+            let timeout = if self.suppression.is_active() {
+                self.scheduler
+                    .next_wakeup(now, |id| self.eligible_at(id))
+                    .map(|_| SUPPRESSED_POLL)
+            } else {
+                self.scheduler.next_wakeup(now, |id| self.eligible_at(id))
+            };
+            let event = match timeout {
+                Some(timeout) => rx.recv_timeout(timeout),
+                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            match event {
+                Ok(Event::Fs(Ok(events))) => {
+                    for event in events {
+                        self.mark_changed(&event.paths, event.need_rescan());
                     }
                 }
-                continue;
-            }
-        };
-        match event {
-            AggregatedEvent::Command(cmd) => match cmd {
-                Command::Shutdown => {
-                    break;
+                Ok(Event::Fs(Err(errors))) => {
+                    self.notify(Notification::Error(format!("Watcher error: {errors:?}")))
                 }
-                Command::Pause(ack) => {
-                    paused = true;
-                    // Acknowledging here, from the same loop that dispatches
-                    // filesystem events, is what makes the pause meaningful: the
-                    // caller learns that every event queued ahead of this command
-                    // has already been dispatched, and everything queued behind it
-                    // will be dropped by the `paused` check below.
-                    let _ = ack.send(());
-                }
-                Command::Resume => {
-                    paused = false;
-                    // Recreate debouncer to discard events buffered during the restore file copy.
-                    // The copy fires OS events that the debouncer captures; dropping it before
-                    // the debounce window expires prevents those from triggering a spurious version.
-                    unregister_games(&mut debouncer, &ctx.games);
-                    let (new_debouncer, new_fs_rx) =
-                        create_debouncer(monitoring_settings.snapshot_debounce_seconds);
-                    debouncer = new_debouncer;
-                    register_games(&mut debouncer, &ctx.games);
-                    spawn_fs_listener(new_fs_rx, agg_tx.clone());
-                    recheck_deferred(&mut deadlines, &ctx.games);
-                }
-                Command::ReregisterGames(new_dirs) => {
-                    unregister_games(&mut debouncer, &ctx.games);
-
-                    ctx.games = new_dirs.clone();
-
-                    register_games(&mut debouncer, &ctx.games);
-                    recheck_deferred(&mut deadlines, &ctx.games);
-                }
-                Command::UpdateMonitoringSettings(new_settings) => {
-                    let debounce_changed = (monitoring_settings.snapshot_debounce_seconds
-                        - new_settings.snapshot_debounce_seconds)
+                Ok(Event::Reload) => self.reload(&mut debouncer, true),
+                Ok(Event::Settings(settings)) => {
+                    let rebuild = (settings.snapshot_debounce_seconds
+                        - self.settings.snapshot_debounce_seconds)
                         .abs()
                         > f32::EPSILON;
-                    monitoring_settings = new_settings;
-                    recheck_deferred(&mut deadlines, &ctx.games);
-
-                    if debounce_changed {
-                        unregister_games(&mut debouncer, &ctx.games);
-                        let (new_debouncer, new_fs_rx) =
-                            create_debouncer(monitoring_settings.snapshot_debounce_seconds);
-                        debouncer = new_debouncer;
-                        register_games(&mut debouncer, &ctx.games);
-                        spawn_fs_listener(new_fs_rx, agg_tx.clone());
+                    self.settings = settings;
+                    if rebuild {
+                        debouncer = self.debouncer();
+                        self.reload(&mut debouncer, false);
                     }
                 }
-            },
-            AggregatedEvent::FsEvent(res) => match res {
-                Ok(event) => {
-                    if paused {
-                        continue;
+                Ok(Event::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
+                    for game in self.scheduler.drain() {
+                        self.capture(game);
                     }
-
-                    match fs_event_handler.run(
-                        event,
-                        ctx.notification_tx.clone(),
-                        &ctx.games,
-                        ctx.working_base,
-                        monitoring_settings,
-                    ) {
-                        Ok(updated_games) => {
-                            update_deadlines(
-                                &mut deadlines,
-                                &updated_games.completed,
-                                updated_games.deferred,
-                            );
-                            ctx.games = updated_games.games;
-                        }
-                        Err(err) => {
-                            match ctx.notification_tx.send(Notification::Error(format!(
-                                "FS event handler error: {}",
-                                err
-                            ))) {
-                                Ok(_) => {}
-                                Err(_) => break,
-                            }
-                        }
+                    return;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            if !self.suppression.is_active() {
+                let now = Utc::now().naive_utc();
+                let due = {
+                    let games = &self.games;
+                    let cooldown = self.settings.version_cooldown_minutes;
+                    self.scheduler
+                        .due(now, |id| eligible_at(games, cooldown, id))
+                };
+                for game in due {
+                    if self.capture(game) {
+                        self.scheduler.completed(game);
+                    } else {
+                        self.scheduler.failed(game, Utc::now().naive_utc());
                     }
                 }
-                Err(err) => {
-                    match ctx
-                        .notification_tx
-                        .send(Notification::Error(format!("Watcher error: {:?}", err)))
-                    {
-                        Ok(_) => {}
-                        Err(_) => break,
-                    }
+            }
+        }
+    }
+
+    fn eligible_at(&self, id: i32) -> Option<Option<NaiveDateTime>> {
+        eligible_at(&self.games, self.settings.version_cooldown_minutes, id)
+    }
+
+    fn debouncer(&self) -> Option<Debouncer<RecommendedWatcher, FileIdMap>> {
+        let tx = self.tx.clone();
+        let delay =
+            std::time::Duration::from_secs_f32(self.settings.snapshot_debounce_seconds.max(0.01));
+        match new_debouncer(delay, None, move |result| {
+            let _ = tx.send(Event::Fs(result));
+        }) {
+            Ok(debouncer) => Some(debouncer),
+            Err(error) => {
+                self.notify(Notification::Error(format!(
+                    "Failed to start the file watcher: {error}"
+                )));
+                None
+            }
+        }
+    }
+
+    fn reload(
+        &mut self,
+        debouncer: &mut Option<Debouncer<RecommendedWatcher, FileIdMap>>,
+        unwatch: bool,
+    ) {
+        if unwatch && let Some(debouncer) = debouncer.as_mut() {
+            for dir in self.games.iter().flat_map(|game| &game.tracked_dirs) {
+                let _ = debouncer.watcher().unwatch(Path::new(&dir.path));
+            }
+        }
+        match self.target.games() {
+            Ok(games) => self.games = games,
+            Err(error) => self.notify(Notification::Error(format!(
+                "Failed to load games: {error:#}"
+            ))),
+        }
+        if let Some(debouncer) = debouncer.as_mut() {
+            for dir in self.games.iter().flat_map(|game| &game.tracked_dirs) {
+                if let Err(error) = debouncer
+                    .watcher()
+                    .watch(Path::new(&dir.path), RecursiveMode::Recursive)
+                {
+                    eprintln!("Cannot watch '{}': {error}", dir.path);
                 }
-            },
-        }
-    }
-}
-
-fn merge_deferred(
-    deadlines: &mut HashMap<i32, NaiveDateTime>,
-    deferred: Vec<(i32, NaiveDateTime)>,
-) {
-    for (id, eligible_at) in deferred {
-        deadlines
-            .entry(id)
-            .and_modify(|deadline| *deadline = (*deadline).max(eligible_at))
-            .or_insert(eligible_at);
-    }
-}
-
-fn update_deadlines(
-    deadlines: &mut HashMap<i32, NaiveDateTime>,
-    completed: &[i32],
-    deferred: Vec<(i32, NaiveDateTime)>,
-) {
-    for id in completed {
-        deadlines.remove(id);
-    }
-    merge_deferred(deadlines, deferred);
-}
-
-fn recheck_deferred(deadlines: &mut HashMap<i32, NaiveDateTime>, games: &[FullGame]) {
-    let now = Utc::now().naive_utc();
-    deadlines.retain(|id, deadline| {
-        *deadline = now;
-        games.iter().any(|game| game.game.id == *id)
-    });
-}
-
-fn next_timeout(
-    deadlines: &HashMap<i32, NaiveDateTime>,
-    paused: bool,
-    now: NaiveDateTime,
-) -> Option<Duration> {
-    if paused {
-        return None;
-    }
-    deadlines
-        .values()
-        .min()
-        .map(|deadline| (*deadline - now).to_std().unwrap_or_default())
-}
-
-enum AggregatedEvent {
-    Command(Command),
-    FsEvent(DebounceEventResult),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::{FullVersion, Game, Slot, TrackedDir, Version};
-    use crate::persistence::{MockGameRepository, MockVersionRepository};
-    use chrono::Utc;
-    use tempfile::tempdir;
-
-    #[test]
-    fn deadlines_coalesce_to_later_eligibility_and_pause_disables_timeouts() {
-        let now = Utc::now().naive_utc();
-        let mut deadlines = HashMap::new();
-        merge_deferred(
-            &mut deadlines,
-            vec![(1, now + chrono::Duration::seconds(5))],
-        );
-        merge_deferred(
-            &mut deadlines,
-            vec![
-                (1, now + chrono::Duration::seconds(3)),
-                (2, now + chrono::Duration::seconds(4)),
-            ],
-        );
-        assert_eq!(deadlines.len(), 2);
-        assert_eq!(deadlines[&1], now + chrono::Duration::seconds(5));
-        assert_eq!(
-            next_timeout(&deadlines, false, now),
-            Some(Duration::from_secs(4))
-        );
-        merge_deferred(
-            &mut deadlines,
-            vec![(1, now + chrono::Duration::seconds(8))],
-        );
-        assert_eq!(deadlines[&1], now + chrono::Duration::seconds(8));
-        assert_eq!(
-            next_timeout(&deadlines, true, now + chrono::Duration::seconds(10)),
-            None
-        );
-        assert_eq!(
-            next_timeout(&deadlines, false, now + chrono::Duration::seconds(10)),
-            Some(Duration::ZERO)
-        );
-        assert_eq!(next_timeout(&HashMap::new(), false, now), None);
-        update_deadlines(&mut deadlines, &[1], vec![]);
-        assert!(!deadlines.contains_key(&1));
-        recheck_deferred(&mut deadlines, &[]);
-        assert!(
-            deadlines.is_empty(),
-            "unregistered games must lose their deadlines"
-        );
-    }
-
-    #[test]
-    fn deferred_capture_survives_pause_and_retries_after_resume_without_an_event() {
-        assert_deferred_capture(true);
-    }
-
-    #[test]
-    fn deferred_capture_retries_on_timeout_and_shutdown_does_not_wait_for_pending_work() {
-        assert_deferred_capture(false);
-    }
-
-    fn assert_deferred_capture(pause: bool) {
-        let working_base = tempdir().unwrap();
-        let source = tempdir().unwrap();
-        let now = Utc::now().naive_utc();
-        let slot = Slot {
-            id: 10,
-            uuid: uuid::Uuid::new_v4().to_string(),
-            game_id: 1,
-            name: "Default".into(),
-            name_normalized: "default".into(),
-            folder_slug: "default-slot".into(),
-            active_version_id: Some(1),
-            created_at: now,
-            updated_at: now,
-        };
-        let version = Version {
-            id: 1,
-            uuid: None,
-            folder_slug: None,
-            slot_id: 10,
-            version_number: 1,
-            tag: None,
-            reason: "watcher".into(),
-            created_at: now,
-            parent_id: None,
-        };
-        let game = FullGame {
-            game: Game {
-                id: 1,
-                uuid: None,
-                title: "Test".into(),
-                title_normalized: None,
-                folder_slug: None,
-                active_slot_id: Some(10),
-                icon_path: None,
-            },
-            slots: vec![slot.clone()],
-            active_slot: Some(slot.clone()),
-            last_version: Some(version.clone()),
-            versions: vec![version],
-            tracked_dirs: vec![TrackedDir {
-                id: 1,
-                uuid: Some(uuid::Uuid::new_v4().to_string()),
-                folder_slug: None,
-                game_id: 1,
-                path: source.path().to_string_lossy().into_owned(),
-                exclusions: "[]".into(),
-            }],
-        };
-        let created = FullVersion {
-            version: Version {
-                id: 2,
-                version_number: 2,
-                ..game.versions[0].clone()
-            },
-            game: game.game.clone(),
-            slot,
-            parent_uuid: None,
-        };
-        let mut refreshed = game.clone();
-        refreshed.versions.push(created.version.clone());
-        refreshed.last_version = Some(created.version.clone());
-        let mut games_repo = MockGameRepository::new();
-        games_repo
-            .expect_get_games()
-            .times(1)
-            .returning(move || Ok(vec![refreshed.clone()]));
-        let mut versions_repo = MockVersionRepository::new();
-        versions_repo
-            .expect_create_version_from_snapshot()
-            .times(1)
-            .returning(move |id, reason, snapshot| {
-                assert_eq!(id, 1);
-                assert_eq!(reason, crate::repository::VersionReason::Watcher);
-                assert_eq!(snapshot.files.len(), 1);
-                Ok(created.clone())
-            });
-        let (cmd_tx, cmd_rx) = mpsc::channel();
-        let (notification_tx, notification_rx) = mpsc::channel();
-        let thread_tx = cmd_tx.clone();
-        let initial_game = game.clone();
-        let (done_tx, done_rx) = mpsc::channel();
-        let watcher = std::thread::spawn(move || {
-            watch(WatcherContext {
-                cmd_rx,
-                _cmd_tx: thread_tx,
-                notification_tx,
-                games: vec![initial_game],
-                working_base: working_base.path(),
-                games_repo: Arc::new(games_repo),
-                versions_repo: Arc::new(versions_repo),
-                monitoring_settings: MonitoringSettings {
-                    snapshot_debounce_seconds: 0.01,
-                    version_cooldown_minutes: 1,
-                },
-            });
-            let _ = done_tx.send(());
-        });
-        // Repeat only until the OS watcher has registered and reports the first change.
-        let mut detected = false;
-        for i in 0..30 {
-            std::fs::write(source.path().join("save.dat"), i.to_string()).unwrap();
-            if matches!(
-                notification_rx.recv_timeout(Duration::from_millis(100)),
-                Ok(Notification::ChangeDetected { game_id: 1 })
-            ) {
-                detected = true;
-                break;
             }
         }
-        if pause {
-            let (ack_tx, ack_rx) = mpsc::channel();
-            cmd_tx.send(Command::Pause(ack_tx)).unwrap();
-            ack_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        }
-        // Re-registration changes the deadline; no filesystem event follows.
-        let mut eligible_soon = game;
-        eligible_soon.versions[0].created_at =
-            Utc::now().naive_utc() - chrono::Duration::seconds(59);
-        cmd_tx
-            .send(Command::ReregisterGames(vec![eligible_soon]))
-            .unwrap();
-        let paused_messages: Vec<_> = notification_rx.try_iter().collect();
-        let while_paused = if pause {
-            let result = notification_rx.recv_timeout(Duration::from_millis(1100));
-            cmd_tx.send(Command::Resume).unwrap();
-            result
-        } else {
-            Err(mpsc::RecvTimeoutError::Timeout)
-        };
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let after_resume = loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                break Err(mpsc::RecvTimeoutError::Timeout);
-            }
-            match notification_rx.recv_timeout(remaining) {
-                Ok(Notification::ChangeDetected { game_id: 1 }) => continue,
-                result => break result,
-            }
-        };
-        let extra_messages: Vec<_> = notification_rx.try_iter().collect();
-        // Queue another cooldown-blocked change before shutting down.
-        std::fs::write(source.path().join("save.dat"), b"pending at shutdown").unwrap();
-        let pending_change = notification_rx.recv_timeout(Duration::from_secs(2));
-        cmd_tx.send(Command::Shutdown).unwrap();
-        let stopped = done_rx.recv_timeout(Duration::from_secs(2));
-        let joined = stopped.is_ok().then(|| watcher.join());
-        assert!(detected, "watcher never detected the source change");
-        assert!(
-            paused_messages
-                .iter()
-                .all(|n| matches!(n, Notification::ChangeDetected { .. }))
-        );
-        assert!(matches!(while_paused, Err(mpsc::RecvTimeoutError::Timeout)));
-        assert!(matches!(
-            after_resume,
-            Ok(Notification::VersionCreated {
-                game_id: 1,
-                version_number: 2
-            })
-        ));
-        assert!(
-            extra_messages
-                .iter()
-                .all(|n| matches!(n, Notification::ChangeDetected { .. })),
-            "retry must not create a duplicate version"
-        );
-        assert!(matches!(
-            pending_change,
-            Ok(Notification::ChangeDetected { game_id: 1 })
-        ));
-        assert!(stopped.is_ok(), "shutdown must not wait for a cooldown");
-        assert!(matches!(joined, Some(Ok(()))));
     }
+
+    fn mark_changed(&mut self, paths: &[std::path::PathBuf], rescan: bool) {
+        let mut changed = Vec::new();
+        for game in &self.games {
+            let hit = rescan
+                || game.tracked_dirs.iter().any(|dir| {
+                    let exclusions = crate::exclusions::parse(&dir.exclusions);
+                    paths.iter().any(|path| {
+                        let Ok(relative) = path.strip_prefix(&dir.path) else {
+                            return false;
+                        };
+                        let excluded_name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(crate::fs_utils::is_excluded_file);
+                        !excluded_name && !crate::exclusions::is_excluded(&exclusions, relative)
+                    })
+                });
+            if hit {
+                changed.push(game.game.id);
+            }
+        }
+        for game_id in changed {
+            self.scheduler.changed(game_id);
+            self.notify(Notification::ChangeDetected { game_id });
+        }
+    }
+
+    /// Returns whether the capture succeeded.
+    fn capture(&mut self, game_id: i32) -> bool {
+        match self.target.capture(game_id) {
+            Ok(CheckpointOutcome::Created(version)) => {
+                self.notify(Notification::VersionCreated {
+                    game_id,
+                    version_number: version.version_number,
+                });
+                if let Ok(games) = self.target.games() {
+                    self.games = games;
+                }
+                true
+            }
+            Ok(CheckpointOutcome::Unchanged(_)) => true,
+            Err(error) => {
+                self.notify(Notification::Error(format!(
+                    "Automatic checkpoint failed: {error:#}"
+                )));
+                false
+            }
+        }
+    }
+
+    /// A lost receiver only means nobody listens; capturing continues.
+    fn notify(&self, notification: Notification) {
+        let _ = self.notifications.send(notification);
+    }
+}
+
+/// `None`: the game is gone. `Some(None)`: no cooldown applies.
+fn eligible_at(
+    games: &[FullGame],
+    cooldown_minutes: u32,
+    id: i32,
+) -> Option<Option<NaiveDateTime>> {
+    let game = games.iter().find(|game| game.game.id == id)?;
+    Some(
+        game.versions
+            .iter()
+            .map(|version| version.created_at)
+            .max()
+            .map(|created| created + Duration::minutes(i64::from(cooldown_minutes))),
+    )
 }

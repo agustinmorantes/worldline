@@ -1,18 +1,15 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand};
-use diesel::SqliteConnection;
-use diesel::r2d2::{ConnectionManager, Pool};
-use diesel_migrations::MigrationHarness;
-use savegame_timeline_core::detection::{Notification, NotificationReceiver};
-use savegame_timeline_core::models::game::GameForm;
-use savegame_timeline_core::persistence::sqlite::{
-    SqliteGameRepository, SqliteScanRootsRepository, SqliteVersionRepository,
-};
-use savegame_timeline_core::{MIGRATIONS, TimelineCore};
+use savegame_timeline_core::bundle::HistoryBundleSummary;
+use savegame_timeline_core::detection::Notification;
+use savegame_timeline_core::history::CheckpointOutcome;
+use savegame_timeline_core::maintenance::RetentionSettings;
+use savegame_timeline_core::models::GameForm;
+use savegame_timeline_core::sync::SyncSettings;
+use savegame_timeline_core::{OpenOptions, TimelineCore};
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -51,29 +48,20 @@ enum Commands {
         #[command(subcommand)]
         action: HistoryAction,
     },
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
+    Devices {
+        #[command(subcommand)]
+        action: DevicesAction,
+    },
+    /// Repository maintenance and recovery.
+    Repo {
+        #[command(subcommand)]
+        action: RepoAction,
+    },
     Watch,
-}
-
-#[derive(Subcommand)]
-enum HistoryAction {
-    Inspect {
-        bundle_dir: PathBuf,
-    },
-    Export {
-        game: String,
-        destination_dir: PathBuf,
-    },
-    Import {
-        bundle_dir: PathBuf,
-        #[arg(long = "map", value_name = "TRACKED-DIR-UUID=ABSOLUTE-PATH")]
-        mappings: Vec<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum PruneAction {
-    Preview,
-    Run,
 }
 
 #[derive(Subcommand)]
@@ -98,8 +86,17 @@ enum GamesAction {
 
 #[derive(Subcommand)]
 enum VersionsAction {
-    Tag { version_id: i32, tag: String },
-    Restore { version_id: i32 },
+    /// Capture the live saves now (no-op when unchanged).
+    Checkpoint {
+        game: String,
+    },
+    Tag {
+        version_id: i32,
+        tag: String,
+    },
+    Restore {
+        version_id: i32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -128,43 +125,91 @@ enum SlotsAction {
     },
 }
 
-fn init_core_with_debounce(
-    data_dir: &Path,
-    debounce_secs: Option<f32>,
-) -> Result<(TimelineCore, NotificationReceiver)> {
-    std::fs::create_dir_all(data_dir)?;
-    let db_path = data_dir.join("database.db");
-    let database_url = format!("file:{}?foreign_keys=on", db_path.display());
-    let manager = ConnectionManager::<SqliteConnection>::new(&database_url);
-    let pool = Pool::builder().build(manager)?;
-    pool.get()?
-        .run_pending_migrations(MIGRATIONS)
-        .expect("migrations failed");
-    let working_base = data_dir.join("repository");
-    let games_repo = Arc::new(SqliteGameRepository::with_repository_root(
-        pool.clone(),
-        working_base.clone(),
-    ));
-    let versions_repo = Arc::new(SqliteVersionRepository::with_repository_root(
-        pool.clone(),
-        working_base.clone(),
-    ));
-    let scan_roots_repo = Arc::new(SqliteScanRootsRepository::new(pool.clone()));
-    let icons_dir = data_dir.join("icons");
-    TimelineCore::new(
-        games_repo,
-        versions_repo,
-        scan_roots_repo,
-        working_base,
-        icons_dir,
-        debounce_secs,
-    )
+#[derive(Subcommand)]
+enum PruneAction {
+    /// Show or change the retention settings.
+    Settings {
+        #[arg(long)]
+        automatic: Option<bool>,
+        #[arg(long)]
+        keep_all_hours: Option<u32>,
+        #[arg(long)]
+        hourly_until_hours: Option<u32>,
+        #[arg(long)]
+        daily_until_days: Option<u32>,
+        #[arg(long)]
+        weekly_until_days: Option<u32>,
+        /// Days after which an idle side branch is retired; 0 disables.
+        #[arg(long)]
+        branch_expiry_days: Option<u32>,
+        /// Disk budget in bytes; 0 removes the budget.
+        #[arg(long)]
+        max_bytes: Option<u64>,
+    },
+    Preview,
+    Run,
+}
+
+#[derive(Subcommand)]
+enum HistoryAction {
+    Inspect {
+        bundle_dir: PathBuf,
+    },
+    Export {
+        game: String,
+        destination_dir: PathBuf,
+    },
+    Import {
+        bundle_dir: PathBuf,
+        #[arg(long = "map", value_name = "TRACKED-DIR-UUID=ABSOLUTE-PATH")]
+        mappings: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncAction {
+    /// Show the sync folder and each game's state, without syncing.
+    Status,
+    /// Set the sync folder (`--off` disables sync).
+    Configure {
+        folder: Option<PathBuf>,
+        #[arg(long, conflicts_with = "folder")]
+        off: bool,
+    },
+    /// Pull, adopt, fast-forward and push.
+    Refresh,
+    /// Publish local history only.
+    Push,
+    /// Start tracking a game that exists in the sync folder.
+    Adopt { game_uuid: Uuid },
+}
+
+#[derive(Subcommand)]
+enum DevicesAction {
+    List,
+    Remove { device_uuid: Uuid },
+}
+
+#[derive(Subcommand)]
+enum RepoAction {
+    /// Verify manifests and chunks (`--deep` decompresses every chunk).
+    Check {
+        #[arg(long)]
+        deep: bool,
+    },
+    /// Rebuild a version's files into a folder, without touching live saves.
+    Extract {
+        version_id: i32,
+        destination: PathBuf,
+    },
+    /// Rebuild the database index from the repository files.
+    Reindex,
 }
 
 fn default_data_dir() -> Result<PathBuf> {
     // Same path Tauri resolves for app_local_data_dir on each platform
     let local_data = dirs::data_local_dir()
-        .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))?;
+        .ok_or_else(|| anyhow!("could not determine local data directory"))?;
     Ok(local_data.join("agustinmorantes.savegame-timeline"))
 }
 
@@ -172,27 +217,25 @@ fn resolve_game_id(core: &TimelineCore, game: &str) -> Result<i32> {
     if let Ok(id) = game.parse() {
         return Ok(id);
     }
-
     core.get_games()?
         .into_iter()
-        .find(|candidate| candidate.game.title == game)
+        .find(|candidate| candidate.game.title == game || candidate.game.uuid == game)
         .map(|candidate| candidate.game.id)
-        .ok_or_else(|| anyhow::anyhow!("Game '{game}' not found"))
+        .ok_or_else(|| anyhow!("Game '{game}' not found"))
 }
 
 fn resolve_slot_id(core: &TimelineCore, game_id: i32, slot: &str) -> Result<i32> {
-    let slots = core.get_slots(game_id)?;
+    let slots = core.get_game(game_id)?.slots;
     if let Ok(id) = slot.parse()
-        && slots.iter().any(|candidate| candidate.slot.id == id)
+        && slots.iter().any(|candidate| candidate.id == id)
     {
         return Ok(id);
     }
-
     slots
         .into_iter()
-        .find(|candidate| candidate.slot.name == slot || candidate.slot.uuid == slot)
-        .map(|candidate| candidate.slot.id)
-        .ok_or_else(|| anyhow::anyhow!("Slot '{slot}' not found for game {game_id}"))
+        .find(|candidate| candidate.name == slot || candidate.uuid == slot)
+        .map(|candidate| candidate.id)
+        .ok_or_else(|| anyhow!("Slot '{slot}' not found for game {game_id}"))
 }
 
 fn main() -> Result<()> {
@@ -208,7 +251,19 @@ fn main() -> Result<()> {
         Some(p) => p,
         None => default_data_dir()?,
     };
-    let (core, notif_rx) = init_core_with_debounce(&data_dir, cli.debounce_secs)?;
+    let (core, notifications) = TimelineCore::open(
+        &data_dir,
+        OpenOptions {
+            watch: matches!(cli.command, Commands::Watch),
+            debounce_seconds: cli.debounce_secs,
+        },
+    )?;
+    if let Some(backup) = core.moved_old_data() {
+        eprintln!(
+            "Data from a pre-release version was moved to {} and the app started fresh.",
+            backup.display()
+        );
+    }
 
     match cli.command {
         Commands::Games { action } => match action {
@@ -216,56 +271,34 @@ fn main() -> Result<()> {
                 let games = core.get_games()?;
                 if games.is_empty() {
                     println!("No games.");
-                } else {
-                    for g in games {
-                        println!(
-                            "[{}] {} — {} version(s), {} tracked dir(s)",
-                            g.game.id,
-                            g.game.title,
-                            g.versions.len(),
-                            g.tracked_dirs.len()
-                        );
-                    }
+                }
+                for g in games {
+                    println!(
+                        "[{}] {} — {} version(s), {} tracked dir(s)",
+                        g.game.id,
+                        g.game.title,
+                        g.versions.len(),
+                        g.tracked_dirs.len()
+                    );
                 }
             }
             GamesAction::Edit { id, title } => {
                 let game = core.save_game(
                     GameForm {
                         id: Some(id),
-                        uuid: None,
-                        title: &title,
-                        title_normalized: None,
-                        folder_slug: None,
-                        active_slot_id: None,
-                        icon_path: None,
+                        title,
                     },
                     None,
                 )?;
                 println!("Updated game [{}] {}", game.id, game.title);
             }
             GamesAction::Add { title, dirs } => {
-                let dir_refs: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
-                let game = core.save_game(
-                    GameForm {
-                        id: None,
-                        uuid: None,
-                        title: &title,
-                        title_normalized: None,
-                        folder_slug: None,
-                        active_slot_id: None,
-                        icon_path: None,
-                    },
-                    if dir_refs.is_empty() {
-                        None
-                    } else {
-                        Some(dir_refs)
-                    },
-                )?;
+                let game = core.save_game(GameForm { id: None, title }, Some(dirs))?;
                 println!("Added game [{}] {}", game.id, game.title);
             }
             GamesAction::Show { id } => {
                 let g = core.get_game(id)?;
-                println!("[{}] {}", g.game.id, g.game.title);
+                println!("[{}] {} ({})", g.game.id, g.game.title, g.game.uuid);
                 println!("  Tracked dirs:");
                 for d in &g.tracked_dirs {
                     println!("    [{}] {}", d.id, d.path);
@@ -273,8 +306,9 @@ fn main() -> Result<()> {
                 println!("  Versions ({}):", g.versions.len());
                 for v in &g.versions {
                     let tag = v.tag.as_deref().unwrap_or("-");
+                    let retired = if v.retired { " (retired)" } else { "" };
                     println!(
-                        "    [{}] #{} at {} tag={}",
+                        "    [{}] #{} at {} tag={}{retired}",
                         v.id, v.version_number, v.created_at, tag
                     );
                 }
@@ -285,6 +319,17 @@ fn main() -> Result<()> {
             }
         },
         Commands::Versions { action } => match action {
+            VersionsAction::Checkpoint { game } => {
+                let game_id = resolve_game_id(&core, &game)?;
+                match core.checkpoint(game_id)? {
+                    CheckpointOutcome::Created(v) => {
+                        println!("Created version [{}] #{}", v.id, v.version_number)
+                    }
+                    CheckpointOutcome::Unchanged(v) => {
+                        println!("Unchanged; version [{}] is current", v.id)
+                    }
+                }
+            }
             VersionsAction::Tag { version_id, tag } => {
                 let v = core.tag_version(version_id, tag)?;
                 println!("Tagged version [{}] as {:?}", v.id, v.tag);
@@ -296,8 +341,7 @@ fn main() -> Result<()> {
         },
         Commands::Slots { action } => match action {
             SlotsAction::List { game } => {
-                let game_id = resolve_game_id(&core, &game)?;
-                let full = core.get_game(game_id)?;
+                let full = core.get_game(resolve_game_id(&core, &game)?)?;
                 for slot in &full.slots {
                     let marker = if full.active_slot.as_ref().is_some_and(|a| a.id == slot.id) {
                         "*"
@@ -308,20 +352,19 @@ fn main() -> Result<()> {
                 }
             }
             SlotsAction::Create { game, name } => {
-                let game_id = resolve_game_id(&core, &game)?;
-                let full = core.create_slot(game_id, &name)?;
+                let full = core.create_slot(resolve_game_id(&core, &game)?, &name)?;
                 let slot = full
                     .active_slot
-                    .ok_or_else(|| anyhow::anyhow!("No active slot after creation"))?;
+                    .ok_or_else(|| anyhow!("No active slot after creation"))?;
                 println!("Created slot [{}] {}", slot.id, slot.name);
             }
             SlotsAction::Switch { game, slot } => {
                 let game_id = resolve_game_id(&core, &game)?;
                 let slot_id = resolve_slot_id(&core, game_id, &slot)?;
-                let full = core.switch_slot(game_id, slot_id)?;
-                let slot = full
+                let slot = core
+                    .switch_slot(game_id, slot_id)?
                     .active_slot
-                    .ok_or_else(|| anyhow::anyhow!("No active slot after switch"))?;
+                    .ok_or_else(|| anyhow!("No active slot after switch"))?;
                 println!("Switched to slot [{}] {}", slot.id, slot.name);
             }
             SlotsAction::Rename {
@@ -331,12 +374,12 @@ fn main() -> Result<()> {
             } => {
                 let game_id = resolve_game_id(&core, &game)?;
                 let slot_id = resolve_slot_id(&core, game_id, &slot)?;
-                let full = core.rename_slot(slot_id, &new_name)?;
-                let slot = full
+                let slot = core
+                    .rename_slot(slot_id, &new_name)?
                     .slots
                     .into_iter()
                     .find(|s| s.id == slot_id)
-                    .ok_or_else(|| anyhow::anyhow!("Renamed slot not found"))?;
+                    .ok_or_else(|| anyhow!("Renamed slot not found"))?;
                 println!("Renamed slot [{}] to {}", slot.id, slot.name);
             }
             SlotsAction::Delete {
@@ -355,6 +398,35 @@ fn main() -> Result<()> {
             }
         },
         Commands::Prune { action } => match action {
+            PruneAction::Settings {
+                automatic,
+                keep_all_hours,
+                hourly_until_hours,
+                daily_until_days,
+                weekly_until_days,
+                branch_expiry_days,
+                max_bytes,
+            } => {
+                let mut settings = core.get_pruning_settings()?;
+                let before = settings;
+                settings.automatic = automatic.unwrap_or(settings.automatic);
+                settings.keep_all_hours = keep_all_hours.unwrap_or(settings.keep_all_hours);
+                settings.hourly_until_hours =
+                    hourly_until_hours.unwrap_or(settings.hourly_until_hours);
+                settings.daily_until_days = daily_until_days.unwrap_or(settings.daily_until_days);
+                settings.weekly_until_days =
+                    weekly_until_days.unwrap_or(settings.weekly_until_days);
+                if let Some(days) = branch_expiry_days {
+                    settings.branch_expiry_days = (days > 0).then_some(days);
+                }
+                if let Some(bytes) = max_bytes {
+                    settings.max_bytes = (bytes > 0).then_some(bytes);
+                }
+                if settings != before {
+                    settings = core.update_pruning_settings(settings)?;
+                }
+                print_retention(&settings);
+            }
             PruneAction::Preview => {
                 let preview = core.preview_pruning()?;
                 println!(
@@ -362,38 +434,50 @@ fn main() -> Result<()> {
                     preview.retire_versions.len()
                 );
                 println!(
-                    "{} blob(s), {} byte(s) already reclaimable locally",
-                    preview.local_gc.reclaimable_blobs, preview.local_gc.reclaimable_bytes
+                    "Stored history: {} byte(s) now, {} byte(s) after retirement",
+                    preview.live_bytes_before, preview.live_bytes_after
+                );
+                if preview.budget_unreachable {
+                    println!(
+                        "The disk budget can't be met without removing protected checkpoints."
+                    );
+                }
+                println!(
+                    "{} chunk(s), {} byte(s) already reclaimable locally",
+                    preview.local_gc.chunks_deleted, preview.local_gc.bytes_deleted
                 );
             }
             PruneAction::Run => {
                 let report = core.run_pruning()?;
                 println!(
-                    "Retired {} checkpoint(s); reclaimed {} local blob(s), {} byte(s)",
+                    "Retired {} checkpoint(s); reclaimed {} local chunk(s), {} byte(s)",
                     report.retired_versions.len(),
-                    report.local_gc.reclaimable_blobs,
-                    report.local_gc.reclaimable_bytes
+                    report.local_gc.chunks_deleted,
+                    report.local_gc.bytes_deleted
                 );
                 if let Some(remote) = report.remote_gc {
                     println!(
-                        "Reclaimed {} remote blob(s), {} byte(s)",
-                        remote.reclaimable_blobs, remote.reclaimable_bytes
+                        "Remote: deleted {} chunk(s), {} byte(s); {} chunk(s) scheduled for deletion",
+                        remote.chunks_deleted, remote.bytes_deleted, remote.chunks_condemned
+                    );
+                }
+                if report.budget_unreachable {
+                    println!(
+                        "The disk budget can't be met without removing protected checkpoints."
                     );
                 }
             }
         },
         Commands::History { action } => match action {
-            HistoryAction::Inspect { bundle_dir } => {
-                print_history_summary(&TimelineCore::inspect_history_bundle(&bundle_dir)?);
-            }
+            HistoryAction::Inspect { .. } => unreachable!("handled before opening the core"),
             HistoryAction::Export {
                 game,
                 destination_dir,
             } => {
-                let game_id = resolve_game_id(&core, &game)?;
-                let report = core.export_game_history(game_id, &destination_dir)?;
+                let report =
+                    core.export_game_history(resolve_game_id(&core, &game)?, &destination_dir)?;
                 println!(
-                    "Exported {}: {} slot(s), {} version(s), {} blob(s), {} retired version(s)",
+                    "Exported {}: {} slot(s), {} version(s), {} chunk(s), {} retired version(s)",
                     report.title,
                     report.slot_count,
                     report.version_count,
@@ -408,18 +492,17 @@ fn main() -> Result<()> {
                 let mut mappings = HashMap::new();
                 for value in values {
                     let (uuid, path) = value.split_once('=').ok_or_else(|| {
-                        anyhow::anyhow!("Invalid mapping {value:?}; expected UUID=ABSOLUTE_PATH")
+                        anyhow!("Invalid mapping {value:?}; expected UUID=ABSOLUTE_PATH")
                     })?;
-                    let uuid = Uuid::parse_str(uuid).map_err(|error| {
-                        anyhow::anyhow!("Invalid tracked-directory UUID: {error}")
-                    })?;
+                    let uuid = Uuid::parse_str(uuid)
+                        .map_err(|error| anyhow!("Invalid tracked-directory UUID: {error}"))?;
                     if mappings.insert(uuid, PathBuf::from(path)).is_some() {
-                        anyhow::bail!("Duplicate mapping for tracked-directory UUID {uuid}");
+                        bail!("Duplicate mapping for tracked-directory UUID {uuid}");
                     }
                 }
                 let report = core.import_game_history(&bundle_dir, &mappings)?;
                 println!(
-                    "Imported {}: {} slot(s), {} version(s), {} blob(s), {} retired version(s)",
+                    "Imported {}: {} slot(s), {} version(s), {} chunk(s), {} retired version(s)",
                     report.title,
                     report.slot_count,
                     report.version_count,
@@ -428,29 +511,113 @@ fn main() -> Result<()> {
                 );
             }
         },
+        Commands::Sync { action } => match action {
+            SyncAction::Status => match core.get_sync_settings()?.remote_path {
+                None => println!("Sync is off."),
+                Some(path) => {
+                    println!("Sync folder: {path}");
+                    print_sync_report(&core.sync_status()?);
+                }
+            },
+            SyncAction::Configure { folder, off } => {
+                let remote_path = if off {
+                    None
+                } else {
+                    Some(
+                        folder
+                            .ok_or_else(|| anyhow!("Give a folder, or --off"))?
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                };
+                let settings = core.update_sync_settings(SyncSettings { remote_path })?;
+                match settings.remote_path {
+                    Some(path) => println!("Sync folder set to {path}"),
+                    None => println!("Sync is off."),
+                }
+            }
+            SyncAction::Refresh => print_sync_report(&core.refresh_sync()?),
+            SyncAction::Push => {
+                core.push_sync()?;
+                println!("Pushed.");
+            }
+            SyncAction::Adopt { game_uuid } => {
+                let game = core.adopt_remote_game(game_uuid)?;
+                println!(
+                    "Adopted [{}] {} — {} version(s)",
+                    game.game.id,
+                    game.game.title,
+                    game.versions.len()
+                );
+            }
+        },
+        Commands::Devices { action } => match action {
+            DevicesAction::List => {
+                let me = core.device_metadata();
+                println!("This device: {} ({})", me.name, me.device_uuid);
+                if core.get_sync_settings()?.remote_path.is_some() {
+                    for device in core.sync_status()?.devices {
+                        if device.device_uuid != me.device_uuid {
+                            println!(
+                                "  {} ({}) — last seen {}",
+                                device.name, device.device_uuid, device.last_seen
+                            );
+                        }
+                    }
+                }
+            }
+            DevicesAction::Remove { device_uuid } => {
+                core.remove_sync_device(device_uuid)?;
+                println!("Removed device {device_uuid}");
+            }
+        },
+        Commands::Repo { action } => match action {
+            RepoAction::Check { deep } => {
+                let report = core.check_integrity(deep)?;
+                println!(
+                    "{} version(s), {} chunk(s) checked; {} missing, {} corrupt, {} unreferenced",
+                    report.versions_checked,
+                    report.chunks_checked,
+                    report.missing_chunks.len(),
+                    report.corrupt_chunks.len(),
+                    report.orphan_chunks
+                );
+                if let Some(path) = &report.unreadable_metadata {
+                    println!("Unreadable metadata: {}", path.display());
+                }
+                if !report.is_ok() {
+                    bail!("The repository has problems");
+                }
+            }
+            RepoAction::Extract {
+                version_id,
+                destination,
+            } => {
+                let files = core.extract_version(version_id, &destination)?;
+                println!("Extracted {files} file(s) to {}", destination.display());
+            }
+            RepoAction::Reindex => {
+                core.reindex()?;
+                println!("Index rebuilt from {}", core.repository_root().display());
+            }
+        },
         Commands::Watch => {
             println!("Watching for changes (Ctrl+C to stop)...");
-            for notification in notif_rx {
+            for notification in notifications {
                 match notification {
                     Notification::ChangeDetected { game_id } => {
-                        println!("Change detected for game {game_id}");
+                        println!("Change detected for game {game_id}")
                     }
                     Notification::VersionCreated {
                         game_id,
                         version_number,
                     } => {
                         println!("Version {version_number} created for game {game_id}");
-                        if core
-                            .get_sync_settings()
-                            .is_ok_and(|settings| settings.remote_path.is_some())
-                            && let Err(error) = core.push_sync()
-                        {
-                            eprintln!("Sync error: {error}");
+                        if let Err(error) = core.push_sync() {
+                            eprintln!("Sync error: {error:#}");
                         }
                     }
-                    Notification::Error(err) => {
-                        eprintln!("Error: {err}");
-                    }
+                    Notification::Error(err) => eprintln!("Error: {err}"),
                 }
             }
         }
@@ -459,10 +626,44 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_history_summary(summary: &savegame_timeline_core::history_transfer::HistoryBundleSummary) {
+fn print_retention(settings: &RetentionSettings) {
+    println!("Automatic: {}", settings.automatic);
+    println!(
+        "Keep all for {} h; hourly until {} h; daily until {} d; weekly until {} d; monthly after",
+        settings.keep_all_hours,
+        settings.hourly_until_hours,
+        settings.daily_until_days,
+        settings.weekly_until_days
+    );
+    match settings.branch_expiry_days {
+        Some(days) => println!("Idle side branches expire after {days} d"),
+        None => println!("Side branches never expire"),
+    }
+    match settings.max_bytes {
+        Some(bytes) => println!("Disk budget: {bytes} byte(s)"),
+        None => println!("No disk budget"),
+    }
+}
+
+fn print_sync_report(report: &savegame_timeline_core::sync::SyncReport) {
+    for game in &report.remote_games {
+        let status = report.games.iter().find(|s| s.game_uuid == game.uuid);
+        let relation = match status {
+            Some(status) => format!("{:?}", status.relation),
+            None if game.adopted => "Unknown".into(),
+            None => "Not tracked here".into(),
+        };
+        println!("{} ({}) — {relation}", game.title, game.uuid);
+    }
+    for problem in &report.problems {
+        println!("! {problem}");
+    }
+}
+
+fn print_history_summary(summary: &HistoryBundleSummary) {
     println!("{} ({})", summary.title, summary.game_uuid);
     println!(
-        "{} slot(s), {} version(s), {} tracked directory(s), {} blob(s), {} retired version(s)",
+        "{} slot(s), {} version(s), {} tracked directory(s), {} chunk(s), {} retired version(s)",
         summary.slot_count,
         summary.version_count,
         summary.tracked_dir_count,
