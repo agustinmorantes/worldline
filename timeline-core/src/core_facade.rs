@@ -625,10 +625,16 @@ impl TimelineCore {
             return Ok(());
         };
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.push_locked(&remote)
+        let problems = self.push_locked(&remote)?;
+        if !problems.is_empty() {
+            bail!("Some games could not be pushed: {}", problems.join("; "));
+        }
+        Ok(())
     }
 
-    fn push_locked(&self, remote: &Remote) -> Result<()> {
+    /// Publishes every game (one game's failure doesn't stop the others) and
+    /// this device's pointers. Returns the per-game problems.
+    fn push_locked(&self, remote: &Remote) -> Result<Vec<String>> {
         let history = self.history();
         let state_path = self.data_dir.join("sync_state.json");
         let mut state: SyncState = read_json(&state_path).unwrap_or_default();
@@ -643,19 +649,22 @@ impl TimelineCore {
         };
         let markers = history.store.markers()?;
         let mut transfer = Transfer::new(&history.store, &remote.store, Completeness::Partial);
+        let mut problems = Vec::new();
         for game in history.store.catalog()? {
-            transfer.copy_game(&game, &markers, heal)?;
+            if let Err(error) = transfer.copy_game(&game, &markers, heal) {
+                problems.push(format!("{}: {error:#}", game.meta.title));
+            }
         }
         let device = self.device_metadata();
         let pointers = DeviceState::from_pointers(device.device_uuid, &history.index.pointers()?);
         let published = remote.publish(&device, &pointers)?;
         sync::save_device(&self.data_dir, &published)?;
         *self.device.write().unwrap_or_else(|e| e.into_inner()) = published;
-        if full {
+        if full && problems.is_empty() {
             state.last_full_heal = Some(now);
             write_json(&state_path, &state)?;
         }
-        Ok(())
+        Ok(problems)
     }
 
     fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
@@ -787,7 +796,7 @@ impl TimelineCore {
             }
         }
 
-        self.push_locked(&remote)?;
+        problems.extend(self.push_locked(&remote)?);
         self.reload_watcher();
         let remote = self.require_remote()?;
         self.sync_report(&remote, &auto_applied, &installed_titles, problems)
@@ -817,7 +826,9 @@ impl TimelineCore {
             }
             LocalMatch::Collision(reason) => bail!(reason),
         }
-        self.push_locked(&remote)?;
+        for problem in self.push_locked(&remote)? {
+            eprintln!("Sync: {problem}");
+        }
         self.reload_watcher();
         let id = self
             .history()
@@ -951,7 +962,23 @@ impl TimelineCore {
                     }
                 }
             }
-            std::fs::remove_dir_all(history.store.game_dir(&old.meta.folder_slug))?;
+            // The old identity may already be on the remote: keep a tombstone
+            // so no device resurrects it, and drop its now-duplicated history.
+            let old_dir = history.store.game_dir(&old.meta.folder_slug);
+            for sub in ["slots", "tracked-dirs"] {
+                match std::fs::remove_dir_all(old_dir.join(sub)) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error.into());
+                    }
+                    _ => {}
+                }
+            }
+            let now = Utc::now();
+            history.store.write_game(&store::GameMeta {
+                deleted_at: Some(now),
+                updated_at: now,
+                ..old.meta.clone()
+            })?;
             Ok(())
         })?;
         history.index.remove_game(old.meta.uuid)?;
@@ -1272,7 +1299,7 @@ impl TimelineCore {
             pointed: &inputs.pointed,
             chunk_sizes: &self.history().store.chunk_sizes()?,
             settings: &settings,
-            now: Utc::now(),
+            now: planning_now(),
         });
         Ok(PruningPreview {
             retire_versions: plan.retire.iter().map(|(_, _, v)| *v).collect(),
@@ -1286,15 +1313,32 @@ impl TimelineCore {
     /// Retires versions per the retention settings, then garbage-collects the
     /// local store and (condemn → sweep) the remote.
     pub fn run_pruning(&self) -> Result<PruningRunReport> {
+        self.run_pruning_at(planning_now())
+    }
+
+    /// `run_pruning` with an explicit clock, for tests of time-based retention.
+    #[doc(hidden)]
+    pub fn run_pruning_at(&self, now: DateTime<Utc>) -> Result<PruningRunReport> {
         let remote = self.remote()?;
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(remote) = &remote {
-            self.push_locked(remote)?;
+            if let Some(path) = &remote.unreadable_state {
+                bail!(
+                    "{} is unreadable; cleanup is skipped until it is fixed",
+                    path.display()
+                );
+            }
+            let problems = self.push_locked(remote)?;
+            if !problems.is_empty() {
+                bail!(
+                    "Cleanup needs a complete push first: {}",
+                    problems.join("; ")
+                );
+            }
         }
         let history = self.history();
         let settings =
             maintenance::sync_settings(&self.retention_path(), remote.as_ref().map(|r| &r.store))?;
-        let now = Utc::now();
         let (retired, budget_unreachable, local_gc) = store::with_lock(history.root(), || {
             let inputs = self.retention_inputs(remote.as_ref())?;
             let plan = maintenance::plan(&maintenance::PlanInput {
@@ -1377,6 +1421,15 @@ struct RetentionInputs {
     retired: HashSet<Uuid>,
     pointed: HashSet<Uuid>,
     local_pointed: HashSet<Uuid>,
+}
+
+/// Retention decisions depend on `now` truncated to the hour, so devices
+/// planning within the same hour agree.
+fn planning_now() -> DateTime<Utc> {
+    use chrono::DurationRound;
+    let now = Utc::now();
+    now.duration_trunc(chrono::Duration::hours(1))
+        .unwrap_or(now)
 }
 
 fn open_database(path: &Path) -> Result<DbPool> {

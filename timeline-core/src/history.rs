@@ -21,12 +21,15 @@ pub const DEFAULT_SLOT_NAME: &str = "Default Slot";
 pub enum CheckpointOutcome {
     Unchanged(Version),
     Created(Version),
+    /// Nothing to record: no saves and no history yet.
+    Empty,
 }
 
 impl CheckpointOutcome {
-    pub fn version(&self) -> &Version {
+    pub fn version(&self) -> Option<&Version> {
         match self {
-            Self::Unchanged(version) | Self::Created(version) => version,
+            Self::Unchanged(version) | Self::Created(version) => Some(version),
+            Self::Empty => None,
         }
     }
 }
@@ -225,6 +228,9 @@ impl History {
             .collect::<Result<Vec<_>>>()?;
         let files = chunks::capture(&self.store, &roots)
             .context("failed to capture tracked directories")?;
+        if game.last_version.is_none() && files.is_empty() {
+            return Ok(CheckpointOutcome::Empty);
+        }
         if let Some(active) = &game.last_version {
             let active_meta = self.store.version_meta(
                 &game.game.folder_slug,

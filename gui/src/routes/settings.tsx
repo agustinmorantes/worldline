@@ -32,6 +32,8 @@ import {
 import { queryClient } from '@/lib/query-client';
 import { useSyncReport } from '@/api/queries';
 
+import { ImportHistorySection } from '@/components/ImportHistorySection';
+
 const MIB = 1024 * 1024;
 
 function formatBytes(bytes: number): string {
@@ -39,7 +41,9 @@ function formatBytes(bytes: number): string {
   if (bytes >= MIB) return `${(bytes / MIB).toFixed(1)} MiB`;
   return `${Math.round(bytes / 1024).toString()} KiB`;
 }
-import { ImportHistorySection } from '@/components/ImportHistorySection';
+
+/** Devices unseen for longer than this are suggested for removal. */
+const STALE_DEVICE_MS = 90 * 24 * 60 * 60 * 1000;
 
 export const Route = createFileRoute('/settings')({
   component: SettingsView,
@@ -415,6 +419,9 @@ function SettingsView(): ReactElement {
                         <p className="truncate text-sm font-semibold">{device.name}</p>
                         <p className="text-xs text-muted-foreground">
                           {device.platform} · seen {formatDistanceToNow(new Date(device.last_seen), { addSuffix: true })}
+                          {device.device_uuid !== deviceUuid && Date.now() - new Date(device.last_seen).getTime() > STALE_DEVICE_MS
+                            ? ' · not seen for 90+ days: remove it if it is gone, so cleanup can reclaim its old checkpoints'
+                            : ''}
                         </p>
                       </div>
                       {device.device_uuid === deviceUuid ? (

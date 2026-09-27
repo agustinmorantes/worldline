@@ -26,6 +26,17 @@ fn creating_a_game_captures_its_saves_and_unchanged_checkpoints_are_no_ops() {
 }
 
 #[test]
+fn an_empty_folder_without_history_records_nothing() {
+    let device = Device::new();
+    let game = device.add_game("Empty");
+    assert!(game.versions.is_empty());
+    assert!(matches!(
+        device.core.checkpoint(game.game.id).unwrap(),
+        CheckpointOutcome::Empty
+    ));
+}
+
+#[test]
 fn restore_checkpoints_uncaptured_progress_before_overwriting_it() {
     let device = Device::new();
     device.write("save.dat", "old");

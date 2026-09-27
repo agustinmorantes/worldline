@@ -139,7 +139,14 @@ pub fn plan<'a>(input: &PlanInput<'a>) -> Plan {
             if let Some(days) = input.settings.branch_expiry_days {
                 let cutoff = now - Duration::days(i64::from(days));
                 for kids in children.values().filter(|kids| kids.len() > 1) {
-                    for kid in kids {
+                    let newest = |kid: &Uuid| {
+                        descendants(*kid, &children)
+                            .iter()
+                            .map(|uuid| (versions[uuid].created_at, *uuid))
+                            .max()
+                    };
+                    let main_line = kids.iter().max_by_key(|kid| newest(kid)).copied();
+                    for kid in kids.iter().filter(|kid| Some(**kid) != main_line) {
                         let subtree = descendants(*kid, &children);
                         let idle = subtree
                             .iter()
@@ -654,6 +661,21 @@ mod tests {
         assert_eq!(retired(&plan), HashSet::from([3, 4]));
         graph.game.slots[0].versions[3].tag = Some("keep".into());
         assert!(retired(&graph.plan(&[Uuid::from_u128(5)], settings, now)).is_empty());
+    }
+
+    #[test]
+    fn the_newest_line_from_a_fork_never_expires() {
+        let now = Utc::now();
+        let mut graph = Graph::new();
+        graph.add(1, None, at(24 * 60, now), 1);
+        graph.add(2, Some(1), at(24 * 55, now), 2); // fork
+        graph.add(3, Some(2), at(24 * 54, now), 3);
+        graph.add(4, Some(2), at(24 * 40, now), 4); // newer line, nobody points at it
+        let settings = RetentionSettings {
+            keep_all_hours: 24 * 365,
+            ..RetentionSettings::default()
+        };
+        assert_eq!(retired(&graph.plan(&[], settings, now)), HashSet::from([3]));
     }
 
     #[test]

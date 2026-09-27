@@ -250,7 +250,7 @@ impl Loop {
                 }
                 true
             }
-            Ok(CheckpointOutcome::Unchanged(_)) => true,
+            Ok(CheckpointOutcome::Unchanged(_) | CheckpointOutcome::Empty) => true,
             Err(error) => {
                 self.notify(Notification::Error(format!(
                     "Automatic checkpoint failed: {error:#}"

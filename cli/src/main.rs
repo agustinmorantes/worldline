@@ -325,6 +325,7 @@ fn main() -> Result<()> {
                     CheckpointOutcome::Created(v) => {
                         println!("Created version [{}] #{}", v.id, v.version_number)
                     }
+                    CheckpointOutcome::Empty => println!("Nothing to capture yet"),
                     CheckpointOutcome::Unchanged(v) => {
                         println!("Unchanged; version [{}] is current", v.id)
                     }

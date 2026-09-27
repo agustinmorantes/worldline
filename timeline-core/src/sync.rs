@@ -160,6 +160,9 @@ pub struct Remote {
     pub store: Store,
     pub devices: Vec<DeviceMetadata>,
     pub states: Vec<DeviceState>,
+    /// A `state.json` that exists but can't be read. Its device's pointers
+    /// are unknown, so pruning and GC must not run.
+    pub unreadable_state: Option<PathBuf>,
 }
 
 impl Remote {
@@ -177,6 +180,7 @@ impl Remote {
         let store = Store::open(path).context("Failed to open the sync folder")?;
         let mut devices = Vec::new();
         let mut states = Vec::new();
+        let mut unreadable_state = None;
         for dir in store::entries(&path.join("devices"))? {
             let Some(uuid) = dir
                 .file_name()
@@ -190,10 +194,11 @@ impl Remote {
             {
                 devices.push(device);
             }
-            if let Ok(state) = read_json::<DeviceState>(&dir.join("state.json"))
-                && state.device_uuid == uuid
-            {
-                states.push(state);
+            let state_path = dir.join("state.json");
+            match read_json::<DeviceState>(&state_path) {
+                Ok(state) if state.device_uuid == uuid => states.push(state),
+                _ if state_path.exists() => unreadable_state = Some(state_path),
+                _ => {}
             }
         }
         devices.sort_by(|a, b| a.name.cmp(&b.name).then(a.device_uuid.cmp(&b.device_uuid)));
@@ -201,6 +206,7 @@ impl Remote {
             store,
             devices,
             states,
+            unreadable_state,
         })
     }
 

@@ -84,7 +84,12 @@ impl Device {
 
     /// Checkpoints and returns the active version afterwards.
     pub fn checkpoint(&self, id: i32) -> Version {
-        self.core.checkpoint(id).unwrap().version().clone()
+        self.core
+            .checkpoint(id)
+            .unwrap()
+            .version()
+            .expect("a version")
+            .clone()
     }
 }
 

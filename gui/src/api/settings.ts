@@ -9,6 +9,12 @@ export async function getMonitoringSettings(): Promise<MonitoringSettings> {
   return MonitoringSettingsSchema.parse(response);
 }
 
+/** Set once when pre-release data was moved aside on startup. */
+export async function getStartupNotice(): Promise<string | null> {
+  const notice = await invoke('get_startup_notice');
+  return typeof notice === 'string' ? notice : null;
+}
+
 export async function updateMonitoringSettings(
   monitoringSettings: MonitoringSettings,
 ): Promise<MonitoringSettings> {

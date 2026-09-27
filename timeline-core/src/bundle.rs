@@ -204,6 +204,32 @@ pub fn import(
             other.game.title
         );
     }
+    if history
+        .store
+        .find_game(game.meta.uuid)?
+        .is_some_and(|meta| meta.deleted_at.is_some())
+    {
+        bail!(
+            "'{}' was deleted on this device and can't be imported again",
+            game.meta.title
+        );
+    }
+    for slot in &game.slots {
+        if let Some(id) = history.index.slot_id(slot.meta.uuid)? {
+            let owner = history.index.get_slot(id)?.slot.game_id;
+            if Some(owner) != existing.map(|e| e.game.id) {
+                bail!("Slot {} already belongs to another game", slot.meta.uuid);
+            }
+        }
+    }
+    let targets: Vec<&PathBuf> = mappings.values().collect();
+    if targets.iter().enumerate().any(|(i, a)| {
+        targets[i + 1..]
+            .iter()
+            .any(|b| same_path(&a.to_string_lossy(), &b.to_string_lossy()))
+    }) {
+        bail!("Two tracked directories can't share one folder");
+    }
     for version in game.versions() {
         if let Some(id) = history.index.version_id(version.uuid)? {
             let owner = history.index.get_version(id)?.game.uuid;

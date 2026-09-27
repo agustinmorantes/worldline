@@ -3,7 +3,7 @@ import {toast} from "sonner";
 import {getGame} from "@/api/games.ts";
 import {queryClient} from "@/lib/query-client.ts";
 import { SyncReportSchema } from '@/models/sync';
-import { invoke } from '@tauri-apps/api/core';
+import { getStartupNotice } from '@/api/settings';
 
 export function listenNotifications(): void {
   void listen<number[]>("version-created", event => {
@@ -48,7 +48,7 @@ export function listenNotifications(): void {
     toast.error('Automatic history cleanup failed', { description: event.payload });
   });
 
-  void invoke<string | null>('get_startup_notice')
+  void getStartupNotice()
     .then(notice => {
       if (notice !== null) toast.info(notice, { duration: Infinity });
     })

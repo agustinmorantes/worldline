@@ -243,7 +243,11 @@ fn remote_pruning_with_two_devices_keeps_every_protected_version() {
             ..RetentionSettings::default()
         })
         .unwrap();
-    let report = a.core.run_pruning().unwrap();
+    // An hour later, so this hour's versions are no longer "future" to the planner.
+    let report = a
+        .core
+        .run_pruning_at(chrono::Utc::now() + chrono::Duration::hours(2))
+        .unwrap();
     assert!(!report.retired_versions.is_empty());
     assert!(
         !report
@@ -290,6 +294,23 @@ fn remote_pruning_with_two_devices_keeps_every_protected_version() {
     a.core.restore_version(root.id).unwrap();
     assert_eq!(a.read("save.dat").as_deref(), Some("v1"));
     assert!(on_a.versions.iter().any(|v| v.retired));
+}
+
+#[test]
+fn an_unreadable_device_state_blocks_cleanup() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "x");
+    a.add_game("Guarded");
+    a.core.refresh_sync().unwrap();
+    let other = remote
+        .path()
+        .join("devices")
+        .join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("state.json"), b"{ half-synced").unwrap();
+    let error = a.core.run_pruning().unwrap_err();
+    assert!(error.to_string().contains("unreadable"), "{error:#}");
 }
 
 fn maintenance_pointers(remote: &Path) -> std::collections::HashSet<Uuid> {
