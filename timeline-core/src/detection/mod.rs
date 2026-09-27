@@ -15,6 +15,7 @@ pub use watcher::Watcher;
 
 /// What the watcher needs from the core.
 pub trait CaptureTarget: Send + Sync + 'static {
+    /// The games to watch.
     fn games(&self) -> Result<Vec<FullGame>>;
     fn capture(&self, game_id: i32) -> Result<CheckpointOutcome>;
 }

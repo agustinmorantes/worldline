@@ -147,7 +147,8 @@ pub fn export(
     let parent = destination
         .parent()
         .context("The destination has no parent folder")?;
-    std::fs::create_dir_all(parent)?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("Failed to create {}", parent.display()))?;
     let game = history.index.get_game(game_id)?;
     let mut record = history.record(&game.game)?;
     record.slots.retain(|slot| slot.meta.deleted_at.is_none());

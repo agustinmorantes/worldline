@@ -407,7 +407,9 @@ pub fn gc_local(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
     let mut report = GcReport::default();
     for (hash, size) in store.chunk_sizes()? {
         if !live.contains(&hash) {
-            std::fs::remove_file(store.chunk_path(&hash)?)?;
+            let path = store.chunk_path(&hash)?;
+            std::fs::remove_file(&path)
+                .with_context(|| format!("failed to delete {}", path.display()))?;
             report.chunks_deleted += 1;
             report.bytes_deleted += size;
         }

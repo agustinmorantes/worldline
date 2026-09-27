@@ -103,10 +103,14 @@ pub fn put_chunk(store: &Store, hash: &str, data: &[u8]) -> Result<()> {
 pub fn publish_chunk(store: &Store, hash: &str, compressed: &[u8]) -> Result<()> {
     let destination = store.chunk_path(hash)?;
     let shard = destination.parent().context("chunk path has no parent")?;
-    fs::create_dir_all(shard)?;
+    fs::create_dir_all(shard).with_context(|| format!("failed to create {}", shard.display()))?;
     let temp = shard.join(format!(".tmp-{}", crate::store::short_random()));
     let result = (|| -> Result<()> {
-        let mut file = File::options().write(true).create_new(true).open(&temp)?;
+        let mut file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .with_context(|| format!("failed to create {}", temp.display()))?;
         file.write_all(compressed)?;
         file.sync_all()?;
         drop(file);

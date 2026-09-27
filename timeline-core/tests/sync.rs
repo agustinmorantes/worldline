@@ -297,6 +297,73 @@ fn remote_pruning_with_two_devices_keeps_every_protected_version() {
 }
 
 #[test]
+fn pull_fetches_history_without_touching_saves_or_pointers() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "v1");
+    let game = a.add_game("Pulled");
+    a.core.refresh_sync().unwrap();
+    let b = Device::synced(remote.path());
+    let adopted = b.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    let pointer = adopted.slots[0].active_version_id;
+
+    a.write("save.dat", "v2");
+    a.checkpoint(game.game.id);
+    a.core.push_sync().unwrap();
+    a.write("save.dat", "B's own progress");
+
+    assert!(b.core.pull_sync().unwrap().is_empty());
+    let pulled = b.core.get_game(adopted.game.id).unwrap();
+    assert_eq!(pulled.versions.len(), 2);
+    assert_eq!(pulled.slots[0].active_version_id, pointer);
+    assert_eq!(a.read("save.dat").as_deref(), Some("B's own progress"));
+}
+
+#[test]
+fn a_push_does_not_reupload_versions_another_device_retired() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "v1");
+    let game = a.add_game("Retired elsewhere");
+    for n in 2..=5 {
+        a.write("save.dat", &format!("v{n}"));
+        a.checkpoint(game.game.id);
+    }
+    a.core.refresh_sync().unwrap();
+
+    let b = Device::synced(remote.path());
+    b.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    b.core
+        .update_pruning_settings(RetentionSettings {
+            keep_all_hours: 0,
+            hourly_until_hours: 0,
+            daily_until_days: 0,
+            weekly_until_days: 0,
+            branch_expiry_days: None,
+            ..RetentionSettings::default()
+        })
+        .unwrap();
+    let report = b
+        .core
+        .run_pruning_at(chrono::Utc::now() + chrono::Duration::hours(2))
+        .unwrap();
+    assert!(!report.retired_versions.is_empty());
+    let store = Store::open_existing(remote.path()).unwrap();
+    maintenance::gc_remote(
+        &store,
+        &maintenance_pointers(remote.path()),
+        Uuid::new_v4(),
+        chrono::Utc::now() + maintenance::GRACE * 2,
+    )
+    .unwrap();
+    let swept = store.chunk_sizes().unwrap().len();
+
+    // A hasn't pulled the retirement yet, but its push must respect it.
+    a.core.push_sync().unwrap();
+    assert_eq!(store.chunk_sizes().unwrap().len(), swept);
+}
+
+#[test]
 fn an_unreadable_device_state_blocks_cleanup() {
     let remote = tempfile::tempdir().unwrap();
     let a = Device::synced(remote.path());

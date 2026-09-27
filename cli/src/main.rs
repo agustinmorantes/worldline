@@ -180,6 +180,8 @@ enum SyncAction {
     Refresh,
     /// Publish local history only.
     Push,
+    /// Fetch history for tracked games; live saves stay as they are.
+    Pull,
     /// Start tracking a game that exists in the sync folder.
     Adopt { game_uuid: Uuid },
 }
@@ -541,6 +543,13 @@ fn main() -> Result<()> {
             SyncAction::Push => {
                 core.push_sync()?;
                 println!("Pushed.");
+            }
+            SyncAction::Pull => {
+                let problems = core.pull_sync()?;
+                for problem in &problems {
+                    println!("! {problem}");
+                }
+                println!("Pulled.");
             }
             SyncAction::Adopt { game_uuid } => {
                 let game = core.adopt_remote_game(game_uuid)?;

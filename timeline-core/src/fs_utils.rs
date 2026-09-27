@@ -108,7 +108,9 @@ pub fn validate_restore_path(root: &Path, relative_path: &Path) -> Result<()> {
 /// actually wants preserved is expressible as a per-directory user exclusion.
 fn clear_dir_inner(dir: &Path, exclusions: &[Pattern], relative: &Path) -> Result<bool> {
     let mut kept_anything = false;
-    for entry in std::fs::read_dir(dir)? {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("Failed to read {}", dir.display()))?
+    {
         let entry = entry?;
         let entry_relative = relative.join(entry.file_name());
         if crate::exclusions::is_excluded(exclusions, &entry_relative) {

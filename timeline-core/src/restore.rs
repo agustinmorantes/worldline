@@ -108,7 +108,8 @@ pub fn apply(store: &Store, prepared: PreparedRestore) -> Result<()> {
     }
     for (destination, entry) in prepared.files {
         if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
         }
         let mut file = std::fs::File::create(&destination)
             .with_context(|| format!("Failed to create {}", destination.display()))?;

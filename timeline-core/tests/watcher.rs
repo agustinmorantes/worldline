@@ -83,3 +83,75 @@ fn changes_are_captured_and_restores_do_not_create_versions() {
     );
     assert_eq!(after.last_version.unwrap().id, first.id);
 }
+
+#[test]
+fn imported_history_is_not_snapshotted_until_a_version_is_chosen() {
+    let source = common::Device::new();
+    source.write("save.dat", "exported");
+    let exported = source.add_game("Imported");
+    let out = tempfile::tempdir().unwrap();
+    let bundle = out.path().join("bundle");
+    source
+        .core
+        .export_game_history(exported.game.id, &bundle)
+        .unwrap();
+
+    let data = tempfile::tempdir().unwrap();
+    let saves = tempfile::tempdir().unwrap();
+    let control = tempfile::tempdir().unwrap();
+    savegame_timeline_core::store::write_json(
+        &data.path().join("monitoring_settings.json"),
+        &MonitoringSettings {
+            version_cooldown_minutes: 0,
+            snapshot_debounce_seconds: 0.2,
+        },
+    )
+    .unwrap();
+    let open = || {
+        TimelineCore::open(
+            data.path(),
+            OpenOptions {
+                watch: true,
+                debounce_seconds: None,
+            },
+        )
+        .unwrap()
+    };
+    let (core, _) = open();
+    let summary = TimelineCore::inspect_history_bundle(&bundle).unwrap();
+    let map = summary
+        .active_tracked_dirs
+        .iter()
+        .map(|dir| (dir.uuid, saves.path().to_path_buf()))
+        .collect();
+    core.import_game_history(&bundle, &map).unwrap();
+    fs::write(control.path().join("save.dat"), "one").unwrap();
+    let control_game = core
+        .save_game(
+            GameForm {
+                id: None,
+                title: "Control".into(),
+            },
+            Some(vec![control.path().to_string_lossy().into_owned()]),
+        )
+        .unwrap();
+    drop(core);
+
+    // Both folders change while the app is closed; only the chosen one is captured.
+    fs::write(saves.path().join("save.dat"), "local progress").unwrap();
+    fs::write(control.path().join("save.dat"), "two").unwrap();
+    let (core, rx) = open();
+    assert!(wait_for(&rx, |n| matches!(
+        n,
+        Notification::VersionCreated { game_id, .. } if *game_id == control_game.id
+    )));
+    std::thread::sleep(Duration::from_secs(1));
+    let imported = core
+        .get_games()
+        .unwrap()
+        .into_iter()
+        .find(|g| g.game.title == "Imported")
+        .unwrap();
+    assert_eq!(imported.versions.len(), 1);
+    assert!(imported.last_version.is_none());
+}

@@ -249,7 +249,8 @@ impl Store {
                 let Some(rest) = well_formed_name(&chunk, 62) else {
                     continue;
                 };
-                let metadata = fs::symlink_metadata(&chunk)?;
+                let metadata = fs::symlink_metadata(&chunk)
+                    .with_context(|| format!("failed to read {}", chunk.display()))?;
                 if metadata.is_file() {
                     sizes.insert(format!("sha256:{prefix}{rest}"), metadata.len());
                 }
@@ -454,7 +455,8 @@ impl Store {
             return write_json(&path, meta);
         }
         let parent = dir.parent().context("version dir has no parent")?;
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
         let staging = parent.join(format!(".tmp-{}", short_random()));
         fs::create_dir(&staging)?;
         let result = write_json(&staging.join(METADATA), meta)
@@ -723,7 +725,8 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     payload.push(b'\n');
     let tmp = parent.join(format!(".tmp-{}", short_random()));
     let result = (|| -> Result<()> {
-        let mut file = File::create(&tmp)?;
+        let mut file =
+            File::create(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
         file.write_all(&payload)?;
         file.sync_all()?;
         drop(file);

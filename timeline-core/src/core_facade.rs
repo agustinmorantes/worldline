@@ -74,8 +74,12 @@ struct Inner {
 }
 
 impl CaptureTarget for Inner {
+    /// Imported history waits for the user to choose a version: capturing
+    /// its folder first would start a second, unrelated root.
     fn games(&self) -> Result<Vec<FullGame>> {
-        self.history.index.get_games()
+        let mut games = self.history.index.get_games()?;
+        games.retain(|game| game.last_version.is_some() || game.versions.is_empty());
+        Ok(games)
     }
 
     fn capture(&self, game_id: i32) -> Result<CheckpointOutcome> {
@@ -425,8 +429,10 @@ impl TimelineCore {
                 .map(|dir| dir.folder_slug.clone())
                 .unwrap_or_else(|| file.tracked_dir_uuid.to_string());
             let target = destination.join(folder).join(&file.path);
-            std::fs::create_dir_all(target.parent().context("invalid target")?)?;
-            let mut out = std::fs::File::create(&target)?;
+            std::fs::create_dir_all(target.parent().context("invalid target")?)
+                .with_context(|| format!("Failed to create the folder for {}", target.display()))?;
+            let mut out = std::fs::File::create(&target)
+                .with_context(|| format!("Failed to create {}", target.display()))?;
             crate::chunks::write_file(&history.store, file, &mut out)?;
         }
         Ok(meta.files.len())
@@ -647,7 +653,10 @@ impl TimelineCore {
         } else {
             Heal::CreatedSince(now - maintenance::GRACE * 2)
         };
-        let markers = history.store.markers()?;
+        // Remote markers too: healing must not re-upload what another device
+        // retired before this one pulled the retirement.
+        let mut markers = remote.store.markers()?;
+        markers.extend(history.store.markers()?);
         let mut transfer = Transfer::new(&history.store, &remote.store, Completeness::Partial);
         let mut problems = Vec::new();
         for game in history.store.catalog()? {
@@ -677,6 +686,51 @@ impl TimelineCore {
         })?;
         history.refresh_game(game.meta.uuid)?;
         Ok(not_arrived)
+    }
+
+    /// Fetches remote history for the games this device tracks. Live saves
+    /// and active pointers are left alone. Returns the per-game problems.
+    pub fn pull_sync(&self) -> Result<Vec<String>> {
+        let remote = self.require_remote()?;
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let problems =
+            self.pull_locked(&remote, &remote.store.catalog()?, &self.local_game_uuids()?);
+        Ok(problems)
+    }
+
+    /// Every game this device has history for, tombstones included.
+    fn local_game_uuids(&self) -> Result<HashSet<Uuid>> {
+        Ok(self
+            .history()
+            .store
+            .game_metas()?
+            .iter()
+            .map(|g| g.uuid)
+            .collect())
+    }
+
+    fn pull_locked(
+        &self,
+        remote: &Remote,
+        remote_games: &[GameRecord],
+        local_uuids: &HashSet<Uuid>,
+    ) -> Vec<String> {
+        let mut problems = Vec::new();
+        for remote_game in remote_games
+            .iter()
+            .filter(|g| local_uuids.contains(&g.meta.uuid))
+        {
+            match self.pull_game(remote, remote_game) {
+                Ok(not_arrived) if !not_arrived.is_empty() => problems.push(format!(
+                    "{}: {} version(s) have not fully arrived yet",
+                    remote_game.meta.title,
+                    not_arrived.len()
+                )),
+                Ok(_) => {}
+                Err(error) => problems.push(format!("{}: {error:#}", remote_game.meta.title)),
+            }
+        }
+        problems
     }
 
     /// Pull, adopt, fast-forward, push, report.
@@ -709,28 +763,8 @@ impl TimelineCore {
             }
         }
 
-        // Pull every game this device tracks (tombstones included).
-        let local_uuids: HashSet<Uuid> = self
-            .history()
-            .store
-            .game_metas()?
-            .iter()
-            .map(|g| g.uuid)
-            .collect();
-        for remote_game in remote_games
-            .iter()
-            .filter(|g| local_uuids.contains(&g.meta.uuid))
-        {
-            match self.pull_game(&remote, remote_game) {
-                Ok(not_arrived) if !not_arrived.is_empty() => problems.push(format!(
-                    "{}: {} version(s) have not fully arrived yet",
-                    remote_game.meta.title,
-                    not_arrived.len()
-                )),
-                Ok(_) => {}
-                Err(error) => problems.push(format!("{}: {error:#}", remote_game.meta.title)),
-            }
-        }
+        let local_uuids = self.local_game_uuids()?;
+        problems.extend(self.pull_locked(&remote, &remote_games, &local_uuids));
 
         // Adopt remote games installed here.
         let unknown: Vec<&GameRecord> = remote_games
@@ -1495,7 +1529,8 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
         Utc::now().format("%Y%m%d-%H%M%S"),
         &store::short_random()[..4]
     ));
-    std::fs::create_dir_all(&backup)?;
+    std::fs::create_dir_all(&backup)
+        .with_context(|| format!("Failed to create {}", backup.display()))?;
     for name in [
         "database.db",
         "database.db-wal",

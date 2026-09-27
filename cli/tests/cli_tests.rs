@@ -270,6 +270,11 @@ fn end_to_end_across_two_data_dirs() {
         .success()
         .stdout(contains("2 version(s)"));
     cli(b.path())
+        .args(["sync", "pull"])
+        .assert()
+        .success()
+        .stdout(contains("Pulled."));
+    cli(b.path())
         .args(["devices", "list"])
         .assert()
         .success()
