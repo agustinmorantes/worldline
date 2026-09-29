@@ -118,7 +118,7 @@ pub struct TimelineCore {
 
 impl TimelineCore {
     /// Opens (creating when needed) the data directory used by one-shot CLI
-    /// commands. Nothing runs in the background: no watcher, no sync loop.
+    /// commands. No sync loop runs (the watcher does only when `options.watch` is set).
     pub fn open(data_dir: &Path, options: OpenOptions) -> Result<(Self, NotificationReceiver)> {
         let (core, notifications, ..) = Self::open_parts(data_dir, options)?;
         Ok((core, notifications))

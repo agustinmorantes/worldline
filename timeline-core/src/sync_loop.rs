@@ -7,7 +7,7 @@ use crate::detection::Notification;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TICK: Duration = Duration::from_secs(5 * 60);
 
@@ -50,6 +50,7 @@ fn run(
     notifications: mpsc::Sender<Notification>,
 ) {
     let mut next = Trigger::Sync;
+    let mut due = Instant::now();
     loop {
         // Coalesce whatever queued up while working.
         let (mut sync, mut push, mut stop) = (false, false, false);
@@ -61,16 +62,18 @@ fn run(
             }
         }
         let Some(core) = core.upgrade() else { return };
-        if sync {
-            full_sync(&core, &notifications);
-        } else if push || stop {
+        // Shutting down only publishes; a pull or prune could keep the exit waiting.
+        if stop || (push && !sync) {
             push_only(&core, &notifications);
+        } else if sync {
+            full_sync(&core, &notifications);
+            due = Instant::now() + TICK;
         }
         if stop {
             return;
         }
         drop(core);
-        next = match triggers.recv_timeout(TICK) {
+        next = match triggers.recv_timeout(due.saturating_duration_since(Instant::now())) {
             Ok(trigger) => trigger,
             Err(RecvTimeoutError::Timeout) => Trigger::Sync,
             Err(RecvTimeoutError::Disconnected) => return,
