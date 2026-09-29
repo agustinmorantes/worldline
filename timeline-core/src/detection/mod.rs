@@ -6,6 +6,7 @@ mod watcher;
 
 use crate::history::CheckpointOutcome;
 use crate::models::FullGame;
+use crate::sync::SyncReport;
 use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -27,6 +28,10 @@ pub enum Notification {
     ChangeDetected { game_id: i32 },
     VersionCreated { game_id: i32, version_number: i32 },
     Error(String),
+    SyncCompleted(SyncReport),
+    SyncFailed(String),
+    HistoryPruned,
+    PruningFailed(String),
 }
 
 /// A nesting suppression counter: while any guard is alive, nothing is

@@ -29,7 +29,9 @@ Add a game and choose its save folders, or use the installed-game import screen 
 
 In Settings, choose a shared folder to sync between devices. Each device keeps its own active slot and version pointers. History cleanup can retire eligible checkpoints while preserving graph links. Export History on a game's detail screen creates a portable directory bundle; Import History in Settings inspects a bundle and asks where each tracked save folder belongs on this machine. Importing history does not restore live save files.
 
-The CLI also supports `history inspect`, `history export`, and `history import --map UUID=/absolute/path`. Run `cargo run -p cli -- history --help` for the exact arguments. `sync configure|status|refresh|push|pull|adopt`, `devices list|remove` and `prune settings|preview|run` cover sync and history cleanup.
+The CLI also supports `history inspect`, `history export`, and `history import --map UUID=/absolute/path`. Run `cargo run -p cli -- history --help` for the exact arguments. `sync configure|status|adopt`, `devices list|remove` and `prune settings|preview|run` cover sync and history cleanup.
+
+Sync is automatic: while the app or `watch` runs, new versions reach the sync folder as they are created, other devices' progress is picked up every five minutes, and pruning runs when due. `sync` with no subcommand is the manual fallback for when nothing runs in the background. Only a divergence (two devices moved the same slot) needs you; it is reported, never auto-resolved.
 
 ## Storage and recovering files by hand
 

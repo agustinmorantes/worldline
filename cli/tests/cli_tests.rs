@@ -256,7 +256,7 @@ fn end_to_end_across_two_data_dirs() {
             .assert()
             .success();
     }
-    cli(a.path()).args(["sync", "refresh"]).assert().success();
+    cli(a.path()).arg("sync").assert().success();
     let status = stdout(b.path(), &["sync", "status"]);
     assert!(
         status.contains("Journey") && status.contains("Not tracked here"),
@@ -269,11 +269,7 @@ fn end_to_end_across_two_data_dirs() {
         .assert()
         .success()
         .stdout(contains("2 version(s)"));
-    cli(b.path())
-        .args(["sync", "pull"])
-        .assert()
-        .success()
-        .stdout(contains("Pulled."));
+    cli(b.path()).arg("sync").assert().success();
     cli(b.path())
         .args(["devices", "list"])
         .assert()
@@ -331,6 +327,14 @@ fn end_to_end_across_two_data_dirs() {
         fs::read_to_string(restored.path().join("save.dat")).unwrap(),
         "one"
     );
+}
+
+#[test]
+fn push_pull_and_refresh_are_no_longer_subcommands() {
+    let data = tempdir().unwrap();
+    for name in ["push", "pull", "refresh"] {
+        cli(data.path()).args(["sync", name]).assert().failure();
+    }
 }
 
 #[test]

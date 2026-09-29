@@ -48,9 +48,10 @@ enum Commands {
         #[command(subcommand)]
         action: HistoryAction,
     },
+    /// Sync with the sync folder. Only needed when neither the app nor `watch` is running.
     Sync {
         #[command(subcommand)]
-        action: SyncAction,
+        action: Option<SyncAction>,
     },
     Devices {
         #[command(subcommand)]
@@ -176,12 +177,6 @@ enum SyncAction {
         #[arg(long, conflicts_with = "folder")]
         off: bool,
     },
-    /// Pull, adopt, fast-forward and push.
-    Refresh,
-    /// Publish local history only.
-    Push,
-    /// Fetch history for tracked games; live saves stay as they are.
-    Pull,
     /// Start tracking a game that exists in the sync folder.
     Adopt { game_uuid: Uuid },
 }
@@ -240,6 +235,51 @@ fn resolve_slot_id(core: &TimelineCore, game_id: i32, slot: &str) -> Result<i32>
         .ok_or_else(|| anyhow!("Slot '{slot}' not found for game {game_id}"))
 }
 
+fn report_moved_data(core: &TimelineCore) {
+    if let Some(backup) = core.moved_old_data() {
+        eprintln!(
+            "Data from a pre-release version was moved to {} and the app started fresh.",
+            backup.display()
+        );
+    }
+}
+
+/// Captures, syncs and prunes in the background until Ctrl+C, which drains
+/// pending captures and pushes them before exiting.
+fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()> {
+    let (core, notifications) = TimelineCore::open_shared(
+        data_dir,
+        OpenOptions {
+            watch: true,
+            debounce_seconds,
+        },
+    )?;
+    report_moved_data(&core);
+    let stopping = core.clone();
+    ctrlc::set_handler(move || stopping.shutdown())?;
+    println!("Watching for changes (Ctrl+C to stop)...");
+    for notification in notifications {
+        match notification {
+            Notification::ChangeDetected { game_id } => {
+                println!("Change detected for game {game_id}")
+            }
+            Notification::VersionCreated {
+                game_id,
+                version_number,
+            } => println!("Version {version_number} created for game {game_id}"),
+            Notification::Error(err) => eprintln!("Error: {err}"),
+            Notification::SyncCompleted(report) => {
+                println!("Synced.");
+                print_sync_report(&report);
+            }
+            Notification::SyncFailed(error) => eprintln!("Sync error: {error}"),
+            Notification::HistoryPruned => println!("Old versions were pruned."),
+            Notification::PruningFailed(error) => eprintln!("Pruning error: {error}"),
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Commands::History {
@@ -253,19 +293,17 @@ fn main() -> Result<()> {
         Some(p) => p,
         None => default_data_dir()?,
     };
-    let (core, notifications) = TimelineCore::open(
+    if let Commands::Watch = cli.command {
+        return watch(&data_dir, cli.debounce_secs);
+    }
+    let (core, _) = TimelineCore::open(
         &data_dir,
         OpenOptions {
-            watch: matches!(cli.command, Commands::Watch),
+            watch: false,
             debounce_seconds: cli.debounce_secs,
         },
     )?;
-    if let Some(backup) = core.moved_old_data() {
-        eprintln!(
-            "Data from a pre-release version was moved to {} and the app started fresh.",
-            backup.display()
-        );
-    }
+    report_moved_data(&core);
 
     match cli.command {
         Commands::Games { action } => match action {
@@ -515,14 +553,15 @@ fn main() -> Result<()> {
             }
         },
         Commands::Sync { action } => match action {
-            SyncAction::Status => match core.get_sync_settings()?.remote_path {
+            None => print_sync_report(&core.refresh_sync()?),
+            Some(SyncAction::Status) => match core.get_sync_settings()?.remote_path {
                 None => println!("Sync is off."),
                 Some(path) => {
                     println!("Sync folder: {path}");
                     print_sync_report(&core.sync_status()?);
                 }
             },
-            SyncAction::Configure { folder, off } => {
+            Some(SyncAction::Configure { folder, off }) => {
                 let remote_path = if off {
                     None
                 } else {
@@ -539,19 +578,7 @@ fn main() -> Result<()> {
                     None => println!("Sync is off."),
                 }
             }
-            SyncAction::Refresh => print_sync_report(&core.refresh_sync()?),
-            SyncAction::Push => {
-                core.push_sync()?;
-                println!("Pushed.");
-            }
-            SyncAction::Pull => {
-                let problems = core.pull_sync()?;
-                for problem in &problems {
-                    println!("! {problem}");
-                }
-                println!("Pulled.");
-            }
-            SyncAction::Adopt { game_uuid } => {
+            Some(SyncAction::Adopt { game_uuid }) => {
                 let game = core.adopt_remote_game(game_uuid)?;
                 println!(
                     "Adopted [{}] {} — {} version(s)",
@@ -611,26 +638,7 @@ fn main() -> Result<()> {
                 println!("Index rebuilt from {}", core.repository_root().display());
             }
         },
-        Commands::Watch => {
-            println!("Watching for changes (Ctrl+C to stop)...");
-            for notification in notifications {
-                match notification {
-                    Notification::ChangeDetected { game_id } => {
-                        println!("Change detected for game {game_id}")
-                    }
-                    Notification::VersionCreated {
-                        game_id,
-                        version_number,
-                    } => {
-                        println!("Version {version_number} created for game {game_id}");
-                        if let Err(error) = core.push_sync() {
-                            eprintln!("Sync error: {error:#}");
-                        }
-                    }
-                    Notification::Error(err) => eprintln!("Error: {err}"),
-                }
-            }
-        }
+        Commands::Watch => unreachable!("handled before opening the core"),
     }
 
     Ok(())

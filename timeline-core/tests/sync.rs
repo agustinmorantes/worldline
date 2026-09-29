@@ -5,12 +5,17 @@
 mod common;
 
 use common::Device;
+use savegame_timeline_core::OpenOptions;
+use savegame_timeline_core::TimelineCore;
+use savegame_timeline_core::detection::{Notification, NotificationReceiver};
 use savegame_timeline_core::maintenance::{self, RetentionSettings};
 use savegame_timeline_core::models::GameForm;
 use savegame_timeline_core::store::Store;
-use savegame_timeline_core::sync::Divergence;
+use savegame_timeline_core::sync::{Divergence, SyncSettings};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 fn uuid_of(game: &savegame_timeline_core::models::FullGame) -> Uuid {
@@ -235,6 +240,7 @@ fn remote_pruning_with_two_devices_keeps_every_protected_version() {
     }
     a.core
         .update_pruning_settings(RetentionSettings {
+            automatic: true,
             keep_all_hours: 0,
             hourly_until_hours: 0,
             daily_until_days: 0,
@@ -312,7 +318,7 @@ fn pull_fetches_history_without_touching_saves_or_pointers() {
     a.core.push_sync().unwrap();
     a.write("save.dat", "B's own progress");
 
-    assert!(b.core.pull_sync().unwrap().is_empty());
+    assert!(b.core.refresh_sync().unwrap().problems.is_empty());
     let pulled = b.core.get_game(adopted.game.id).unwrap();
     assert_eq!(pulled.versions.len(), 2);
     assert_eq!(pulled.slots[0].active_version_id, pointer);
@@ -422,4 +428,215 @@ fn a_chunk_deleted_from_the_remote_is_reuploaded_by_its_publisher() {
     );
     b.core.refresh_sync().unwrap();
     assert_eq!(b.core.get_games().unwrap()[0].versions.len(), 1);
+}
+
+// ---- the background sync loop ----------------------------------------------
+
+/// Opens `data` with the watcher and the sync loop, syncing with `remote`.
+fn open_running(data: &Path, remote: Option<&Path>) -> (Arc<TimelineCore>, NotificationReceiver) {
+    savegame_timeline_core::sync::save_settings(
+        &data.join("sync_settings.json"),
+        &SyncSettings {
+            remote_path: remote.map(|path| path.to_string_lossy().into_owned()),
+        },
+    )
+    .unwrap();
+    let options = OpenOptions {
+        watch: true,
+        debounce_seconds: None,
+    };
+    TimelineCore::open_shared(data, options).unwrap()
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_for(rx: &NotificationReceiver, what: &str, want: impl Fn(&Notification) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_else(|| panic!("timed out waiting for {what}"));
+        match rx.recv_timeout(left) {
+            Ok(notification) if want(&notification) => return,
+            Ok(_) => {}
+            Err(_) => panic!("timed out waiting for {what}"),
+        }
+    }
+}
+
+fn remote_version_count(remote: &Path) -> usize {
+    Store::open_existing(remote)
+        .unwrap()
+        .catalog()
+        .unwrap()
+        .iter()
+        .map(|game| game.versions().count())
+        .sum()
+}
+
+/// A running device with one game whose first version is already published.
+fn running_with_game(remote: &Path) -> (Device, Arc<TimelineCore>, NotificationReceiver, i32) {
+    let device = Device::new();
+    device.write("save.dat", "1");
+    let (core, rx) = open_running(device.data.path(), Some(remote));
+    fs::create_dir_all(device.save_dir()).unwrap();
+    let game = core
+        .save_game(
+            GameForm {
+                id: None,
+                title: "Running".into(),
+            },
+            Some(vec![device.save_dir().to_string_lossy().into_owned()]),
+        )
+        .unwrap();
+    wait_until("the first version on the remote", || {
+        remote_version_count(remote) == 1
+    });
+    (device, core, rx, game.id)
+}
+
+#[test]
+fn a_manual_checkpoint_reaches_the_remote_without_a_sync_call() {
+    let remote = tempfile::tempdir().unwrap();
+    let (device, core, _rx, game) = running_with_game(remote.path());
+    device.write("save.dat", "2");
+    core.checkpoint(game).unwrap();
+    wait_until("the manual checkpoint on the remote", || {
+        remote_version_count(remote.path()) == 2
+    });
+    core.shutdown();
+}
+
+#[test]
+fn a_version_created_just_before_shutdown_is_on_the_remote_afterwards() {
+    let remote = tempfile::tempdir().unwrap();
+    let (device, core, _rx, game) = running_with_game(remote.path());
+    device.write("save.dat", "2");
+    core.checkpoint(game).unwrap();
+    core.shutdown();
+    assert_eq!(remote_version_count(remote.path()), 2);
+}
+
+#[test]
+fn opening_with_the_loop_picks_up_another_devices_progress() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let game = a.add_game("Shared");
+    a.core.refresh_sync().unwrap();
+    let b = Device::synced(remote.path());
+    b.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    drop(b.core);
+
+    a.write("save.dat", "2");
+    a.checkpoint(game.game.id);
+    a.core.push_sync().unwrap();
+
+    let (core, rx) = open_running(b.data.path(), Some(remote.path()));
+    wait_for(&rx, "the start-up sync", |n| {
+        matches!(n, Notification::SyncCompleted(_))
+    });
+    let id = core.get_games().unwrap()[0].game.id;
+    assert_eq!(core.get_game(id).unwrap().versions.len(), 2);
+    core.shutdown();
+}
+
+#[test]
+fn the_loop_stops_on_shutdown_and_its_notifications_end() {
+    let remote = tempfile::tempdir().unwrap();
+    let (_device, core, rx, _game) = running_with_game(remote.path());
+    core.shutdown();
+    // Every sender is gone once the watcher and the loop have exited.
+    while rx.recv_timeout(Duration::from_secs(20)).is_ok() {}
+    assert!(matches!(
+        rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Disconnected)
+    ));
+}
+
+#[test]
+fn an_unreachable_remote_is_reported_and_capture_still_works() {
+    let remote = tempfile::tempdir().unwrap();
+    let missing = remote.path().join("unplugged");
+    let device = Device::new();
+    device.write("save.dat", "1");
+    let (core, rx) = open_running(device.data.path(), Some(&missing));
+    wait_for(&rx, "the failure report", |n| {
+        matches!(n, Notification::SyncFailed(_))
+    });
+    fs::create_dir_all(device.save_dir()).unwrap();
+    let game = core
+        .save_game(
+            GameForm {
+                id: None,
+                title: "Offline".into(),
+            },
+            Some(vec![device.save_dir().to_string_lossy().into_owned()]),
+        )
+        .unwrap();
+    device.write("save.dat", "2");
+    core.checkpoint(game.id).unwrap();
+    assert_eq!(core.get_game(game.id).unwrap().versions.len(), 2);
+    core.shutdown();
+}
+
+#[test]
+fn pruning_runs_on_a_core_with_no_remote() {
+    let device = Device::new();
+    device.write("save.dat", "1");
+    let game = device.add_game("Pruned");
+    for n in 2..=4 {
+        device.write("save.dat", &n.to_string());
+        device.checkpoint(game.game.id);
+    }
+    device
+        .core
+        .update_pruning_settings(RetentionSettings {
+            automatic: true,
+            keep_all_hours: 0,
+            hourly_until_hours: 0,
+            daily_until_days: 0,
+            weekly_until_days: 0,
+            ..device.core.get_pruning_settings().unwrap()
+        })
+        .unwrap();
+    // Age every version past the planner's current hour.
+    for entry in walk(&device.data.path().join("repository")) {
+        if entry.file_name().is_some_and(|n| n == "metadata.json")
+            && entry.to_string_lossy().contains("versions")
+        {
+            let mut meta: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&entry).unwrap()).unwrap();
+            meta["created_at"] = "2020-01-01T00:00:00Z".into();
+            meta["updated_at"] = "2020-01-01T00:00:00Z".into();
+            fs::write(&entry, serde_json::to_string(&meta).unwrap()).unwrap();
+        }
+    }
+    device.core.reindex().unwrap();
+    let Device { core, data, .. } = device;
+    drop(core);
+    let (core, rx) = open_running(data.path(), None);
+    wait_for(&rx, "automatic pruning", |n| {
+        matches!(n, Notification::HistoryPruned)
+    });
+    core.shutdown();
+}
+
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(walk(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
 }

@@ -36,46 +36,17 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .path()
         .app_local_data_dir()
         .context("failed to get app data directory")?;
-    let (core, notifications) = TimelineCore::open(
+    let (core, notifications) = TimelineCore::open_shared(
         &data_dir,
         OpenOptions {
             watch: true,
             debounce_seconds: None,
         },
     )?;
-    let core = Arc::new(core);
-    app.manage(core.clone());
+    app.manage(core);
     tray::setup_tray(app)?;
 
-    // Sync (when configured) and automatic pruning, every five minutes.
-    let background_app = app.handle().clone();
-    let background_core = core.clone();
-    std::thread::spawn(move || loop {
-        match background_core.sync_if_configured() {
-            Ok(Some(report)) => {
-                background_app.emit("sync-complete", report).ok();
-            }
-            Ok(None) => {}
-            Err(error) => {
-                background_app.emit("sync-error", format!("{error:#}")).ok();
-            }
-        }
-        match background_core.prune_if_due() {
-            Ok(Some(report)) if report.changed_history() => {
-                background_app.emit("history-pruned", ()).ok();
-            }
-            Ok(_) => {}
-            Err(error) => {
-                background_app
-                    .emit("pruning-error", format!("{error:#}"))
-                    .ok();
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_secs(5 * 60));
-    });
-
     let notif_app = app.handle().clone();
-    let checkpoint_core = core.clone();
     std::thread::spawn(move || {
         for notification in notifications {
             match notification {
@@ -89,12 +60,21 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     notif_app
                         .emit("version-created", (game_id, version_number))
                         .ok();
-                    if let Err(error) = checkpoint_core.push_sync() {
-                        notif_app.emit("sync-error", format!("{error:#}")).ok();
-                    }
                 }
                 detection::Notification::Error(err) => {
                     notif_app.emit("detection-error", err).ok();
+                }
+                detection::Notification::SyncCompleted(report) => {
+                    notif_app.emit("sync-complete", report).ok();
+                }
+                detection::Notification::SyncFailed(error) => {
+                    notif_app.emit("sync-error", error).ok();
+                }
+                detection::Notification::HistoryPruned => {
+                    notif_app.emit("history-pruned", ()).ok();
+                }
+                detection::Notification::PruningFailed(error) => {
+                    notif_app.emit("pruning-error", error).ok();
                 }
             }
         }

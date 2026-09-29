@@ -18,6 +18,7 @@ pub mod restore;
 pub mod schema;
 pub mod store;
 pub mod sync;
+mod sync_loop;
 pub mod transfer;
 
 pub use core_facade::{OpenOptions, TimelineCore};

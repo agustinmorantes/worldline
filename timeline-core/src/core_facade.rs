@@ -1,5 +1,5 @@
 use crate::bundle::{HistoryBundleSummary, HistoryTransferReport};
-use crate::detection::{CaptureTarget, NotificationReceiver, Suppression, Watcher};
+use crate::detection::{CaptureTarget, Notification, NotificationReceiver, Suppression, Watcher};
 use crate::history::{CheckpointOutcome, History, game_uuid};
 use crate::index::{DbPool, Index};
 use crate::install_scanner::InstallScannerItem;
@@ -10,6 +10,7 @@ use crate::store::{self, GameRecord, Store, VersionReason, read_json, write_json
 use crate::sync::{
     self, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
 };
+use crate::sync_loop::{SyncLoop, Trigger};
 use crate::transfer::{Completeness, Heal, Transfer};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
@@ -71,6 +72,19 @@ struct SyncState {
 struct Inner {
     history: History,
     suppression: Suppression,
+    /// Asks the sync loop to push; ignored when no loop runs.
+    sync_trigger: mpsc::Sender<Trigger>,
+}
+
+impl Inner {
+    /// The one way to capture live saves: a created version queues a push.
+    fn checkpoint(&self, game: &FullGame, reason: VersionReason) -> Result<CheckpointOutcome> {
+        let outcome = self.history.checkpoint_locked(game, reason)?;
+        if matches!(outcome, CheckpointOutcome::Created(_)) {
+            let _ = self.sync_trigger.send(Trigger::Push);
+        }
+        Ok(outcome)
+    }
 }
 
 impl CaptureTarget for Inner {
@@ -85,8 +99,7 @@ impl CaptureTarget for Inner {
     fn capture(&self, game_id: i32) -> Result<CheckpointOutcome> {
         store::with_lock(self.history.root(), || {
             let game = self.history.index.get_game(game_id)?;
-            self.history
-                .checkpoint_locked(&game, VersionReason::Watcher)
+            self.checkpoint(&game, VersionReason::Watcher)
         })
     }
 }
@@ -94,6 +107,7 @@ impl CaptureTarget for Inner {
 pub struct TimelineCore {
     inner: Arc<Inner>,
     watcher: Mutex<Option<Watcher>>,
+    sync_loop: Mutex<Option<SyncLoop>>,
     pub data_dir: PathBuf,
     pub icons_dir: PathBuf,
     device: RwLock<DeviceMetadata>,
@@ -103,8 +117,44 @@ pub struct TimelineCore {
 }
 
 impl TimelineCore {
-    /// Opens (creating when needed) the data directory used by the GUI and CLI.
+    /// Opens (creating when needed) the data directory used by one-shot CLI
+    /// commands. Nothing runs in the background: no watcher, no sync loop.
     pub fn open(data_dir: &Path, options: OpenOptions) -> Result<(Self, NotificationReceiver)> {
+        let (core, notifications, ..) = Self::open_parts(data_dir, options)?;
+        Ok((core, notifications))
+    }
+
+    /// Opens for a long-running front end. With `options.watch` it also runs
+    /// the watcher and the sync loop: history reaches the sync folder as it is
+    /// created, other devices' progress is picked up, pruning runs when due.
+    pub fn open_shared(
+        data_dir: &Path,
+        options: OpenOptions,
+    ) -> Result<(Arc<Self>, NotificationReceiver)> {
+        let watch = options.watch;
+        let (core, notifications, triggers, tx) = Self::open_parts(data_dir, options)?;
+        let core = Arc::new(core);
+        if watch {
+            *core.sync_loop.lock().unwrap_or_else(|e| e.into_inner()) = Some(SyncLoop::start(
+                Arc::downgrade(&core),
+                triggers,
+                core.inner.sync_trigger.clone(),
+                tx,
+            ));
+        }
+        Ok((core, notifications))
+    }
+
+    /// The core, plus what `open_shared` needs to start the sync loop.
+    fn open_parts(
+        data_dir: &Path,
+        options: OpenOptions,
+    ) -> Result<(
+        Self,
+        NotificationReceiver,
+        mpsc::Receiver<Trigger>,
+        mpsc::Sender<Notification>,
+    )> {
         std::fs::create_dir_all(data_dir).context("Failed to create the data directory")?;
         let moved_old_data = move_aside_old_data(data_dir)?;
         let pool = open_database(&data_dir.join("database.db"))?;
@@ -114,14 +164,17 @@ impl TimelineCore {
             Index::new(pool),
             device.device_uuid,
         )?;
+        let (sync_trigger, triggers) = mpsc::channel();
         let inner = Arc::new(Inner {
             history,
             suppression: Suppression::default(),
+            sync_trigger,
         });
         let (tx, rx) = mpsc::channel();
         let core = Self {
             inner,
             watcher: Mutex::new(None),
+            sync_loop: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
             icons_dir: data_dir.join("icons"),
             device: RwLock::new(device),
@@ -139,10 +192,10 @@ impl TimelineCore {
                 target,
                 settings,
                 core.inner.suppression.clone(),
-                tx,
+                tx.clone(),
             ));
         }
-        Ok((core, rx))
+        Ok((core, rx, triggers, tx))
     }
 
     /// Where pre-Fase-III data was moved on this start, if any.
@@ -169,14 +222,25 @@ impl TimelineCore {
         }
     }
 
-    /// Captures pending changes and stops the watcher. Also runs on drop.
+    /// Captures pending changes, pushes them and stops the background
+    /// threads. Also runs on drop.
     pub fn shutdown(&self) {
+        // Dropping the watcher captures what is pending, queueing pushes;
+        // the loop drains them, pushes once and exits.
         let watcher = self
             .watcher
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
         drop(watcher);
+        let sync_loop = self
+            .sync_loop
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(sync_loop) = sync_loop {
+            sync_loop.stop();
+        }
     }
 
     // ---- games, slots, versions ------------------------------------------------
@@ -207,8 +271,7 @@ impl TimelineCore {
                     .create_game(&form.title, dirs.as_deref().unwrap_or_default())?;
                 if !game.tracked_dirs.is_empty() {
                     store::with_lock(self.repository_root(), || {
-                        self.history()
-                            .checkpoint_locked(&game, VersionReason::Initial)
+                        self.inner.checkpoint(&game, VersionReason::Initial)
                     })?;
                 }
                 game
@@ -235,8 +298,7 @@ impl TimelineCore {
     pub fn checkpoint(&self, game_id: i32) -> Result<CheckpointOutcome> {
         store::with_lock(self.repository_root(), || {
             let game = self.get_game(game_id)?;
-            self.history()
-                .checkpoint_locked(&game, VersionReason::Manual)
+            self.inner.checkpoint(&game, VersionReason::Manual)
         })
     }
 
@@ -253,8 +315,8 @@ impl TimelineCore {
         let result = store::with_lock(self.repository_root(), || {
             let game = self.get_game(game_id)?;
             if !game.tracked_dirs.is_empty() {
-                self.history()
-                    .checkpoint_locked(&game, reason)
+                self.inner
+                    .checkpoint(&game, reason)
                     .context("Failed to checkpoint the current saves first")?;
             }
             apply(&self.get_game(game_id)?)
@@ -308,8 +370,7 @@ impl TimelineCore {
             self.history().index.set_active_slot(game_id, slot.id)?;
             let game = self.get_game(game_id)?;
             if !game.tracked_dirs.is_empty() {
-                self.history()
-                    .checkpoint_locked(&game, VersionReason::Initial)?;
+                self.inner.checkpoint(&game, VersionReason::Initial)?;
             }
             self.get_game(game_id)
         })
@@ -686,16 +747,6 @@ impl TimelineCore {
         })?;
         history.refresh_game(game.meta.uuid)?;
         Ok(not_arrived)
-    }
-
-    /// Fetches remote history for the games this device tracks. Live saves
-    /// and active pointers are left alone. Returns the per-game problems.
-    pub fn pull_sync(&self) -> Result<Vec<String>> {
-        let remote = self.require_remote()?;
-        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let problems =
-            self.pull_locked(&remote, &remote.store.catalog()?, &self.local_game_uuids()?);
-        Ok(problems)
     }
 
     /// Every game this device has history for, tombstones included.
@@ -1087,7 +1138,7 @@ impl TimelineCore {
             // Keep what is on disk: identical saves just join the remote
             // history; different ones become a new version on top of it.
             store::with_lock(history.root(), || {
-                history.checkpoint_locked(&game, VersionReason::Initial)
+                self.inner.checkpoint(&game, VersionReason::Initial)
             })?;
             return Ok(false);
         }
