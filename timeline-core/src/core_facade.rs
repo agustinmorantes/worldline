@@ -930,18 +930,31 @@ impl TimelineCore {
         // Copies keep their branches: each hangs off the copy of its nearest
         // copied ancestor; seen and retired ancestors stay behind.
         let kept = self.get_game(id)?;
-        let mut copies: HashMap<Uuid, Version> = HashMap::new();
         unseen.sort_by_key(|version| (version.created_at, version.version_number));
-        for version in unseen {
-            let mut parent = version.parent_uuid;
+        let copied: HashSet<Uuid> = unseen.iter().map(|version| version.uuid).collect();
+        let nearest = |mut parent: Option<Uuid>| {
             for _ in 0..parents.len() {
                 match parent {
-                    Some(uuid) if !copies.contains_key(&uuid) => {
+                    Some(uuid) if !copied.contains(&uuid) => {
                         parent = parents.get(&uuid).copied().flatten()
                     }
                     _ => break,
                 }
             }
+            parent.filter(|uuid| copied.contains(uuid))
+        };
+        let mut pending: Vec<_> = unseen
+            .into_iter()
+            .map(|version| (nearest(version.parent_uuid), version))
+            .collect();
+        let mut copies: HashMap<Uuid, Version> = HashMap::new();
+        while !pending.is_empty() {
+            // Parent order, not clock order; a cycle's first member is a root.
+            let ready = pending
+                .iter()
+                .position(|(parent, _)| parent.is_none_or(|uuid| copies.contains_key(&uuid)))
+                .unwrap_or(0);
+            let (parent, version) = pending.remove(ready);
             let parent = parent
                 .and_then(|uuid| copies.get(&uuid))
                 .map(|copy| Uuid::parse_str(&copy.uuid))
@@ -953,10 +966,12 @@ impl TimelineCore {
             }
             copies.insert(version.uuid, copy);
         }
+        // A live branch the deleter saw starts fresh rather than under
+        // whichever copy came last.
         let active = active.and_then(|uuid| copies.get(&Uuid::parse_str(uuid).ok()?));
-        if let Some(active) = active {
-            history.index.set_active_version(slot.id, Some(active.id))?;
-        }
+        history
+            .index
+            .set_active_version(slot.id, active.map(|copy| copy.id))?;
         let kept = self.get_game(id)?;
         self.inner.checkpoint(
             &FullGame {

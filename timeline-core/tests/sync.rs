@@ -615,6 +615,87 @@ fn offline_checkpoints_in_a_remotely_deleted_slot_are_kept() {
     );
 }
 
+/// The store metadata of every version in `slot`.
+fn slot_metas(device: &Device, slot: i32) -> Vec<savegame_timeline_core::store::VersionMeta> {
+    let store = Store::open_existing(device.core.repository_root()).unwrap();
+    let record = store.catalog().unwrap().pop().unwrap();
+    device
+        .core
+        .get_slot(slot)
+        .unwrap()
+        .versions
+        .iter()
+        .map(|version| {
+            record
+                .version(Uuid::parse_str(&version.uuid).unwrap())
+                .unwrap()
+                .clone()
+        })
+        .collect()
+}
+
+#[test]
+fn kept_offline_checkpoints_follow_ancestry_not_clocks() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let (id, default, second) = second_slot_on_both(&a, &b);
+    a.write("save.dat", "offline 1");
+    let parent = b.checkpoint(id);
+    a.write("save.dat", "offline 2");
+    b.checkpoint(id);
+    // A clock that ran fast dated the parent after its child.
+    for entry in walk(&b.data.path().join("repository")) {
+        if entry.file_name().is_some_and(|n| n == "metadata.json")
+            && entry.to_string_lossy().contains(&parent.folder_slug)
+        {
+            let mut meta: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&entry).unwrap()).unwrap();
+            meta["created_at"] = "2099-01-01T00:00:00Z".into();
+            fs::write(&entry, serde_json::to_string(&meta).unwrap()).unwrap();
+        }
+    }
+    b.core.reindex().unwrap();
+    a.core.delete_slot(second.id, Some(default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    a.write("save.dat", "offline 2");
+    b.core.refresh_sync().unwrap();
+
+    let kept = b.game(id).active_slot.unwrap();
+    let metas = slot_metas(&b, kept.id);
+    assert_eq!(metas.len(), 2);
+    let root = metas.iter().find(|m| m.parent_uuid.is_none()).unwrap();
+    assert!(
+        metas.iter().any(|m| m.parent_uuid == Some(root.uuid)),
+        "the child still hangs off its parent"
+    );
+}
+
+#[test]
+fn a_restored_seen_version_is_not_hung_under_an_offline_tip() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let (id, default, second) = second_slot_on_both(&a, &b);
+    let seen = b.game(id).last_version.unwrap();
+    a.write("save.dat", "offline");
+    b.checkpoint(id);
+    b.core.restore_version(seen.id).unwrap();
+    a.core.delete_slot(second.id, Some(default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    a.write("save.dat", "second");
+    b.core.refresh_sync().unwrap();
+
+    let game = b.game(id);
+    let kept = game.active_slot.as_ref().unwrap();
+    assert_eq!(a.read("save.dat").as_deref(), Some("second"));
+    let metas = slot_metas(&b, kept.id);
+    assert_eq!(metas.len(), 2, "the offline tip and the restored saves");
+    let live = game.last_version.unwrap();
+    let live = metas.iter().find(|m| m.uuid.to_string() == live.uuid);
+    assert_eq!(live.unwrap().parent_uuid, None);
+}
+
 #[test]
 fn retired_offline_checkpoints_are_not_resurrected() {
     let remote = tempfile::tempdir().unwrap();
