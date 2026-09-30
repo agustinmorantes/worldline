@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -61,6 +61,10 @@ pub struct SlotMeta {
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Set by a deletion: the versions the deleting device had, so devices
+    /// with progress it never saw keep that progress.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen_versions: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -437,6 +441,14 @@ impl Store {
             let mut merged = newer(existing, incoming, |m| m.updated_at).clone();
             merged.deleted_at = existing.deleted_at.or(incoming.deleted_at);
             merged.folder_slug = existing.folder_slug.clone();
+            merged.seen_versions = existing
+                .seen_versions
+                .iter()
+                .chain(&incoming.seen_versions)
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
             Ok(merged)
         })
     }

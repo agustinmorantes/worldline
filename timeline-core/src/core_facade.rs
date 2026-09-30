@@ -855,11 +855,12 @@ impl TimelineCore {
     }
 
     /// Indexes a pulled game whose slot active here (in `before`, read before
-    /// the pull) another device may have deleted. Progress that device never
-    /// saw (anything but the slot's newest version from before the deletion)
-    /// moves to a new slot of the same name, left live; otherwise the slot
-    /// the index falls back to is loaded. The caller holds the lock with
-    /// capture suppressed.
+    /// the pull) another device may have deleted. The slot's fallback is
+    /// loaded only when the deletion shows that device saw everything here:
+    /// every version of the slot, and live saves equal to the active one.
+    /// Otherwise the unseen versions and the live saves move to a new slot
+    /// of the same name, left live. The caller holds the lock with capture
+    /// suppressed.
     fn leave_deleted_slot(&self, before: &FullGame) -> Result<()> {
         let history = self.history();
         let uuid = crate::history::game_uuid(&before.game)?;
@@ -878,16 +879,12 @@ impl TimelineCore {
         let (Some(deleted), Some(id)) = (deleted, history.index.game_id(uuid)?) else {
             return Ok(());
         };
-        let seen = deleted
-            .versions
-            .into_iter()
-            .filter(|version| Some(version.created_at) <= deleted.meta.deleted_at)
-            .max_by_key(|version| version.created_at);
         let game = self.get_game(id)?;
-        let Some(fallback) = game.active_slot.clone() else {
-            return Ok(());
+        let fallback = game.active_slot.clone();
+        let target = match &fallback {
+            Some(slot) => self.slot_target(&game, slot.id)?,
+            None => None,
         };
-        let target = self.slot_target(&game, fallback.id)?;
         let live = self.covering(game.clone(), target.as_ref())?;
         let files = history.capture(&live)?;
         let dirs: HashSet<Uuid> = live
@@ -895,13 +892,25 @@ impl TimelineCore {
             .iter()
             .filter_map(|dir| Uuid::parse_str(&dir.uuid).ok())
             .collect();
-        let known: Vec<_> = seen
-            .map(|meta| meta.files)
+        let active = before.last_version.as_ref().map(|version| &version.uuid);
+        let known: Vec<_> = deleted
+            .versions
+            .iter()
+            .find(|version| Some(&version.uuid.to_string()) == active)
+            .map(|meta| meta.files.clone())
             .unwrap_or_default()
             .into_iter()
             .filter(|file| dirs.contains(&file.tracked_dir_uuid))
             .collect();
-        if files.is_empty() || files == known {
+        let mut unseen: Vec<_> = deleted
+            .versions
+            .into_iter()
+            .filter(|version| !deleted.meta.seen_versions.contains(&version.uuid))
+            .collect();
+        if let Some(fallback) = fallback
+            && unseen.is_empty()
+            && files == known
+        {
             return self.activate_slot(&game, fallback.id);
         }
         let name = &deleted.meta.name;
@@ -909,6 +918,14 @@ impl TimelineCore {
             .create_slot(id, name)
             .or_else(|_| history.create_slot(id, &format!("{name} (kept)")))?;
         history.index.set_active_slot(id, slot.id)?;
+        unseen.sort_by_key(|version| version.version_number);
+        for version in unseen {
+            let kept = self.get_game(id)?;
+            let copy = history.commit_version(&kept, &slot, version.reason, version.files)?;
+            if version.tag.is_some() {
+                history.tag_version(copy.id, version.tag)?;
+            }
+        }
         let kept = self.get_game(id)?;
         self.inner.checkpoint(
             &FullGame {

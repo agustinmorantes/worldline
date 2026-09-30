@@ -548,6 +548,7 @@ mod tests {
                             created_at: t,
                             updated_at: t,
                             deleted_at: None,
+                            seen_versions: Vec::new(),
                         },
                         versions: vec![],
                     }],
@@ -762,6 +763,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            seen_versions: Vec::new(),
         };
         store.write_game(&game).unwrap();
         store.write_slot("g__g_1", &slot).unwrap();

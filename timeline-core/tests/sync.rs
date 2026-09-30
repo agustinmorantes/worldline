@@ -9,7 +9,7 @@ use savegame_timeline_core::OpenOptions;
 use savegame_timeline_core::TimelineCore;
 use savegame_timeline_core::detection::{Notification, NotificationReceiver};
 use savegame_timeline_core::maintenance::{self, RetentionSettings};
-use savegame_timeline_core::models::GameForm;
+use savegame_timeline_core::models::{GameForm, Slot};
 use savegame_timeline_core::store::Store;
 use savegame_timeline_core::sync::{Divergence, SyncSettings};
 use std::fs;
@@ -530,6 +530,100 @@ fn a_remotely_deleted_active_slot_without_new_progress_falls_back() {
     assert_eq!(game.active_slot.as_ref().unwrap().name, "Default Slot");
     assert_eq!(game.slots.len(), 1);
     assert_eq!(a.read("save.dat").as_deref(), Some("main"));
+}
+
+/// A game with "Default Slot" ("main") and "Second" ("second", active),
+/// adopted by `b`. Returns B's game id and A's two slots.
+fn second_slot_on_both(a: &Device, b: &Device) -> (i32, Slot, Slot) {
+    a.write("save.dat", "main");
+    let game = a.add_game("Slots");
+    let default = game.active_slot.clone().unwrap();
+    let second = a
+        .core
+        .create_slot(game.game.id, "Second")
+        .unwrap()
+        .active_slot
+        .unwrap();
+    a.write("save.dat", "second");
+    a.checkpoint(game.game.id);
+    a.core.refresh_sync().unwrap();
+    let adopted = b.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    (adopted.game.id, default, second)
+}
+
+#[test]
+fn offline_checkpoints_in_a_remotely_deleted_slot_are_kept() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let (id, default, second) = second_slot_on_both(&a, &b);
+    // B checkpoints offline; A deletes the slot without receiving them.
+    a.write("save.dat", "offline 1");
+    b.checkpoint(id);
+    a.write("save.dat", "offline 2");
+    b.checkpoint(id);
+    a.core.delete_slot(second.id, Some(default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    a.write("save.dat", "offline 2");
+    b.core.refresh_sync().unwrap();
+
+    let game = b.game(id);
+    let kept = game.active_slot.as_ref().unwrap();
+    assert_eq!(kept.name, "Second");
+    assert_ne!(kept.uuid, second.uuid);
+    assert_eq!(a.read("save.dat").as_deref(), Some("offline 2"));
+    b.core.run_pruning().unwrap();
+    let versions = b.core.get_slot(kept.id).unwrap().versions;
+    assert_eq!(versions.len(), 2, "both offline checkpoints are kept");
+    let store = Store::open_existing(b.core.repository_root()).unwrap();
+    let record = store.catalog().unwrap().pop().unwrap();
+    for version in versions {
+        let meta = record
+            .version(Uuid::parse_str(&version.uuid).unwrap())
+            .unwrap();
+        for file in &meta.files {
+            savegame_timeline_core::chunks::verify_file(&store, file).unwrap();
+        }
+    }
+}
+
+#[test]
+fn emptied_saves_in_a_remotely_deleted_slot_are_kept() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let (id, default, second) = second_slot_on_both(&a, &b);
+    a.core.delete_slot(second.id, Some(default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    // B deleted its saves after the last version A saw.
+    fs::remove_file(a.save_dir().join("save.dat")).unwrap();
+    b.core.refresh_sync().unwrap();
+
+    assert_eq!(a.read("save.dat"), None);
+    assert_eq!(b.game(id).active_slot.unwrap().name, "Second");
+}
+
+#[test]
+fn concurrent_deletions_of_every_slot_leave_a_live_slot() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let (id, _, second) = second_slot_on_both(&a, &b);
+    // B deletes the slot A falls back to; A deletes the one B plays in.
+    let b_default = b.game(id).slots.into_iter().find(|s| s.name != "Second");
+    b.core.delete_slot(b_default.unwrap().id, None).unwrap();
+    let a_game = a.game_by_title("Slots").unwrap();
+    let a_default = a_game.slots.iter().find(|s| s.name != "Second").unwrap();
+    a.core.delete_slot(second.id, Some(a_default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    a.write("save.dat", "b progress");
+    b.core.refresh_sync().unwrap();
+
+    let game = b.game(id);
+    let live = game.active_slot.as_ref().expect("a live slot");
+    assert_eq!(live.name, "Second");
+    assert_eq!(a.read("save.dat").as_deref(), Some("b progress"));
+    assert!(game.last_version.is_some(), "the progress is captured");
 }
 
 fn maintenance_pointers(remote: &Path) -> std::collections::HashSet<Uuid> {

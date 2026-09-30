@@ -176,9 +176,16 @@ impl History {
     pub fn delete_slot(&self, slot_id: i32) -> Result<()> {
         let slot = self.index.get_slot(slot_id)?.slot;
         let game = self.index.get_game(slot.game_id)?;
-        let mut meta = self.slot_meta(&game, &slot)?;
+        let record = self
+            .record(&game.game)?
+            .slots
+            .into_iter()
+            .find(|record| record.meta.uuid.to_string() == slot.uuid)
+            .with_context(|| format!("files for slot '{}' are missing", slot.name))?;
+        let mut meta = record.meta;
         let now = Utc::now();
         meta.deleted_at = Some(now);
+        meta.seen_versions = record.versions.iter().map(|version| version.uuid).collect();
         meta.updated_at = now;
         self.store.write_slot(&game.game.folder_slug, &meta)?;
         self.refresh_game(game_uuid(&game.game)?)
@@ -250,7 +257,9 @@ impl History {
         chunks::capture(&self.store, &roots).context("failed to capture tracked directories")
     }
 
-    fn commit_version(
+    /// Records `files` as a new version on `slot`, child of `game`'s active
+    /// version. The caller must hold the repository lock.
+    pub fn commit_version(
         &self,
         game: &FullGame,
         slot: &Slot,
@@ -319,6 +328,7 @@ impl History {
                 created_at: now,
                 updated_at: now,
                 deleted_at: None,
+                seen_versions: Vec::new(),
             },
         )?;
         Ok(uuid)

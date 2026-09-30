@@ -268,6 +268,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            seen_versions: Vec::new(),
         };
         let live = tempdir().unwrap();
         std::fs::write(live.path().join("save.dat"), b"progress").unwrap();
