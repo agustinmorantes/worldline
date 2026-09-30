@@ -53,14 +53,11 @@ fn run(
     let mut due = Instant::now();
     loop {
         // Coalesce whatever queued up while working.
-        let (mut sync, mut push, mut stop) = (false, false, false);
-        for trigger in std::iter::once(next).chain(triggers.try_iter()) {
-            match trigger {
-                Trigger::Sync => sync = true,
-                Trigger::Push => push = true,
-                Trigger::Stop => stop = true,
-            }
-        }
+        let Plan { sync, push, stop } = coalesce(
+            std::iter::once(next).chain(triggers.try_iter()),
+            due,
+            Instant::now(),
+        );
         let Some(core) = core.upgrade() else { return };
         // Shutting down only publishes; a pull or prune could keep the exit waiting.
         if stop || (push && !sync) {
@@ -105,5 +102,45 @@ fn full_sync(core: &Arc<TimelineCore>, notifications: &mpsc::Sender<Notification
 fn push_only(core: &Arc<TimelineCore>, notifications: &mpsc::Sender<Notification>) {
     if let Err(error) = core.push_sync() {
         let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Plan {
+    sync: bool,
+    push: bool,
+    stop: bool,
+}
+
+/// Merges queued triggers. A periodic sync that came due counts even when a
+/// push arrived first, so steady pushes cannot starve pull and pruning.
+fn coalesce(triggers: impl Iterator<Item = Trigger>, due: Instant, now: Instant) -> Plan {
+    let mut plan = Plan {
+        sync: now >= due,
+        push: false,
+        stop: false,
+    };
+    for trigger in triggers {
+        match trigger {
+            Trigger::Sync => plan.sync = true,
+            Trigger::Push => plan.push = true,
+            Trigger::Stop => plan.stop = true,
+        }
+    }
+    plan
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_due_sync_is_not_starved_by_pushes() {
+        let now = Instant::now();
+        let queued = || [Trigger::Push, Trigger::Push].into_iter();
+        let plan = coalesce(queued(), now - Duration::from_secs(1), now);
+        assert!(plan.sync && plan.push);
+        let plan = coalesce(queued(), now + TICK, now);
+        assert!(!plan.sync && plan.push, "not due yet: push only");
     }
 }

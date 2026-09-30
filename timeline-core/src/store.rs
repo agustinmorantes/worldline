@@ -237,6 +237,15 @@ impl Store {
             .is_ok_and(|metadata| metadata.is_file())
     }
 
+    /// Moves a damaged chunk out of the way (dot-prefixed, so `has_chunk` and
+    /// `chunk_sizes` no longer see it) and lets the next capture or upload
+    /// republish it.
+    pub fn quarantine_chunk(&self, hash: &str) -> Result<()> {
+        let path = self.chunk_path(hash)?;
+        let aside = path.with_file_name(format!(".corrupt-{}", short_random()));
+        fs::rename(&path, &aside).with_context(|| format!("failed to set aside chunk {hash}"))
+    }
+
     /// Every stored chunk with its on-disk (compressed) size. Anything that is
     /// not a well-formed chunk path is ignored.
     pub fn chunk_sizes(&self) -> Result<HashMap<String, u64>> {
@@ -259,26 +268,43 @@ impl Store {
         Ok(sizes)
     }
 
-    /// The first `metadata.json` that exists but cannot be read. Destructive
-    /// maintenance refuses to run while one exists (fail closed).
-    pub fn first_unreadable_metadata(&self) -> Result<Option<PathBuf>> {
-        fn walk(dir: &Path, depth: usize) -> Result<Option<PathBuf>> {
-            for child in entity_dirs(dir)? {
-                let metadata = child.join(METADATA);
-                if metadata.exists() && read_json::<serde_json::Value>(&metadata).is_err() {
-                    return Ok(Some(metadata));
+    /// The first `metadata.json` that exists but that the catalog loaders would
+    /// drop (unparseable, invalid, or not linked to its parent). Destructive
+    /// maintenance refuses to run while one exists (fail closed): what the
+    /// catalog cannot see, GC would treat as dead. A missing `metadata.json`
+    /// is a half-arrived directory, not an error.
+    pub fn first_unloadable_metadata(&self) -> Result<Option<PathBuf>> {
+        for game_dir in entity_dirs(&self.root.join("games"))? {
+            let game =
+                match entity_state::<GameMeta>(&game_dir, |meta| valid_slug(&meta.folder_slug)) {
+                    Ok(Some(game)) => game,
+                    Ok(None) => continue,
+                    Err(path) => return Ok(Some(path)),
+                };
+            for dir in entity_dirs(&game_dir.join("tracked-dirs"))? {
+                if let Err(path) = entity_state::<TrackedDirMeta>(&dir, |tracked| {
+                    tracked_dir_loadable(tracked, &game)
+                }) {
+                    return Ok(Some(path));
                 }
-                if depth > 0 {
-                    for sub in ["tracked-dirs", "slots", "versions"] {
-                        if let Some(found) = walk(&child.join(sub), depth - 1)? {
-                            return Ok(Some(found));
-                        }
+            }
+            for slot_dir in entity_dirs(&game_dir.join("slots"))? {
+                let slot =
+                    match entity_state::<SlotMeta>(&slot_dir, |slot| slot_loadable(slot, &game)) {
+                        Ok(Some(slot)) => slot,
+                        Ok(None) => continue,
+                        Err(path) => return Ok(Some(path)),
+                    };
+                for dir in entity_dirs(&slot_dir.join("versions"))? {
+                    if let Err(path) = entity_state::<VersionMeta>(&dir, |version| {
+                        version_loadable(version, &slot, &game)
+                    }) {
+                        return Ok(Some(path));
                     }
                 }
             }
-            Ok(None)
         }
-        walk(&self.root.join("games"), 2)
+        Ok(None)
     }
 
     /// Game metadata only, without slots or versions.
@@ -346,25 +372,20 @@ impl Store {
         let tracked_dirs = entity_dirs(&dir.join("tracked-dirs"))?
             .into_iter()
             .filter_map(|dir| read_entity::<TrackedDirMeta>(&dir))
-            .filter(|tracked| tracked.game_uuid == meta.uuid && valid_slug(&tracked.folder_slug))
+            .filter(|tracked| tracked_dir_loadable(tracked, &meta))
             .collect();
         let mut slots = Vec::new();
         for slot_dir in entity_dirs(&dir.join("slots"))? {
             let Some(slot) = read_entity::<SlotMeta>(&slot_dir) else {
                 continue;
             };
-            if slot.game_uuid != meta.uuid || !valid_slug(&slot.folder_slug) {
+            if !slot_loadable(&slot, &meta) {
                 continue;
             }
             let mut versions: Vec<VersionMeta> = entity_dirs(&slot_dir.join("versions"))?
                 .into_iter()
                 .filter_map(|dir| read_entity::<VersionMeta>(&dir))
-                .filter(|version| {
-                    version.slot_uuid == slot.uuid
-                        && version.game_uuid == meta.uuid
-                        && valid_slug(&version.folder_slug)
-                        && validate_manifest(version).is_ok()
-                })
+                .filter(|version| version_loadable(version, &slot, &meta))
                 .collect();
             versions.sort_by_key(|version| (version.created_at, version.uuid));
             slots.push(SlotRecord {
@@ -500,6 +521,35 @@ impl Store {
         write_json(&path, marker)?;
         Ok(true)
     }
+
+    /// Unlike `write_marker`, overwrites: used when a game's identity changes
+    /// and its markers must follow the versions to the new game.
+    pub fn replace_marker(&self, marker: &RetirementMarker) -> Result<()> {
+        write_json(
+            &self
+                .root
+                .join("retired-versions")
+                .join(format!("{}.json", marker.version_uuid)),
+            marker,
+        )
+    }
+
+    /// Removes a game's slots (with their versions) and tracked directories,
+    /// keeping its own metadata (the tombstone of a superseded identity).
+    pub fn drop_game_history(&self, game_slug: &str) -> Result<()> {
+        ensure_slug(game_slug)?;
+        for sub in ["slots", "tracked-dirs"] {
+            let dir = self.game_dir(game_slug).join(sub);
+            match fs::remove_dir_all(&dir) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                    return Err(error)
+                        .with_context(|| format!("failed to remove {}", dir.display()));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 fn newer<'a, T>(existing: &'a T, incoming: &'a T, updated: impl Fn(&T) -> DateTime<Utc>) -> &'a T {
@@ -532,6 +582,37 @@ where
         None => return write_json(&dir.join(METADATA), incoming),
     };
     write_json(&dir.join(METADATA), &value)
+}
+
+/// The filters `load_game` applies; `first_unloadable_metadata` mirrors them.
+fn tracked_dir_loadable(tracked: &TrackedDirMeta, game: &GameMeta) -> bool {
+    tracked.game_uuid == game.uuid && valid_slug(&tracked.folder_slug)
+}
+
+fn slot_loadable(slot: &SlotMeta, game: &GameMeta) -> bool {
+    slot.game_uuid == game.uuid && valid_slug(&slot.folder_slug)
+}
+
+fn version_loadable(version: &VersionMeta, slot: &SlotMeta, game: &GameMeta) -> bool {
+    version.slot_uuid == slot.uuid
+        && version.game_uuid == game.uuid
+        && valid_slug(&version.folder_slug)
+        && validate_manifest(version).is_ok()
+}
+
+/// `Ok(None)`: no metadata yet. `Err(path)`: metadata the loaders would drop.
+fn entity_state<T: DeserializeOwned>(
+    dir: &Path,
+    loadable: impl Fn(&T) -> bool,
+) -> Result<Option<T>, PathBuf> {
+    let path = dir.join(METADATA);
+    if !path.exists() {
+        return Ok(None);
+    }
+    match read_json::<T>(&path) {
+        Ok(entity) if loadable(&entity) => Ok(Some(entity)),
+        _ => Err(path),
+    }
 }
 
 fn read_entity<T: DeserializeOwned>(dir: &Path) -> Option<T> {
@@ -964,5 +1045,34 @@ mod tests {
         )
         .unwrap();
         assert!(Store::open(root.path()).is_err());
+    }
+
+    #[test]
+    fn markers_are_write_once_unless_explicitly_replaced_and_game_history_can_be_dropped() {
+        let root = tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let (version, slot) = (Uuid::new_v4(), Uuid::new_v4());
+        let marker = |game: Uuid| RetirementMarker {
+            version_uuid: version,
+            slot_uuid: slot,
+            game_uuid: game,
+            retired_at: Utc::now(),
+        };
+        let (old, new) = (Uuid::new_v4(), Uuid::new_v4());
+        assert!(store.write_marker(&marker(old)).unwrap());
+        assert!(!store.write_marker(&marker(new)).unwrap());
+        assert_eq!(store.markers().unwrap()[&version].game_uuid, old);
+        store.replace_marker(&marker(new)).unwrap();
+        assert_eq!(store.markers().unwrap()[&version].game_uuid, new);
+
+        let meta = game(old, "Old", Utc::now());
+        store.write_game(&meta).unwrap();
+        let dir = store.game_dir(&meta.folder_slug);
+        fs::create_dir_all(dir.join("slots").join("s__s_1")).unwrap();
+        fs::create_dir_all(dir.join("tracked-dirs").join("t__t_1")).unwrap();
+        store.drop_game_history(&meta.folder_slug).unwrap();
+        assert!(!dir.join("slots").exists() && !dir.join("tracked-dirs").exists());
+        assert!(store.find_game(old).unwrap().is_some());
+        store.drop_game_history(&meta.folder_slug).unwrap();
     }
 }

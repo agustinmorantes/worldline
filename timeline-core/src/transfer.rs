@@ -21,15 +21,21 @@ pub enum Completeness {
 
 /// Which versions already in the destination get their chunks re-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Heal {
+pub enum Heal<'a> {
     None,
-    CreatedSince(DateTime<Utc>),
+    /// Versions created since a moment, or in `pulled` (copied here recently,
+    /// however old they are).
+    Recent {
+        since: DateTime<Utc>,
+        pulled: &'a HashSet<Uuid>,
+    },
     All,
 }
 
 #[derive(Debug, Default, Clone, Serialize, PartialEq, Eq)]
 pub struct TransferReport {
-    pub versions_copied: usize,
+    /// Versions newly published to the destination.
+    pub copied_versions: Vec<Uuid>,
     pub chunks_copied: usize,
     pub bytes_copied: u64,
     /// Versions skipped because their parent or chunks haven't arrived yet.
@@ -62,12 +68,13 @@ impl<'a> Transfer<'a> {
         &mut self,
         game: &GameRecord,
         markers: &HashMap<Uuid, RetirementMarker>,
-        heal: Heal,
+        heal: Heal<'_>,
     ) -> Result<HashSet<Uuid>> {
         let slug = &game.meta.folder_slug;
         if self.completeness == Completeness::Complete {
             // Everything that can fail is checked before any metadata is
             // written, so a failed import never leaves a partial game behind.
+            ensure_acyclic(game)?;
             let known: HashSet<Uuid> = game.versions().map(|v| v.uuid).collect();
             for version in game.versions() {
                 if let Some(parent) = version.parent_uuid.filter(|p| !known.contains(p)) {
@@ -116,7 +123,9 @@ impl<'a> Transfer<'a> {
                 let check_chunks = !retired
                     && match (already, heal) {
                         (false, _) | (true, Heal::All) => true,
-                        (true, Heal::CreatedSince(since)) => version.created_at >= since,
+                        (true, Heal::Recent { since, pulled }) => {
+                            version.created_at >= since || pulled.contains(&version.uuid)
+                        }
                         (true, Heal::None) => false,
                     };
                 if check_chunks && let Err(error) = self.copy_chunks(version) {
@@ -133,7 +142,7 @@ impl<'a> Transfer<'a> {
                 self.dst
                     .publish_version(slug, slot_slugs[&version.slot_uuid], version)?;
                 if !already {
-                    self.report.versions_copied += 1;
+                    self.report.copied_versions.push(version.uuid);
                     present.insert(version.uuid);
                 }
             }
@@ -173,11 +182,7 @@ impl<'a> Transfer<'a> {
                     if self.completeness == Completeness::Partial {
                         // Move the damaged copy out of the way so the device
                         // holding the real bytes re-uploads it (writer healing).
-                        let path = self.src.chunk_path(hash)?;
-                        let _ = std::fs::rename(
-                            &path,
-                            path.with_file_name(format!(".corrupt-{}", Uuid::new_v4().simple())),
-                        );
+                        let _ = self.src.quarantine_chunk(hash);
                     }
                     bail!("chunk {hash} failed verification");
                 }
@@ -190,6 +195,25 @@ impl<'a> Transfer<'a> {
         }
         Ok(())
     }
+}
+
+/// Rejects a version whose parent chain loops instead of reaching a root.
+pub(crate) fn ensure_acyclic(game: &GameRecord) -> Result<()> {
+    let parents: HashMap<Uuid, Option<Uuid>> = game
+        .versions()
+        .map(|version| (version.uuid, version.parent_uuid))
+        .collect();
+    for version in game.versions() {
+        let mut seen = HashSet::from([version.uuid]);
+        let mut current = version.parent_uuid;
+        while let Some(parent) = current {
+            if !seen.insert(parent) {
+                bail!("version {} has cyclic ancestry", version.uuid);
+            }
+            current = parents.get(&parent).copied().flatten();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -358,7 +382,74 @@ mod tests {
             .copy_game(
                 &record,
                 &HashMap::new(),
-                Heal::CreatedSince(Utc::now() - chrono::Duration::hours(1)),
+                Heal::Recent {
+                    since: Utc::now() - chrono::Duration::hours(1),
+                    pulled: &HashSet::new(),
+                },
+            )
+            .unwrap();
+        assert!(chunk.exists());
+    }
+
+    #[test]
+    fn a_cyclic_bundle_is_rejected_before_anything_is_written() {
+        let (a, b) = (tempdir().unwrap(), tempdir().unwrap());
+        let (src, dst) = (
+            Store::open(a.path()).unwrap(),
+            Store::open(b.path()).unwrap(),
+        );
+        let (mut record, parent, child) = fixture(&src);
+        for version in &mut record.slots[0].versions {
+            if version.uuid == parent.uuid {
+                version.parent_uuid = Some(child.uuid);
+            }
+        }
+        assert!(
+            Transfer::new(&src, &dst, Completeness::Complete)
+                .copy_game(&record, &HashMap::new(), Heal::None)
+                .is_err()
+        );
+        assert!(dst.find_game(record.meta.uuid).unwrap().is_none());
+        assert!(dst.catalog().unwrap().is_empty());
+    }
+
+    #[test]
+    fn healing_covers_old_versions_that_were_pulled_recently() {
+        let (a, b) = (tempdir().unwrap(), tempdir().unwrap());
+        let (src, dst) = (
+            Store::open(a.path()).unwrap(),
+            Store::open(b.path()).unwrap(),
+        );
+        let (mut record, parent, child) = fixture(&src);
+        for version in &mut record.slots[0].versions {
+            version.created_at -= chrono::Duration::days(30);
+        }
+        Transfer::new(&src, &dst, Completeness::Partial)
+            .copy_game(&record, &HashMap::new(), Heal::None)
+            .unwrap();
+        let chunk = dst.chunk_path(&parent.files[0].chunks[0]).unwrap();
+        std::fs::remove_file(&chunk).unwrap();
+        let since = Utc::now() - chrono::Duration::hours(1);
+
+        Transfer::new(&src, &dst, Completeness::Partial)
+            .copy_game(
+                &record,
+                &HashMap::new(),
+                Heal::Recent {
+                    since,
+                    pulled: &HashSet::new(),
+                },
+            )
+            .unwrap();
+        assert!(!chunk.exists(), "old and not pulled: not healed");
+        Transfer::new(&src, &dst, Completeness::Partial)
+            .copy_game(
+                &record,
+                &HashMap::new(),
+                Heal::Recent {
+                    since,
+                    pulled: &HashSet::from([child.uuid]),
+                },
             )
             .unwrap();
         assert!(chunk.exists());

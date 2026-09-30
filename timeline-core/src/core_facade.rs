@@ -66,6 +66,15 @@ impl PruningRunReport {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct SyncState {
     last_full_heal: Option<DateTime<Utc>>,
+    /// Versions copied from the remote lately, so the next pushes heal them
+    /// like new ones however old they are.
+    #[serde(default)]
+    recent_pulls: HashMap<Uuid, DateTime<Utc>>,
+}
+
+/// How far back a push heals versions that were created or pulled.
+fn heal_window() -> chrono::Duration {
+    maintenance::GRACE * 2
 }
 
 /// State shared with the watcher thread.
@@ -709,10 +718,19 @@ impl TimelineCore {
         let full = state
             .last_full_heal
             .is_none_or(|at| now - at > chrono::Duration::days(1));
+        let pulled: HashSet<Uuid> = state
+            .recent_pulls
+            .iter()
+            .filter(|(_, at)| now - **at <= heal_window())
+            .map(|(uuid, _)| *uuid)
+            .collect();
         let heal = if full {
             Heal::All
         } else {
-            Heal::CreatedSince(now - maintenance::GRACE * 2)
+            Heal::Recent {
+                since: now - heal_window(),
+                pulled: &pulled,
+            }
         };
         // Remote markers too: healing must not re-upload what another device
         // retired before this one pulled the retirement.
@@ -740,13 +758,32 @@ impl TimelineCore {
     fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
         let history = self.history();
         let markers = remote.store.markers()?;
-        let not_arrived = store::with_lock(history.root(), || {
+        let report = store::with_lock(history.root(), || {
             let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial);
             transfer.copy_game(game, &markers, Heal::None)?;
-            Ok(transfer.report.not_arrived)
+            Ok(transfer.report)
         })?;
+        self.record_pulls(&report.copied_versions)?;
         history.refresh_game(game.meta.uuid)?;
-        Ok(not_arrived)
+        Ok(report.not_arrived)
+    }
+
+    /// Remembers pulled versions for push healing and forgets old entries.
+    /// Callers hold `sync_lock`.
+    fn record_pulls(&self, copied: &[Uuid]) -> Result<()> {
+        if copied.is_empty() {
+            return Ok(());
+        }
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        let now = Utc::now();
+        state
+            .recent_pulls
+            .retain(|_, at| now - *at <= heal_window());
+        state
+            .recent_pulls
+            .extend(copied.iter().map(|uuid| (*uuid, now)));
+        write_json(&state_path, &state)
     }
 
     /// Every game this device has history for, tombstones included.
@@ -1034,30 +1071,16 @@ impl TimelineCore {
                         .store
                         .publish_version(&slug, &slot.meta.folder_slug, &version)?;
                     if let Some(marker) = markers.get(&version.uuid) {
-                        write_json(
-                            &history
-                                .root()
-                                .join("retired-versions")
-                                .join(format!("{}.json", version.uuid)),
-                            &store::RetirementMarker {
-                                game_uuid: new_uuid,
-                                ..marker.clone()
-                            },
-                        )?;
+                        history.store.replace_marker(&store::RetirementMarker {
+                            game_uuid: new_uuid,
+                            ..marker.clone()
+                        })?;
                     }
                 }
             }
             // The old identity may already be on the remote: keep a tombstone
             // so no device resurrects it, and drop its now-duplicated history.
-            let old_dir = history.store.game_dir(&old.meta.folder_slug);
-            for sub in ["slots", "tracked-dirs"] {
-                match std::fs::remove_dir_all(old_dir.join(sub)) {
-                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                        return Err(error.into());
-                    }
-                    _ => {}
-                }
-            }
+            history.store.drop_game_history(&old.meta.folder_slug)?;
             let now = Utc::now();
             history.store.write_game(&store::GameMeta {
                 deleted_at: Some(now),
@@ -1324,6 +1347,16 @@ impl TimelineCore {
     }
 
     /// The union catalog, retired set and protected pointers used for planning.
+    /// Sizes for budget planning: local chunks overlaid with the remote's, so
+    /// remote-only chunks count and every device plans with the same numbers.
+    fn planning_chunk_sizes(&self, remote: Option<&Remote>) -> Result<HashMap<String, u64>> {
+        let mut sizes = self.history().store.chunk_sizes()?;
+        if let Some(remote) = remote {
+            sizes.extend(remote.store.chunk_sizes()?);
+        }
+        Ok(sizes)
+    }
+
     fn retention_inputs(&self, remote: Option<&Remote>) -> Result<RetentionInputs> {
         let history = self.history();
         let mut games = remote
@@ -1382,7 +1415,7 @@ impl TimelineCore {
             games: &inputs.games,
             retired: &inputs.retired,
             pointed: &inputs.pointed,
-            chunk_sizes: &self.history().store.chunk_sizes()?,
+            chunk_sizes: &self.planning_chunk_sizes(remote.as_ref())?,
             settings: &settings,
             now: planning_now(),
         });
@@ -1430,7 +1463,7 @@ impl TimelineCore {
                 games: &inputs.games,
                 retired: &inputs.retired,
                 pointed: &inputs.pointed,
-                chunk_sizes: &history.store.chunk_sizes()?,
+                chunk_sizes: &self.planning_chunk_sizes(remote.as_ref())?,
                 settings: &settings,
                 now,
             });

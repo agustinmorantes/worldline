@@ -135,6 +135,11 @@ impl Loop {
                     }
                 }
                 Ok(Event::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
+                    // Events still buffered in the debouncer are lost with it, so every
+                    // game is checked once more; unchanged games are a no-op.
+                    for game in &self.games {
+                        self.scheduler.changed(game.game.id);
+                    }
                     for game in self.scheduler.drain() {
                         self.capture(game);
                     }
@@ -280,4 +285,61 @@ fn eligible_at(
             .max()
             .map(|created| created + Duration::minutes(i64::from(cooldown_minutes))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::CheckpointOutcome;
+    use crate::models::{Game, TrackedDir};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counting(AtomicUsize);
+
+    impl CaptureTarget for Counting {
+        fn games(&self) -> anyhow::Result<Vec<FullGame>> {
+            Ok(vec![FullGame {
+                game: Game {
+                    id: 1,
+                    uuid: String::new(),
+                    title: "G".into(),
+                    title_normalized: "g".into(),
+                    folder_slug: "g__g_1".into(),
+                    active_slot_id: None,
+                    icon_path: None,
+                },
+                tracked_dirs: Vec::<TrackedDir>::new(),
+                slots: vec![],
+                active_slot: None,
+                versions: vec![],
+                last_version: None,
+            }])
+        }
+
+        fn capture(&self, _game_id: i32) -> anyhow::Result<CheckpointOutcome> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(CheckpointOutcome::Empty)
+        }
+    }
+
+    /// Events still inside the debouncer never reach the scheduler, so
+    /// shutdown must capture every game rather than only the pending ones.
+    #[test]
+    fn shutdown_captures_every_game_even_without_a_pending_change() {
+        let target = Arc::new(Counting(AtomicUsize::new(0)));
+        let mut watcher = Watcher::start(
+            target.clone(),
+            MonitoringSettings::default(),
+            Suppression::default(),
+            mpsc::channel().0,
+        );
+        // The startup checkpoint has run once the scheduler is drained.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while target.0.load(Ordering::SeqCst) < 1 {
+            assert!(std::time::Instant::now() < deadline, "no startup capture");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        watcher.shutdown();
+        assert_eq!(target.0.load(Ordering::SeqCst), 2);
+    }
 }

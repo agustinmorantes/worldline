@@ -274,17 +274,28 @@ pub fn plan<'a>(input: &PlanInput<'a>) -> Plan {
     }
 }
 
+/// The subtree below `start`, itself included. Corrupt metadata can make
+/// ancestry cyclic, so every node is visited once.
 fn descendants(start: Uuid, children: &HashMap<Uuid, Vec<Uuid>>) -> Vec<Uuid> {
     let mut out = Vec::new();
+    let mut seen = HashSet::from([start]);
     let mut stack = vec![start];
     while let Some(uuid) = stack.pop() {
         out.push(uuid);
-        stack.extend(children.get(&uuid).into_iter().flatten());
+        stack.extend(
+            children
+                .get(&uuid)
+                .into_iter()
+                .flatten()
+                .filter(|kid| seen.insert(**kid)),
+        );
     }
     out
 }
 
 /// Splits the graph into chains whose interior versions have one child.
+/// Starting from roots is cycle-safe: a version has one parent, so a cycle is
+/// never reachable from a root.
 fn segments(roots: &[Uuid], children: &HashMap<Uuid, Vec<Uuid>>) -> Vec<Vec<Uuid>> {
     let mut segments = Vec::new();
     let mut starts: Vec<Uuid> = roots.to_vec();
@@ -378,9 +389,9 @@ pub struct GcReport {
 
 /// Chunks of every live version plus of the `extra` versions (device pointers).
 fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<HashSet<String>> {
-    if let Some(path) = store.first_unreadable_metadata()? {
+    if let Some(path) = store.first_unloadable_metadata()? {
         bail!(
-            "{} is unreadable; garbage collection is skipped until it is fixed",
+            "{} is unloadable; garbage collection is skipped until it is fixed",
             path.display()
         );
     }
@@ -708,5 +719,84 @@ mod tests {
             "root and pointer alone exceed the budget"
         );
         assert_eq!(retired(&plan), HashSet::from([2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn cyclic_ancestry_does_not_hang_branch_expiry() {
+        let now = Utc::now();
+        let mut graph = Graph::new();
+        graph.add(1, Some(2), at(24 * 50, now), 1);
+        graph.add(2, Some(1), at(24 * 49, now), 2);
+        graph.add(3, Some(1), at(24 * 48, now), 3); // fork off the cycle
+        let settings = RetentionSettings {
+            keep_all_hours: 24 * 365,
+            ..RetentionSettings::default()
+        };
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(retired(&graph.plan(&[], settings, now)));
+        });
+        result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("planning hangs on cyclic ancestry");
+    }
+
+    #[test]
+    fn gc_refuses_to_run_when_a_version_manifest_is_invalid() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let now = Utc::now();
+        let game = GameMeta {
+            uuid: Uuid::from_u128(1),
+            title: "G".into(),
+            folder_slug: "g__g_1".into(),
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        };
+        let slot = SlotMeta {
+            uuid: Uuid::from_u128(2),
+            game_uuid: game.uuid,
+            folder_slug: "s__s_2".into(),
+            name: "S".into(),
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        };
+        store.write_game(&game).unwrap();
+        store.write_slot("g__g_1", &slot).unwrap();
+        let chunk = hash(7);
+        crate::chunks::publish_chunk(&store, &chunk, b"x").unwrap();
+        let version = VersionMeta {
+            uuid: Uuid::from_u128(3),
+            game_uuid: game.uuid,
+            slot_uuid: slot.uuid,
+            parent_uuid: None,
+            version_number: 1,
+            folder_slug: "v__v_3".into(),
+            reason: VersionReason::Watcher,
+            tag: None,
+            created_at: now,
+            updated_at: now,
+            origin_device: None,
+            files: vec![FileEntry {
+                tracked_dir_uuid: Uuid::nil(),
+                path: "save".into(),
+                size: 1,
+                sha256: chunk.clone(),
+                chunks: vec![chunk.clone()],
+            }],
+        };
+        store.publish_version("g__g_1", "s__s_2", &version).unwrap();
+        assert_eq!(store.first_unloadable_metadata().unwrap(), None);
+
+        let path = store
+            .game_dir("g__g_1")
+            .join("slots/s__s_2/versions/v__v_3/metadata.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replacen(&chunk, "sha256:bad", 1)).unwrap();
+        assert_eq!(store.first_unloadable_metadata().unwrap(), Some(path));
+        assert!(gc_local(&store, &HashSet::new()).is_err());
+        assert!(store.has_chunk(&chunk), "the only chunk must survive");
     }
 }

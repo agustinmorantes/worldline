@@ -470,9 +470,12 @@ fn wait_for(rx: &NotificationReceiver, what: &str, want: impl Fn(&Notification) 
     }
 }
 
+/// Zero until the background sync has created the remote store.
 fn remote_version_count(remote: &Path) -> usize {
-    Store::open_existing(remote)
-        .unwrap()
+    let Ok(store) = Store::open_existing(remote) else {
+        return 0;
+    };
+    store
         .catalog()
         .unwrap()
         .iter()
@@ -639,4 +642,50 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     found
+}
+
+#[test]
+fn budget_planning_counts_chunks_that_only_the_remote_holds() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "precious");
+    a.add_game("Sized");
+    a.core.push_sync().unwrap();
+    let local = Store::open_existing(a.core.repository_root()).unwrap();
+    let (hash, _) = local.chunk_sizes().unwrap().into_iter().next().unwrap();
+    let remote_size = Store::open_existing(remote.path())
+        .unwrap()
+        .chunk_sizes()
+        .unwrap()[&hash];
+    fs::remove_file(local.chunk_path(&hash).unwrap()).unwrap();
+
+    let preview = a.core.preview_pruning().unwrap();
+    assert_eq!(preview.live_bytes_before, remote_size);
+}
+
+#[test]
+fn pulled_versions_are_remembered_for_push_healing_and_old_entries_forgotten() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "old progress");
+    let game = a.add_game("Pulled");
+    let version = a.active_version(game.game.id);
+    a.core.refresh_sync().unwrap();
+    fs::remove_file(a.save_dir().join("save.dat")).unwrap(); // B's machine has no saves yet
+
+    let b = Device::synced(remote.path());
+    let stale = Uuid::new_v4();
+    fs::write(
+        b.data.path().join("sync_state.json"),
+        format!(r#"{{"recent_pulls": {{"{stale}": "2020-01-01T00:00:00Z"}}}}"#),
+    )
+    .unwrap();
+    let uuid = b.core.refresh_sync().unwrap().remote_games[0].uuid;
+    b.core.adopt_remote_game(uuid).unwrap();
+
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(b.data.path().join("sync_state.json")).unwrap()).unwrap();
+    let pulls = state["recent_pulls"].as_object().unwrap();
+    assert!(pulls.contains_key(&version.uuid), "{state}");
+    assert!(!pulls.contains_key(&stale.to_string()), "{state}");
 }

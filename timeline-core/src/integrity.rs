@@ -32,7 +32,7 @@ impl IntegrityReport {
 
 pub fn check(store: &Store, deep: bool) -> Result<IntegrityReport> {
     let mut report = IntegrityReport {
-        unreadable_metadata: store.first_unreadable_metadata()?,
+        unreadable_metadata: store.first_unloadable_metadata()?,
         ..IntegrityReport::default()
     };
     let retired = store.markers()?;

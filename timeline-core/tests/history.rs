@@ -279,3 +279,22 @@ fn extract_rebuilds_a_version_without_touching_live_saves() {
     assert_eq!(device.read("nested/save.dat").as_deref(), Some("live"));
     assert!(device.core.check_integrity(true).unwrap().is_ok());
 }
+
+#[test]
+fn recapture_repairs_a_chunk_that_verification_found_corrupt() {
+    let device = Device::new();
+    device.write("save.dat", "precious");
+    let game = device.add_game("Repaired");
+    let store =
+        savegame_timeline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
+    let (hash, _) = store.chunk_sizes().unwrap().into_iter().next().unwrap();
+    fs::write(store.chunk_path(&hash).unwrap(), b"garbage").unwrap();
+
+    let report = device.core.check_integrity(true).unwrap();
+    assert_eq!(report.corrupt_chunks, std::slice::from_ref(&hash));
+
+    // The live saves are intact, so the next checkpoint republishes the chunk.
+    device.write("save.dat", "precious");
+    device.core.checkpoint(game.game.id).unwrap();
+    assert!(device.core.check_integrity(true).unwrap().is_ok());
+}

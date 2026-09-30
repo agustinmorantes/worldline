@@ -133,3 +133,48 @@ fn title_and_path_collisions_are_refused_before_writing() {
     );
     assert_eq!(c.core.get_games().unwrap().len(), 1);
 }
+
+#[test]
+fn a_bundle_with_cyclic_ancestry_is_rejected_by_inspect_and_import() {
+    let a = Device::new();
+    let (_out, bundle, _) = exported(&a);
+    let b = Device::new();
+    let map = mapping(&bundle, &b.save_dir());
+    // Make the root's parent its own child.
+    let mut metas = Vec::new();
+    let games = bundle.join("games");
+    let slots = games.join(only_child(&games)).join("slots");
+    let versions = slots.join(only_child(&slots)).join("versions");
+    for dir in fs::read_dir(&versions).unwrap() {
+        let path = dir.unwrap().path().join("metadata.json");
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        metas.push((path, json));
+    }
+    let uuid = |json: &serde_json::Value| json["uuid"].clone();
+    let child = metas
+        .iter()
+        .find(|(_, json)| !json["parent_uuid"].is_null())
+        .map(|(_, json)| uuid(json))
+        .unwrap();
+    let (root_path, root) = metas
+        .iter_mut()
+        .find(|(_, json)| json["parent_uuid"].is_null())
+        .unwrap();
+    root["parent_uuid"] = child;
+    fs::write(root_path, serde_json::to_vec(root).unwrap()).unwrap();
+
+    assert!(savegame_timeline_core::TimelineCore::inspect_history_bundle(&bundle).is_err());
+    assert!(b.core.import_game_history(&bundle, &map).is_err());
+    assert!(b.core.get_games().unwrap().is_empty());
+    assert!(
+        fs::read_dir(b.core.repository_root().join("games"))
+            .map_or(true, |mut d| d.next().is_none())
+    );
+}
+
+fn only_child(dir: &std::path::Path) -> std::ffi::OsString {
+    let mut names = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name());
+    let name = names.next().unwrap();
+    assert!(names.next().is_none());
+    name
+}

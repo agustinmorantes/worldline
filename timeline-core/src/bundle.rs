@@ -72,6 +72,7 @@ fn open(path: &Path) -> Result<Bundle> {
         bail!("The bundle must contain exactly the game named in export.json");
     }
     let game = games.remove(0);
+    crate::transfer::ensure_acyclic(&game)?;
     if game.meta.deleted_at.is_some() {
         bail!("The bundled game is deleted");
     }

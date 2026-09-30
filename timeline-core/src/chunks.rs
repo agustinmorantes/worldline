@@ -129,10 +129,19 @@ pub fn publish_chunk(store: &Store, hash: &str, compressed: &[u8]) -> Result<()>
     result.with_context(|| format!("failed to publish chunk {hash}"))
 }
 
-/// Reads, decompresses and verifies one chunk.
+/// Reads, decompresses and verifies one chunk. A chunk that is present but
+/// fails verification is moved aside so the next capture republishes it. Only
+/// for the local repository: on a sync remote a failing chunk is "not yet
+/// arrived", not damage.
 pub fn read_chunk(store: &Store, hash: &str) -> Result<Vec<u8>> {
     let compressed = read_compressed(store, hash)?;
-    let data = zstd::stream::decode_all(compressed.as_slice())
+    decode_verified(hash, &compressed).inspect_err(|_| {
+        let _ = store.quarantine_chunk(hash);
+    })
+}
+
+fn decode_verified(hash: &str, compressed: &[u8]) -> Result<Vec<u8>> {
+    let data = zstd::stream::decode_all(compressed)
         .with_context(|| format!("chunk {hash} is not a valid zstd frame"))?;
     if format_hash(&Sha256::digest(&data)) != hash {
         bail!("chunk {hash} failed verification");
@@ -275,9 +284,7 @@ mod tests {
         let path = store.chunk_path(&manifest[0].chunks[0]).unwrap();
         fs::write(&path, b"garbage").unwrap();
         assert!(verify_file(&store, &manifest[0]).is_err());
-        assert!(capture(&store, &roots(live.path())).is_ok());
-        // Removing the bad chunk lets the next capture heal it.
-        fs::remove_file(&path).unwrap();
+        // The failed read set the bad chunk aside, so the next capture heals it.
         capture(&store, &roots(live.path())).unwrap();
         verify_file(&store, &manifest[0]).unwrap();
     }
