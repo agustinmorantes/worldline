@@ -2,7 +2,7 @@
 //! import are transfers with the `Complete` policy; this module only adds the
 //! bundle manifest, preflight checks and tracked-path mapping.
 
-use crate::history::{History, same_path};
+use crate::history::{History, overlapping_paths, same_path};
 use crate::store::{
     GameRecord, Store, normalize_display_name, read_json, rename_no_replace, write_json,
 };
@@ -66,6 +66,10 @@ fn open(path: &Path) -> Result<Bundle> {
         read_json(&path.join("export.json")).context("The bundle has no readable export.json")?;
     if manifest.bundle_format != BUNDLE_FORMAT {
         bail!("Unsupported bundle format {}", manifest.bundle_format);
+    }
+    // The catalog skips what it can't load; a bundle must not silently lose it.
+    if let Some(path) = store.first_unloadable_metadata()? {
+        bail!("The bundle is damaged: {} is unreadable", path.display());
     }
     let mut games = store.catalog()?;
     if games.len() != 1 || games[0].meta.uuid != manifest.game_uuid {
@@ -260,10 +264,13 @@ pub fn import(
             bail!("{} is not an absolute path", target.display());
         }
         let target_text = target.to_string_lossy();
-        if taken.iter().any(|(id, path)| {
-            Some(*id) != existing.map(|e| e.game.id) && same_path(path, &target_text)
+        if let Some((_, path)) = taken.iter().find(|(id, path)| {
+            Some(*id) != existing.map(|e| e.game.id) && overlapping_paths(path, &target_text)
         }) {
-            bail!("{} is already tracked by another game", target.display());
+            bail!(
+                "{} overlaps {path}, which another game tracks",
+                target.display()
+            );
         }
         dir.path = crate::path_placeholders::substitute_path_placeholders(target);
     }

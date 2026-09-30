@@ -298,3 +298,119 @@ fn recapture_repairs_a_chunk_that_verification_found_corrupt() {
     device.core.checkpoint(game.game.id).unwrap();
     assert!(device.core.check_integrity(true).unwrap().is_ok());
 }
+
+#[test]
+fn restoring_into_a_retired_folder_checkpoints_it_first() {
+    let device = Device::new();
+    let other = tempfile::tempdir().unwrap();
+    device.write("save.dat", "a1");
+    fs::write(other.path().join("save.dat"), "b1").unwrap();
+    let dirs = |paths: &[&std::path::Path]| {
+        Some(
+            paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+        )
+    };
+    let form = || GameForm {
+        id: None,
+        title: "Retired".into(),
+    };
+    let id = device
+        .core
+        .save_game(form(), dirs(&[&device.save_dir(), other.path()]))
+        .unwrap()
+        .id;
+    let old = device.active_version(id);
+    device
+        .core
+        .save_game(
+            GameForm {
+                id: Some(id),
+                ..form()
+            },
+            dirs(&[&device.save_dir()]),
+        )
+        .unwrap();
+    fs::write(other.path().join("save.dat"), "uncaptured retired progress").unwrap();
+
+    device.core.restore_version(old.id).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(other.path().join("save.dat")).unwrap(),
+        "b1"
+    );
+    let pre_restore = device
+        .game(id)
+        .versions
+        .into_iter()
+        .find(|v| v.reason == "pre_restore")
+        .expect("pre-restore checkpoint");
+    device.core.restore_version(pre_restore.id).unwrap();
+    assert_eq!(
+        fs::read_to_string(other.path().join("save.dat")).unwrap(),
+        "uncaptured retired progress"
+    );
+}
+
+#[test]
+fn nested_tracked_folders_are_rejected() {
+    let device = Device::new();
+    device.write("inner/save.dat", "x");
+    device.add_game("Outer");
+    let inner = device.save_dir().join("inner");
+    let result = device.core.save_game(
+        GameForm {
+            id: None,
+            title: "Inner".into(),
+        },
+        Some(vec![inner.to_string_lossy().into_owned()]),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn reopening_reconciles_the_index_with_newer_files() {
+    let device = Device::new();
+    device.write("save.dat", "x");
+    let game = device.add_game("Before");
+    let store =
+        savegame_timeline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
+    let mut meta = store.catalog().unwrap()[0].meta.clone();
+    meta.title = "After".into();
+    meta.updated_at += std::time::Duration::from_secs(1);
+    store.write_game(&meta).unwrap();
+
+    let Device { core, data, saves } = device;
+    drop(core);
+    let (core, _) = TimelineCore::open(data.path(), OpenOptions::default()).unwrap();
+    assert_eq!(core.get_game(game.game.id).unwrap().game.title, "After");
+    drop(saves);
+}
+
+#[test]
+fn deep_integrity_rebuilds_files_and_flags_a_wrong_size() {
+    let device = Device::new();
+    device.write("save.dat", "sized");
+    device.add_game("Sized");
+    let store =
+        savegame_timeline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
+    let record = store.catalog().unwrap().pop().unwrap();
+    let slot = &record.slots[0];
+    let mut version = slot.versions[0].clone();
+    version.files[0].size += 1;
+    let path = store
+        .game_dir(&record.meta.folder_slug)
+        .join("slots")
+        .join(&slot.meta.folder_slug)
+        .join("versions")
+        .join(&version.folder_slug)
+        .join("metadata.json");
+    savegame_timeline_core::store::write_json(&path, &version).unwrap();
+
+    let report = device.core.check_integrity(true).unwrap();
+    assert!(!report.is_ok());
+    assert_eq!(report.damaged_files.len(), 1);
+    assert!(report.corrupt_chunks.is_empty());
+}

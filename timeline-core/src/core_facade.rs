@@ -121,6 +121,8 @@ pub struct TimelineCore {
     pub icons_dir: PathBuf,
     device: RwLock<DeviceMetadata>,
     sync_lock: Mutex<()>,
+    /// Installed titles seen by the last full sync, for later reports.
+    last_installs: Mutex<HashMap<String, Option<String>>>,
     last_prune: Mutex<Option<DateTime<Utc>>>,
     moved_old_data: Option<PathBuf>,
 }
@@ -188,6 +190,7 @@ impl TimelineCore {
             icons_dir: data_dir.join("icons"),
             device: RwLock::new(device),
             sync_lock: Mutex::new(()),
+            last_installs: Mutex::new(HashMap::new()),
             last_prune: Mutex::new(None),
             moved_old_data,
         };
@@ -313,16 +316,37 @@ impl TimelineCore {
 
     /// Runs a write to live saves with capture suppressed, under the
     /// repository lock, after checkpointing the live state, so uncaptured
-    /// progress is never overwritten.
+    /// progress is never overwritten. `restoring` is the version `apply` will
+    /// restore, if any: the checkpoint then also covers the retired tracked
+    /// directories that restore writes back.
     fn guarded<T>(
         &self,
         game_id: i32,
         reason: VersionReason,
+        restoring: Option<&FullVersion>,
         apply: impl FnOnce(&FullGame) -> Result<T>,
     ) -> Result<T> {
         let suppressed = self.inner.suppression.hold();
         let result = store::with_lock(self.repository_root(), || {
-            let game = self.get_game(game_id)?;
+            let mut game = self.get_game(game_id)?;
+            if let Some(version) = restoring {
+                let restored: HashSet<Uuid> = self
+                    .history()
+                    .version_meta(version)?
+                    .files
+                    .iter()
+                    .map(|file| file.tracked_dir_uuid)
+                    .collect();
+                game.tracked_dirs.extend(
+                    self.history()
+                        .index
+                        .retired_tracked_dirs(game_id)?
+                        .into_iter()
+                        .filter(|dir| {
+                            Uuid::parse_str(&dir.uuid).is_ok_and(|uuid| restored.contains(&uuid))
+                        }),
+                );
+            }
             if !game.tracked_dirs.is_empty() {
                 self.inner
                     .checkpoint(&game, reason)
@@ -333,6 +357,16 @@ impl TimelineCore {
         drop(suppressed);
         self.reload_watcher();
         result
+    }
+
+    /// The version activating `slot_id` restores, if it has one.
+    fn slot_target(&self, game: &FullGame, slot_id: i32) -> Result<Option<FullVersion>> {
+        game.slots
+            .iter()
+            .find(|slot| slot.id == slot_id)
+            .and_then(|slot| slot.active_version_id)
+            .map(|id| self.get_version(id))
+            .transpose()
     }
 
     /// Writes `version` into the live directories and makes it (and its slot) active.
@@ -356,9 +390,12 @@ impl TimelineCore {
 
     pub fn restore_version(&self, version_id: i32) -> Result<()> {
         let version = self.get_version(version_id)?;
-        self.guarded(version.game.id, VersionReason::PreRestore, |game| {
-            self.restore_locked(game, &version)
-        })
+        self.guarded(
+            version.game.id,
+            VersionReason::PreRestore,
+            Some(&version),
+            |game| self.restore_locked(game, &version),
+        )
     }
 
     /// Applies another device's progress: the same as a restore, but only
@@ -372,7 +409,7 @@ impl TimelineCore {
     }
 
     pub fn create_slot(&self, game_id: i32, name: &str) -> Result<FullGame> {
-        self.guarded(game_id, VersionReason::PreSlotCreate, |game| {
+        self.guarded(game_id, VersionReason::PreSlotCreate, None, |game| {
             let slot = self.history().create_slot(game_id, name)?;
             let prepared = restore::clear_only(&game.tracked_dirs)?;
             restore::apply(&self.history().store, prepared)?;
@@ -386,14 +423,16 @@ impl TimelineCore {
     }
 
     pub fn switch_slot(&self, game_id: i32, slot_id: i32) -> Result<FullGame> {
-        if self
-            .get_game(game_id)?
+        let game = self.get_game(game_id)?;
+        if game
             .active_slot
+            .as_ref()
             .is_some_and(|slot| slot.id == slot_id)
         {
             return self.get_game(game_id);
         }
-        self.guarded(game_id, VersionReason::PreSwitch, |game| {
+        let target = self.slot_target(&game, slot_id)?;
+        self.guarded(game_id, VersionReason::PreSwitch, target.as_ref(), |game| {
             self.activate_slot(game, slot_id)?;
             self.get_game(game_id)
         })
@@ -451,9 +490,13 @@ impl TimelineCore {
             {
                 bail!("Replacement slot {replacement} does not belong to this game");
             }
-            self.guarded(game.game.id, VersionReason::PreSwitch, |game| {
-                self.activate_slot(game, replacement)
-            })?;
+            let target = self.slot_target(&game, replacement)?;
+            self.guarded(
+                game.game.id,
+                VersionReason::PreSwitch,
+                target.as_ref(),
+                |game| self.activate_slot(game, replacement),
+            )?;
         }
         self.history().delete_slot(slot_id)?;
         self.get_game(game.game.id)
@@ -508,8 +551,12 @@ impl TimelineCore {
         Ok(meta.files.len())
     }
 
+    /// Holds the repository lock: a failed read quarantines the chunk, which
+    /// must not race a capture republishing it.
     pub fn check_integrity(&self, deep: bool) -> Result<crate::integrity::IntegrityReport> {
-        crate::integrity::check(&self.history().store, deep)
+        store::with_lock(self.repository_root(), || {
+            crate::integrity::check(&self.history().store, deep)
+        })
     }
 
     /// Rebuilds the index from the repository files.
@@ -758,6 +805,34 @@ impl TimelineCore {
     fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
         let history = self.history();
         let markers = remote.store.markers()?;
+        // Another device deleted the slot whose saves are live here. Handle it
+        // like a local delete: capture the live saves into that slot while it
+        // is still indexed, then load the slot the index falls back to.
+        let deleted_active = match history.index.game_id(game.meta.uuid)? {
+            Some(id) => {
+                let local = self.get_game(id)?;
+                let active = local.active_slot.as_ref().map(|slot| slot.uuid.clone());
+                game.slots
+                    .iter()
+                    .any(|slot| {
+                        slot.meta.deleted_at.is_some() && active == Some(slot.meta.uuid.to_string())
+                    })
+                    .then_some(local)
+            }
+            None => None,
+        };
+        let suppressed = deleted_active
+            .as_ref()
+            .map(|_| self.inner.suppression.hold());
+        if let Some(local) = &deleted_active
+            && !local.tracked_dirs.is_empty()
+        {
+            store::with_lock(history.root(), || {
+                self.inner
+                    .checkpoint(&self.get_game(local.game.id)?, VersionReason::PreSwitch)
+                    .context("Failed to checkpoint the saves of a slot deleted elsewhere")
+            })?;
+        }
         let report = store::with_lock(history.root(), || {
             let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial);
             transfer.copy_game(game, &markers, Heal::None)?;
@@ -765,6 +840,15 @@ impl TimelineCore {
         })?;
         self.record_pulls(&report.copied_versions)?;
         history.refresh_game(game.meta.uuid)?;
+        if deleted_active.is_some()
+            && let Some(id) = history.index.game_id(game.meta.uuid)?
+        {
+            let local = self.get_game(id)?;
+            if let Some(slot) = &local.active_slot {
+                store::with_lock(history.root(), || self.activate_slot(&local, slot.id))?;
+            }
+        }
+        drop(suppressed);
         Ok(report.not_arrived)
     }
 
@@ -854,32 +938,35 @@ impl TimelineCore {
         let local_uuids = self.local_game_uuids()?;
         problems.extend(self.pull_locked(&remote, &remote_games, &local_uuids));
 
-        // Adopt remote games installed here.
+        // Adopt remote games installed here. Scanning is slow, so it runs
+        // only once something needs it: adoption, or a fast-forward that
+        // must know whether the game is running.
         let unknown: Vec<&GameRecord> = remote_games
             .iter()
             .filter(|g| g.meta.deleted_at.is_none() && !local_uuids.contains(&g.meta.uuid))
             .collect();
-        let installed = if unknown.is_empty() {
-            Vec::new()
-        } else {
-            crate::install_scanner::scan_installed_candidates(
-                &self.data_dir.join("cache"),
-                &self.get_scan_roots()?,
-            )
-            .unwrap_or_default()
-        };
-        let installed_titles: HashMap<String, Option<String>> = installed
-            .iter()
-            .map(|item| {
-                (
-                    store::normalize_display_name(&item.title),
-                    item.install_path.clone(),
+        let scan_roots = self.get_scan_roots()?;
+        let installs = std::cell::OnceCell::new();
+        let installed_titles = || -> &HashMap<String, Option<String>> {
+            installs.get_or_init(|| {
+                crate::install_scanner::scan_installed_candidates(
+                    &self.data_dir.join("cache"),
+                    &scan_roots,
                 )
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| {
+                    (
+                        store::normalize_display_name(&item.title),
+                        item.install_path,
+                    )
+                })
+                .collect()
             })
-            .collect();
+        };
         let mut auto_applied = HashSet::new();
         for remote_game in unknown {
-            if !installed_titles
+            if !installed_titles()
                 .contains_key(&store::normalize_display_name(&remote_game.meta.title))
             {
                 continue;
@@ -905,11 +992,13 @@ impl TimelineCore {
             else {
                 continue;
             };
-            let install = installed_titles
-                .get(&game.game.title_normalized)
-                .cloned()
-                .flatten();
-            match self.fast_forward(&remote, remote_game, &game, install.as_deref()) {
+            let install = || {
+                installed_titles()
+                    .get(&game.game.title_normalized)
+                    .cloned()
+                    .flatten()
+            };
+            match self.fast_forward(&remote, remote_game, &game, install) {
                 Ok(true) => {
                     auto_applied.insert(remote_game.meta.uuid);
                 }
@@ -921,13 +1010,20 @@ impl TimelineCore {
         problems.extend(self.push_locked(&remote)?);
         self.reload_watcher();
         let remote = self.require_remote()?;
-        self.sync_report(&remote, &auto_applied, &installed_titles, problems)
+        let installed = installs.get().cloned().unwrap_or_default();
+        *self.last_installs.lock().unwrap_or_else(|e| e.into_inner()) = installed.clone();
+        self.sync_report(&remote, &auto_applied, &installed, problems)
     }
 
     /// The sync state as last published, without pulling or pushing.
     pub fn sync_status(&self) -> Result<SyncReport> {
         let remote = self.require_remote()?;
-        self.sync_report(&remote, &HashSet::new(), &HashMap::new(), Vec::new())
+        let installed = self
+            .last_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.sync_report(&remote, &HashSet::new(), &installed, Vec::new())
     }
 
     /// Adopts the remote game `uuid` on this device.
@@ -986,7 +1082,14 @@ impl TimelineCore {
                 ))
             });
         }
-        if let Some(local) = games.iter().find(|g| shares_path(g)) {
+        let overlaps_path = |game: &FullGame| {
+            game.tracked_dirs.iter().any(|dir| {
+                remote_paths
+                    .iter()
+                    .any(|path| crate::history::overlapping_paths(path, &dir.path))
+            })
+        };
+        if let Some(local) = games.iter().find(|g| overlaps_path(g)) {
             return Ok(LocalMatch::Collision(format!(
                 "its save folder is already tracked by '{}'",
                 local.game.title
@@ -1116,14 +1219,6 @@ impl TimelineCore {
     /// a new version; otherwise the newest device's progress is restored.
     /// Returns whether progress was applied.
     fn adopt(&self, remote: &Remote, remote_game: &GameRecord) -> Result<bool> {
-        let saves_exist = remote_game
-            .tracked_dirs
-            .iter()
-            .filter(|dir| dir.retired_at.is_none())
-            .any(|dir| {
-                let path = crate::path_placeholders::expand_path_placeholders(&dir.path);
-                std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
-            });
         self.pull_game(remote, remote_game)?;
         let history = self.history();
         let game_id = history
@@ -1156,24 +1251,35 @@ impl TimelineCore {
                 }
             }
         }
-        let game = self.get_game(game_id)?;
-        if saves_exist {
-            // Keep what is on disk: identical saves just join the remote
-            // history; different ones become a new version on top of it.
-            store::with_lock(history.root(), || {
-                self.inner.checkpoint(&game, VersionReason::Initial)
-            })?;
-            return Ok(false);
-        }
-        let Some(active) = game.last_version.clone() else {
-            return Ok(false);
-        };
-        // The live folders are empty, so there is nothing to checkpoint first.
+        // Decide under suppression and the lock, so saves written while the
+        // pull ran are seen and never overwritten.
         let suppressed = self.inner.suppression.hold();
-        let version = self.get_version(active.id)?;
-        store::with_lock(history.root(), || self.restore_locked(&game, &version))?;
+        let applied = store::with_lock(history.root(), || {
+            let game = self.get_game(game_id)?;
+            let saves_exist = game
+                .tracked_dirs
+                .iter()
+                .filter(|dir| dir.retired_at.is_none())
+                .any(|dir| {
+                    let path = crate::path_placeholders::expand_path_placeholders(&dir.path);
+                    std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
+                });
+            if saves_exist {
+                // Keep what is on disk: identical saves just join the remote
+                // history; different ones become a new version on top of it.
+                self.inner.checkpoint(&game, VersionReason::Initial)?;
+                return Ok(false);
+            }
+            let Some(active) = game.last_version.clone() else {
+                return Ok(false);
+            };
+            // The live folders are empty, so there is nothing to checkpoint first.
+            let version = self.get_version(active.id)?;
+            self.restore_locked(&game, &version)?;
+            Ok(true)
+        });
         drop(suppressed);
-        Ok(true)
+        applied
     }
 
     /// Moves slots other devices advanced: inactive slots by pointer only, the
@@ -1183,7 +1289,7 @@ impl TimelineCore {
         remote: &Remote,
         remote_game: &GameRecord,
         game: &FullGame,
-        install: Option<&str>,
+        install: impl Fn() -> Option<String>,
     ) -> Result<bool> {
         let me = self.device_metadata().device_uuid;
         let parents = sync::parents(&self.history().record(&game.game)?);
@@ -1217,18 +1323,23 @@ impl TimelineCore {
                 continue;
             }
             // Unknown process state counts as running: fail closed.
-            if sync::game_is_running(install) != Some(false) {
+            if sync::game_is_running(install().as_deref()) != Some(false) {
                 continue;
             }
             let expected_tip = pointer.version.map(|v| v.to_string());
-            applied |= self.guarded(game.game.id, VersionReason::PreRestore, |game| {
-                // A checkpoint that just captured new local progress turns this into a divergence.
-                if game.last_version.as_ref().map(|v| v.uuid.clone()) != expected_tip {
-                    return Ok(false);
-                }
-                self.restore_locked(game, &target)?;
-                Ok(true)
-            })?;
+            applied |= self.guarded(
+                game.game.id,
+                VersionReason::PreRestore,
+                Some(&target),
+                |game| {
+                    // A checkpoint that just captured new local progress turns this into a divergence.
+                    if game.last_version.as_ref().map(|v| v.uuid.clone()) != expected_tip {
+                        return Ok(false);
+                    }
+                    self.restore_locked(game, &target)?;
+                    Ok(true)
+                },
+            )?;
         }
         Ok(applied)
     }
@@ -1442,7 +1553,7 @@ impl TimelineCore {
         if let Some(remote) = &remote {
             if let Some(path) = &remote.unreadable_state {
                 bail!(
-                    "{} is unreadable; cleanup is skipped until it is fixed",
+                    "{} is missing or unreadable; cleanup is skipped until it is fixed",
                     path.display()
                 );
             }

@@ -142,9 +142,14 @@ function SettingsView(): ReactElement {
         }),
         updateDeviceName(deviceName),
       ]);
-      await updateSyncSettings({ remote_path: remotePath.trim() === '' ? null : remotePath.trim() });
+      const remote = remotePath.trim() === '' ? null : remotePath.trim();
+      await updateSyncSettings({ remote_path: remote });
       applyRetention(await updatePruningSettings(retentionSettings));
-      await syncNow();
+      if (remote === null) {
+        await queryClient.invalidateQueries({ queryKey: ['sync-settings'] });
+      } else {
+        await syncNow();
+      }
     } catch (err) {
       console.error(err);
       toast.error(`Failed to save settings: ${String(err)}`);

@@ -35,7 +35,6 @@ pub fn expand_path_placeholders(path: &str) -> String {
 
 pub fn substitute_path_placeholders(path: &Path) -> String {
     let raw_path = path_to_forward_slashes(path);
-    let normalized_path = normalize_path_text_for_matching(&raw_path);
 
     // The longest matching root wins, so `<winDocuments>` beats `<home>` for
     // a path inside Documents (including OneDrive-redirected ones).
@@ -45,12 +44,10 @@ pub fn substitute_path_placeholders(path: &Path) -> String {
         .into_iter()
         .rev()
         .filter_map(|(placeholder, root)| {
-            let raw_root = path_to_forward_slashes(&root);
-            let normalized_root = normalize_path_text_for_matching(&raw_root);
-            let suffix = strip_prefix_for_match(&raw_path, &normalized_path, &normalized_root)?;
-            Some((normalized_root.len(), placeholder, suffix))
+            let (depth, suffix) = strip_root(&raw_path, &path_to_forward_slashes(&root))?;
+            Some((depth, placeholder, suffix))
         })
-        .max_by_key(|(len, _, _)| *len);
+        .max_by_key(|(depth, _, _)| *depth);
     if let Some((_, placeholder, suffix)) = best {
         if suffix.is_empty() {
             return placeholder.to_string();
@@ -151,28 +148,29 @@ fn prioritized_placeholder_roots() -> Vec<(&'static str, PathBuf)> {
     roots
 }
 
-fn strip_prefix_for_match<'a>(
-    raw_path: &'a str,
-    normalized_path: &str,
-    normalized_prefix: &str,
-) -> Option<&'a str> {
-    if normalized_path == normalized_prefix {
-        return Some("");
+/// When `path` lies inside `root`, the root's depth in components and the
+/// rest of `path`. Components are compared one by one, so case folding that
+/// changes a string's length never shifts the boundary.
+fn strip_root(path: &str, root: &str) -> Option<(usize, String)> {
+    let root = root.trim_end_matches('/');
+    if root.is_empty() {
+        return None;
     }
-
-    let prefix_with_sep = format!("{normalized_prefix}/");
-    if normalized_path.starts_with(&prefix_with_sep) {
-        return raw_path.get(prefix_with_sep.len()..);
-    }
-
-    None
+    let parts: Vec<&str> = path.split('/').collect();
+    let root_parts: Vec<&str> = root.split('/').collect();
+    let inside = parts.len() >= root_parts.len()
+        && parts
+            .iter()
+            .zip(&root_parts)
+            .all(|(part, root)| same_component(part, root));
+    inside.then(|| (root_parts.len(), parts[root_parts.len()..].join("/")))
 }
 
-fn normalize_path_text_for_matching(path: &str) -> String {
+fn same_component(left: &str, right: &str) -> bool {
     if cfg!(windows) {
-        path.to_lowercase()
+        left.to_lowercase() == right.to_lowercase()
     } else {
-        path.to_string()
+        left == right
     }
 }
 
@@ -209,6 +207,23 @@ mod tests {
         let substituted = substitute_path_placeholders(&docs.join("My Games").join("Save"));
         assert_eq!(substituted, "<winDocuments>/My Games/Save");
         assert!(Path::new(&expand_path_placeholders(&substituted)).ends_with("My Games/Save"));
+    }
+
+    #[test]
+    fn case_folding_that_changes_length_keeps_the_suffix_intact() {
+        // 'İ' lowercases to two chars, which used to cut the suffix short.
+        let path = "C:/TestUnicodeİ/AppData/Saved/Game";
+        assert_eq!(
+            strip_root(path, "C:/TestUnicodeİ/AppData/"),
+            Some((3, "Saved/Game".to_string()))
+        );
+        assert_eq!(strip_root(path, "C:/TestUnicodeİ/App"), None);
+        if cfg!(windows) {
+            assert_eq!(
+                strip_root(path, "c:/testunicodei\u{307}/appdata"),
+                Some((3, "Saved/Game".to_string()))
+            );
+        }
     }
 
     #[test]

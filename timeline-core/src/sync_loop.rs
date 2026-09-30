@@ -100,8 +100,16 @@ fn full_sync(core: &Arc<TimelineCore>, notifications: &mpsc::Sender<Notification
 }
 
 fn push_only(core: &Arc<TimelineCore>, notifications: &mpsc::Sender<Notification>) {
-    if let Err(error) = core.push_sync() {
-        let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));
+    match core.push_sync() {
+        // Refresh the shown report; this device's pointers just moved.
+        Ok(()) => {
+            if let Ok(report) = core.sync_status() {
+                let _ = notifications.send(Notification::SyncCompleted(report));
+            }
+        }
+        Err(error) => {
+            let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));
+        }
     }
 }
 

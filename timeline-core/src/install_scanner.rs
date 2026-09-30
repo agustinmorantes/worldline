@@ -636,10 +636,10 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
             continue;
         }
 
-        let Some(parent) = install_location.parent() else {
-            continue;
-        };
-        let root_str = parent.to_string_lossy().to_string();
+        // Ludusavi's `<root>` is the Steam root (`<root>/userdata/...`); `<base>`
+        // is the game's own folder under `steamapps/common`.
+        let root_str = steam_root.to_string_lossy().to_string();
+        let base_str = install_location.to_string_lossy().to_string();
         let store_game_id_str = appid.to_string();
 
         let mut game_files = game.files.clone().unwrap_or_default();
@@ -665,7 +665,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
             }
 
             let resolved = resolve_placeholders(
-                template,
+                &template.replace("<base>", &base_str),
                 Some(&root_str),
                 Some(install_dir_name),
                 store_user_id.as_deref(),

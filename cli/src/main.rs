@@ -612,11 +612,12 @@ fn main() -> Result<()> {
             RepoAction::Check { deep } => {
                 let report = core.check_integrity(deep)?;
                 println!(
-                    "{} version(s), {} chunk(s) checked; {} missing, {} corrupt, {} unreferenced",
+                    "{} version(s), {} chunk(s) checked; {} missing, {} corrupt, {} damaged file(s), {} unreferenced",
                     report.versions_checked,
                     report.chunks_checked,
                     report.missing_chunks.len(),
                     report.corrupt_chunks.len(),
+                    report.damaged_files.len(),
                     report.orphan_chunks
                 );
                 if let Some(path) = &report.unreadable_metadata {

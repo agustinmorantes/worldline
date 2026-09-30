@@ -75,6 +75,7 @@ impl<'a> Transfer<'a> {
             // Everything that can fail is checked before any metadata is
             // written, so a failed import never leaves a partial game behind.
             ensure_acyclic(game)?;
+            self.dst.check_conflicts(game)?;
             let known: HashSet<Uuid> = game.versions().map(|v| v.uuid).collect();
             for version in game.versions() {
                 if let Some(parent) = version.parent_uuid.filter(|p| !known.contains(p)) {

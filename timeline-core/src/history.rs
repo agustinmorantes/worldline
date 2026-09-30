@@ -47,9 +47,9 @@ impl History {
             index,
             device,
         };
-        if history.index.is_empty()? {
-            history.reindex()?;
-        }
+        // Files are the truth: a crash between publishing files and projecting
+        // them leaves a stale index, so every start re-projects.
+        history.reindex()?;
         Ok(history)
     }
 
@@ -403,18 +403,18 @@ impl History {
         Ok(name.to_string())
     }
 
-    /// Tracked directories must be absolute and not tracked by another game.
+    /// Tracked directories must be absolute and not overlap another game's.
     fn validate_dirs(&self, id: Option<i32>, dirs: &[String]) -> Result<()> {
         let taken = self.index.tracked_paths()?;
         for dir in dirs {
             if !Path::new(dir).is_absolute() {
                 bail!("Tracked directory must be an absolute path: {dir}");
             }
-            if taken
+            if let Some((_, path)) = taken
                 .iter()
-                .any(|(game_id, path)| Some(*game_id) != id && same_path(path, dir))
+                .find(|(game_id, path)| Some(*game_id) != id && overlapping_paths(path, dir))
             {
-                bail!("{dir} is already tracked by another game");
+                bail!("{dir} overlaps {path}, which another game tracks");
             }
         }
         Ok(())
@@ -425,16 +425,29 @@ pub fn game_uuid(game: &Game) -> Result<Uuid> {
     Uuid::parse_str(&game.uuid).map_err(|_| anyhow!("game {} has an invalid UUID", game.id))
 }
 
+fn normalize_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let path = path.trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        path.to_lowercase()
+    } else {
+        path
+    }
+}
+
 /// Path equality as the platform sees it (case-insensitive on Windows).
 pub fn same_path(left: &str, right: &str) -> bool {
-    let normalize = |path: &str| {
-        let path = path.replace('\\', "/");
-        let path = path.trim_end_matches('/').to_string();
-        if cfg!(windows) {
-            path.to_lowercase()
-        } else {
-            path
-        }
+    normalize_path(left) == normalize_path(right)
+}
+
+/// Whether one path is the other or lies inside it. Two games must never
+/// track overlapping folders: clearing one would wipe the other's saves.
+pub fn overlapping_paths(left: &str, right: &str) -> bool {
+    let (left, right) = (normalize_path(left), normalize_path(right));
+    let inside = |inner: &str, outer: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
     };
-    normalize(left) == normalize(right)
+    inside(&left, &right) || inside(&right, &left)
 }

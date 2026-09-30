@@ -87,7 +87,7 @@ impl VersionReason {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileEntry {
     pub tracked_dir_uuid: Uuid,
     /// Relative path inside the tracked directory, `/`-separated.
@@ -439,6 +439,40 @@ impl Store {
             merged.folder_slug = existing.folder_slug.clone();
             Ok(merged)
         })
+    }
+
+    /// Fails when writing `game` here would be rejected part-way: a metadata
+    /// path that belongs to another entity, or a version UUID already stored
+    /// with different content. Nothing is written.
+    pub fn check_conflicts(&self, game: &GameRecord) -> Result<()> {
+        let slug = &game.meta.folder_slug;
+        ensure_slug(slug)?;
+        let dir = self.game_dir(slug);
+        if let Some(existing) = read_entity::<GameMeta>(&dir) {
+            ensure_same(existing.uuid, game.meta.uuid)?;
+        }
+        for tracked in &game.tracked_dirs {
+            ensure_slug(&tracked.folder_slug)?;
+            let path = dir.join("tracked-dirs").join(&tracked.folder_slug);
+            if let Some(existing) = read_entity::<TrackedDirMeta>(&path) {
+                ensure_same(existing.uuid, tracked.uuid)?;
+            }
+        }
+        for slot in &game.slots {
+            ensure_slug(&slot.meta.folder_slug)?;
+            let slot_dir = self.slot_dir(slug, &slot.meta.folder_slug);
+            if let Some(existing) = read_entity::<SlotMeta>(&slot_dir) {
+                ensure_same(existing.uuid, slot.meta.uuid)?;
+            }
+            for version in &slot.versions {
+                ensure_slug(&version.folder_slug)?;
+                let path = slot_dir.join("versions").join(&version.folder_slug);
+                if read_entity::<VersionMeta>(&path).is_some_and(|v| !v.same_identity(version)) {
+                    bail!("version {} was reused with different content", version.uuid);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Publishes version metadata. The first write wins; later writes may only

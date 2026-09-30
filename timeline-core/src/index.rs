@@ -68,11 +68,6 @@ impl Index {
         })
     }
 
-    pub fn is_empty(&self) -> Result<bool> {
-        let count: i64 = games::table.count().get_result(&mut self.conn()?)?;
-        Ok(count == 0)
-    }
-
     pub fn get_games(&self) -> Result<Vec<FullGame>> {
         let conn = &mut self.conn()?;
         let all: Vec<Game> = games::table
@@ -249,6 +244,14 @@ impl Index {
             .filter(versions::retired.eq(true))
             .order_by(versions::uuid)
             .select(versions::uuid)
+            .load(&mut self.conn()?)?)
+    }
+
+    pub fn retired_tracked_dirs(&self, game_id: i32) -> Result<Vec<TrackedDir>> {
+        Ok(tracked_dirs::table
+            .filter(tracked_dirs::game_id.eq(game_id))
+            .filter(tracked_dirs::retired_at.is_not_null())
+            .select(TrackedDir::as_select())
             .load(&mut self.conn()?)?)
     }
 

@@ -160,8 +160,9 @@ pub struct Remote {
     pub store: Store,
     pub devices: Vec<DeviceMetadata>,
     pub states: Vec<DeviceState>,
-    /// A `state.json` that exists but can't be read. Its device's pointers
-    /// are unknown, so pruning and GC must not run.
+    /// A `state.json` that can't be read, or that hasn't arrived for a
+    /// registered device. Its device's pointers are unknown, so pruning and
+    /// GC must not run.
     pub unreadable_state: Option<PathBuf>,
 }
 
@@ -189,7 +190,8 @@ impl Remote {
             else {
                 continue;
             };
-            if let Ok(device) = read_json::<DeviceMetadata>(&dir.join("device.json"))
+            let device_path = dir.join("device.json");
+            if let Ok(device) = read_json::<DeviceMetadata>(&device_path)
                 && device.device_uuid == uuid
             {
                 devices.push(device);
@@ -197,7 +199,9 @@ impl Remote {
             let state_path = dir.join("state.json");
             match read_json::<DeviceState>(&state_path) {
                 Ok(state) if state.device_uuid == uuid => states.push(state),
-                _ if state_path.exists() => unreadable_state = Some(state_path),
+                _ if state_path.exists() || device_path.exists() => {
+                    unreadable_state = Some(state_path)
+                }
                 _ => {}
             }
         }

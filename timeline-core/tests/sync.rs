@@ -386,6 +386,74 @@ fn an_unreadable_device_state_blocks_cleanup() {
     assert!(error.to_string().contains("unreadable"), "{error:#}");
 }
 
+#[test]
+fn a_registered_device_with_a_missing_state_blocks_cleanup() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    a.write("save.dat", "x");
+    let game = a.add_game("Guarded");
+    a.core.refresh_sync().unwrap();
+    b.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    b.core.push_sync().unwrap();
+    let device = b.core.device_metadata().device_uuid.to_string();
+    fs::remove_file(
+        remote
+            .path()
+            .join("devices")
+            .join(device)
+            .join("state.json"),
+    )
+    .unwrap();
+    let error = a.core.run_pruning().unwrap_err();
+    assert!(error.to_string().contains("unreadable"), "{error:#}");
+}
+
+#[test]
+fn a_remotely_deleted_active_slot_keeps_uncaptured_progress() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    a.write("save.dat", "main");
+    let game = a.add_game("Slots");
+    let default = game.active_slot.clone().unwrap();
+    let second = a
+        .core
+        .create_slot(game.game.id, "Second")
+        .unwrap()
+        .active_slot
+        .unwrap();
+    a.write("save.dat", "second");
+    a.checkpoint(game.game.id);
+    a.core.refresh_sync().unwrap();
+    let adopted = b.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    assert_eq!(adopted.active_slot.as_ref().unwrap().name, "Second");
+
+    a.core.delete_slot(second.id, Some(default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    // Device B plays on in the slot A just deleted.
+    a.write("save.dat", "uncaptured second progress");
+    b.core.refresh_sync().unwrap();
+
+    let game = b.game(adopted.game.id);
+    assert_eq!(game.active_slot.as_ref().unwrap().name, "Default Slot");
+    assert_eq!(a.read("save.dat").as_deref(), Some("main"));
+    // The progress was checkpointed into the deleted slot before switching.
+    let store = Store::open_existing(b.core.repository_root()).unwrap();
+    let record = store.catalog().unwrap().pop().unwrap();
+    let deleted = record
+        .slots
+        .iter()
+        .find(|slot| slot.meta.name == "Second")
+        .unwrap();
+    assert!(
+        deleted
+            .versions
+            .iter()
+            .any(|v| v.reason == savegame_timeline_core::store::VersionReason::PreSwitch)
+    );
+}
+
 fn maintenance_pointers(remote: &Path) -> std::collections::HashSet<Uuid> {
     let mut pointed = std::collections::HashSet::new();
     for device in fs::read_dir(remote.join("devices")).unwrap() {

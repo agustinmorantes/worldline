@@ -178,3 +178,54 @@ fn only_child(dir: &std::path::Path) -> std::ffi::OsString {
     assert!(names.next().is_none());
     name
 }
+
+fn version_metadata(bundle: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let games = bundle.join("games");
+    let slots = games.join(only_child(&games)).join("slots");
+    let versions = slots.join(only_child(&slots)).join("versions");
+    fs::read_dir(&versions)
+        .unwrap()
+        .map(|dir| dir.unwrap().path().join("metadata.json"))
+        .collect()
+}
+
+#[test]
+fn a_bundle_with_unreadable_version_metadata_is_rejected() {
+    let a = Device::new();
+    let (_out, bundle, _) = exported(&a);
+    let map = mapping(&bundle, &Device::new().save_dir());
+    fs::write(&version_metadata(&bundle)[0], "invalid JSON").unwrap();
+
+    assert!(savegame_timeline_core::TimelineCore::inspect_history_bundle(&bundle).is_err());
+    let b = Device::new();
+    assert!(b.core.import_game_history(&bundle, &map).is_err());
+    assert!(b.core.get_games().unwrap().is_empty());
+}
+
+#[test]
+fn a_rejected_reimport_leaves_local_metadata_untouched() {
+    let a = Device::new();
+    let (_out, bundle, id) = exported(&a);
+    let games = bundle.join("games");
+    let game_meta = games.join(only_child(&games)).join("metadata.json");
+    let mut game: serde_json::Value =
+        serde_json::from_slice(&fs::read(&game_meta).unwrap()).unwrap();
+    game["title"] = "Renamed In Bundle".into();
+    game["updated_at"] = "2999-01-01T00:00:00Z".into();
+    fs::write(&game_meta, serde_json::to_vec(&game).unwrap()).unwrap();
+    // Same version UUID, different immutable content.
+    let path = &version_metadata(&bundle)[0];
+    let mut version: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    version["reason"] = "pre_switch".into();
+    fs::write(path, serde_json::to_vec(&version).unwrap()).unwrap();
+
+    assert!(
+        a.core
+            .import_game_history(&bundle, &HashMap::new())
+            .is_err()
+    );
+    let local =
+        savegame_timeline_core::store::Store::open_existing(a.core.repository_root()).unwrap();
+    assert_eq!(local.catalog().unwrap()[0].meta.title, "Exported");
+    assert_eq!(a.game(id).game.title, "Exported");
+}
