@@ -10,7 +10,7 @@ use crate::store::{
     folder_slug, normalize_display_name,
 };
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::Path;
 use uuid::Uuid;
@@ -235,7 +235,7 @@ impl History {
             .as_ref()
             .map(|version| Uuid::parse_str(&version.uuid))
             .transpose()?;
-        self.commit_version(game, slot, parent_uuid, reason, files)
+        self.commit_version(game, slot, parent_uuid, reason, files, Utc::now())
             .map(CheckpointOutcome::Created)
     }
 
@@ -262,8 +262,9 @@ impl History {
         chunks::capture(&self.store, &roots).context("failed to capture tracked directories")
     }
 
-    /// Records `files` as a new version on `slot` and makes it the slot's
-    /// active one. The caller must hold the repository lock.
+    /// Records `files`, captured at `created_at`, as a new version on `slot`
+    /// and makes it the slot's active one. The caller must hold the
+    /// repository lock.
     pub fn commit_version(
         &self,
         game: &FullGame,
@@ -271,6 +272,7 @@ impl History {
         parent_uuid: Option<Uuid>,
         reason: VersionReason,
         files: Vec<FileEntry>,
+        created_at: DateTime<Utc>,
     ) -> Result<Version> {
         let slot_record = self.index.get_slot(slot.id)?;
         let number = slot_record
@@ -291,7 +293,7 @@ impl History {
             folder_slug: folder_slug('v', &format!("v{number:03}"), uuid),
             reason,
             tag: None,
-            created_at: now,
+            created_at,
             updated_at: now,
             origin_device: Some(self.device),
             files,

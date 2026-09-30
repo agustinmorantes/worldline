@@ -959,8 +959,14 @@ impl TimelineCore {
                 .and_then(|uuid| copies.get(&uuid))
                 .map(|copy| Uuid::parse_str(&copy.uuid))
                 .transpose()?;
-            let copy =
-                history.commit_version(&kept, &slot, parent, version.reason, version.files)?;
+            let copy = history.commit_version(
+                &kept,
+                &slot,
+                parent,
+                version.reason,
+                version.files,
+                version.created_at,
+            )?;
             if version.tag.is_some() {
                 history.tag_version(copy.id, version.tag)?;
             }
@@ -980,7 +986,8 @@ impl TimelineCore {
         // Emptied saves still get a version: a slot with history but no
         // active version is not monitored.
         if matches!(outcome, CheckpointOutcome::Empty) && !copies.is_empty() {
-            history.commit_version(&kept, &slot, None, VersionReason::Initial, Vec::new())?;
+            let now = Utc::now();
+            history.commit_version(&kept, &slot, None, VersionReason::Initial, Vec::new(), now)?;
         }
         Ok(())
     }

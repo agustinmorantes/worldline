@@ -669,6 +669,10 @@ fn kept_offline_checkpoints_follow_ancestry_not_clocks() {
         metas.iter().any(|m| m.parent_uuid == Some(root.uuid)),
         "the child still hangs off its parent"
     );
+    assert!(
+        root.created_at.to_rfc3339().starts_with("2099"),
+        "copies keep their capture time"
+    );
 }
 
 #[test]
