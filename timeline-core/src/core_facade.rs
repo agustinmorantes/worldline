@@ -972,14 +972,16 @@ impl TimelineCore {
         history
             .index
             .set_active_version(slot.id, active.map(|copy| copy.id))?;
-        let kept = self.get_game(id)?;
-        self.inner.checkpoint(
-            &FullGame {
-                tracked_dirs: live.tracked_dirs,
-                ..kept
-            },
-            VersionReason::Initial,
-        )?;
+        let kept = FullGame {
+            tracked_dirs: live.tracked_dirs,
+            ..self.get_game(id)?
+        };
+        let outcome = self.inner.checkpoint(&kept, VersionReason::Initial)?;
+        // Emptied saves still get a version: a slot with history but no
+        // active version is not monitored.
+        if matches!(outcome, CheckpointOutcome::Empty) && !copies.is_empty() {
+            history.commit_version(&kept, &slot, None, VersionReason::Initial, Vec::new())?;
+        }
         Ok(())
     }
 

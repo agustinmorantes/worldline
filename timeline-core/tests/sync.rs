@@ -697,6 +697,27 @@ fn a_restored_seen_version_is_not_hung_under_an_offline_tip() {
 }
 
 #[test]
+fn emptied_saves_beside_offline_checkpoints_stay_monitored() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let (id, default, second) = second_slot_on_both(&a, &b);
+    let seen = b.game(id).last_version.unwrap();
+    a.write("save.dat", "offline");
+    b.checkpoint(id);
+    b.core.restore_version(seen.id).unwrap();
+    a.core.delete_slot(second.id, Some(default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    fs::remove_file(a.save_dir().join("save.dat")).unwrap();
+    b.core.refresh_sync().unwrap();
+
+    let game = b.game(id);
+    assert_eq!(a.read("save.dat"), None);
+    assert_eq!(game.versions.len(), 2);
+    assert!(game.last_version.is_some(), "the empty saves are recorded");
+}
+
+#[test]
 fn retired_offline_checkpoints_are_not_resurrected() {
     let remote = tempfile::tempdir().unwrap();
     let a = Device::synced(remote.path());
