@@ -230,7 +230,12 @@ impl History {
                 return Ok(CheckpointOutcome::Unchanged(active.clone()));
             }
         }
-        self.commit_version(game, slot, reason, files)
+        let parent_uuid = game
+            .last_version
+            .as_ref()
+            .map(|version| Uuid::parse_str(&version.uuid))
+            .transpose()?;
+        self.commit_version(game, slot, parent_uuid, reason, files)
             .map(CheckpointOutcome::Created)
     }
 
@@ -257,12 +262,13 @@ impl History {
         chunks::capture(&self.store, &roots).context("failed to capture tracked directories")
     }
 
-    /// Records `files` as a new version on `slot`, child of `game`'s active
-    /// version. The caller must hold the repository lock.
+    /// Records `files` as a new version on `slot` and makes it the slot's
+    /// active one. The caller must hold the repository lock.
     pub fn commit_version(
         &self,
         game: &FullGame,
         slot: &Slot,
+        parent_uuid: Option<Uuid>,
         reason: VersionReason,
         files: Vec<FileEntry>,
     ) -> Result<Version> {
@@ -274,11 +280,6 @@ impl History {
             .max()
             .unwrap_or(0)
             + 1;
-        let parent_uuid = game
-            .last_version
-            .as_ref()
-            .map(|version| Uuid::parse_str(&version.uuid))
-            .transpose()?;
         let uuid = Uuid::new_v4();
         let now = Utc::now();
         let meta = VersionMeta {

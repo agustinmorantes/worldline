@@ -557,34 +557,99 @@ fn offline_checkpoints_in_a_remotely_deleted_slot_are_kept() {
     let a = Device::synced(remote.path());
     let b = Device::synced(remote.path());
     let (id, default, second) = second_slot_on_both(&a, &b);
-    // B checkpoints offline; A deletes the slot without receiving them.
+    // B checkpoints offline, on two branches; A deletes the slot without
+    // receiving them.
     a.write("save.dat", "offline 1");
-    b.checkpoint(id);
+    let fork = b.checkpoint(id);
     a.write("save.dat", "offline 2");
+    b.checkpoint(id);
+    b.core.restore_version(fork.id).unwrap();
+    a.write("save.dat", "offline 3");
     b.checkpoint(id);
     a.core.delete_slot(second.id, Some(default.id)).unwrap();
     a.core.refresh_sync().unwrap();
-    a.write("save.dat", "offline 2");
+    a.write("save.dat", "offline 3");
     b.core.refresh_sync().unwrap();
 
     let game = b.game(id);
     let kept = game.active_slot.as_ref().unwrap();
     assert_eq!(kept.name, "Second");
     assert_ne!(kept.uuid, second.uuid);
-    assert_eq!(a.read("save.dat").as_deref(), Some("offline 2"));
+    assert_eq!(a.read("save.dat").as_deref(), Some("offline 3"));
     b.core.run_pruning().unwrap();
     let versions = b.core.get_slot(kept.id).unwrap().versions;
-    assert_eq!(versions.len(), 2, "both offline checkpoints are kept");
+    assert_eq!(versions.len(), 3, "every offline checkpoint is kept");
     let store = Store::open_existing(b.core.repository_root()).unwrap();
     let record = store.catalog().unwrap().pop().unwrap();
-    for version in versions {
-        let meta = record
-            .version(Uuid::parse_str(&version.uuid).unwrap())
-            .unwrap();
-        for file in &meta.files {
-            savegame_timeline_core::chunks::verify_file(&store, file).unwrap();
-        }
+    let metas: Vec<_> = versions
+        .iter()
+        .map(|version| {
+            record
+                .version(Uuid::parse_str(&version.uuid).unwrap())
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    for file in metas.iter().flat_map(|meta| &meta.files) {
+        savegame_timeline_core::chunks::verify_file(&store, file).unwrap();
     }
+    // Both later checkpoints still branch from the first.
+    let root = metas
+        .iter()
+        .find(|meta| meta.parent_uuid.is_none())
+        .unwrap();
+    assert!(
+        metas
+            .iter()
+            .filter(|meta| meta.uuid != root.uuid)
+            .all(|meta| meta.parent_uuid == Some(root.uuid))
+    );
+    assert_eq!(
+        game.last_version.unwrap().uuid,
+        versions
+            .iter()
+            .max_by_key(|v| v.version_number)
+            .unwrap()
+            .uuid,
+        "the live branch stays active"
+    );
+}
+
+#[test]
+fn retired_offline_checkpoints_are_not_resurrected() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let (id, default, second) = second_slot_on_both(&a, &b);
+    for n in 1..=4 {
+        a.write("save.dat", &format!("offline {n}"));
+        b.checkpoint(id);
+    }
+    b.core
+        .update_pruning_settings(RetentionSettings {
+            keep_all_hours: 0,
+            hourly_until_hours: 0,
+            daily_until_days: 0,
+            weekly_until_days: 0,
+            branch_expiry_days: None,
+            ..RetentionSettings::default()
+        })
+        .unwrap();
+    let report = b
+        .core
+        .run_pruning_at(chrono::Utc::now() + chrono::Duration::hours(2))
+        .unwrap();
+    assert!(!report.retired_versions.is_empty());
+    a.core.delete_slot(second.id, Some(default.id)).unwrap();
+    a.core.refresh_sync().unwrap();
+    a.write("save.dat", "offline 4");
+    b.core.refresh_sync().unwrap();
+
+    let kept = b.game(id).active_slot.unwrap();
+    assert_eq!(kept.name, "Second");
+    let versions = b.core.get_slot(kept.id).unwrap().versions;
+    assert!(versions.iter().all(|v| !v.retired));
+    assert!(versions.len() < 4, "retired checkpoints stay retired");
 }
 
 #[test]

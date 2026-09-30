@@ -902,10 +902,19 @@ impl TimelineCore {
             .into_iter()
             .filter(|file| dirs.contains(&file.tracked_dir_uuid))
             .collect();
+        let parents: HashMap<Uuid, Option<Uuid>> = deleted
+            .versions
+            .iter()
+            .map(|version| (version.uuid, version.parent_uuid))
+            .collect();
+        let retired = history.retired()?;
         let mut unseen: Vec<_> = deleted
             .versions
             .into_iter()
-            .filter(|version| !deleted.meta.seen_versions.contains(&version.uuid))
+            .filter(|version| {
+                !deleted.meta.seen_versions.contains(&version.uuid)
+                    && !retired.contains(&version.uuid)
+            })
             .collect();
         if let Some(fallback) = fallback
             && unseen.is_empty()
@@ -918,13 +927,35 @@ impl TimelineCore {
             .create_slot(id, name)
             .or_else(|_| history.create_slot(id, &format!("{name} (kept)")))?;
         history.index.set_active_slot(id, slot.id)?;
-        unseen.sort_by_key(|version| version.version_number);
+        // Copies keep their branches: each hangs off the copy of its nearest
+        // copied ancestor; seen and retired ancestors stay behind.
+        let kept = self.get_game(id)?;
+        let mut copies: HashMap<Uuid, Version> = HashMap::new();
+        unseen.sort_by_key(|version| (version.created_at, version.version_number));
         for version in unseen {
-            let kept = self.get_game(id)?;
-            let copy = history.commit_version(&kept, &slot, version.reason, version.files)?;
+            let mut parent = version.parent_uuid;
+            for _ in 0..parents.len() {
+                match parent {
+                    Some(uuid) if !copies.contains_key(&uuid) => {
+                        parent = parents.get(&uuid).copied().flatten()
+                    }
+                    _ => break,
+                }
+            }
+            let parent = parent
+                .and_then(|uuid| copies.get(&uuid))
+                .map(|copy| Uuid::parse_str(&copy.uuid))
+                .transpose()?;
+            let copy =
+                history.commit_version(&kept, &slot, parent, version.reason, version.files)?;
             if version.tag.is_some() {
                 history.tag_version(copy.id, version.tag)?;
             }
+            copies.insert(version.uuid, copy);
+        }
+        let active = active.and_then(|uuid| copies.get(&Uuid::parse_str(uuid).ok()?));
+        if let Some(active) = active {
+            history.index.set_active_version(slot.id, Some(active.id))?;
         }
         let kept = self.get_game(id)?;
         self.inner.checkpoint(
