@@ -229,3 +229,28 @@ fn a_rejected_reimport_leaves_local_metadata_untouched() {
     assert_eq!(local.catalog().unwrap()[0].meta.title, "Exported");
     assert_eq!(a.game(id).game.title, "Exported");
 }
+
+#[test]
+fn a_version_uuid_reused_under_another_folder_is_rejected() {
+    let a = Device::new();
+    let (_out, bundle, _id) = exported(&a);
+    // Same version UUID, moved to another folder with different content.
+    let path = &version_metadata(&bundle)[0];
+    let old = path.parent().unwrap();
+    let new = old.with_file_name("v001-moved");
+    fs::rename(old, &new).unwrap();
+    let path = new.join("metadata.json");
+    let mut version: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    version["folder_slug"] = "v001-moved".into();
+    version["reason"] = "manual".into();
+    fs::write(&path, serde_json::to_vec(&version).unwrap()).unwrap();
+
+    assert!(
+        a.core
+            .import_game_history(&bundle, &HashMap::new())
+            .is_err()
+    );
+    let local =
+        savegame_timeline_core::store::Store::open_existing(a.core.repository_root()).unwrap();
+    assert_eq!(local.catalog().unwrap()[0].versions().count(), 2);
+}

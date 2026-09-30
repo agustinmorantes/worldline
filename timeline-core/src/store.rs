@@ -472,7 +472,39 @@ impl Store {
                 }
             }
         }
+        // A UUID names one entity: stored under another path, it is a different one.
+        let incoming = self.entity_paths(game);
+        for existing in self.catalog()? {
+            for (uuid, path) in self.entity_paths(&existing) {
+                if incoming.get(&uuid).is_some_and(|wanted| *wanted != path) {
+                    bail!("{uuid} is already stored at {}", path.display());
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Where each entity of `game` has its metadata, by UUID.
+    fn entity_paths(&self, game: &GameRecord) -> HashMap<Uuid, PathBuf> {
+        let dir = self.game_dir(&game.meta.folder_slug);
+        let mut paths = HashMap::from([(game.meta.uuid, dir.clone())]);
+        for tracked in &game.tracked_dirs {
+            paths.insert(
+                tracked.uuid,
+                dir.join("tracked-dirs").join(&tracked.folder_slug),
+            );
+        }
+        for slot in &game.slots {
+            let slot_dir = self.slot_dir(&game.meta.folder_slug, &slot.meta.folder_slug);
+            for version in &slot.versions {
+                paths.insert(
+                    version.uuid,
+                    slot_dir.join("versions").join(&version.folder_slug),
+                );
+            }
+            paths.insert(slot.meta.uuid, slot_dir);
+        }
+        paths
     }
 
     /// Publishes version metadata. The first write wins; later writes may only

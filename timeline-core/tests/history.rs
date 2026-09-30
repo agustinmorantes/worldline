@@ -371,6 +371,24 @@ fn nested_tracked_folders_are_rejected() {
 }
 
 #[test]
+fn a_dot_dot_alias_of_a_tracked_folder_is_rejected() {
+    let device = Device::new();
+    device.write("inner/save.dat", "x");
+    device.add_game("Outer");
+    let alias = device.saves.path().join("alias");
+    std::fs::create_dir_all(&alias).unwrap();
+    let inner = alias.join("..").join("Game Saves").join("inner");
+    let result = device.core.save_game(
+        GameForm {
+            id: None,
+            title: "Inner".into(),
+        },
+        Some(vec![inner.to_string_lossy().into_owned()]),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn reopening_reconciles_the_index_with_newer_files() {
     let device = Device::new();
     device.write("save.dat", "x");

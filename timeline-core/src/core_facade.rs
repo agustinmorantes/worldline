@@ -326,37 +326,50 @@ impl TimelineCore {
         restoring: Option<&FullVersion>,
         apply: impl FnOnce(&FullGame) -> Result<T>,
     ) -> Result<T> {
-        let suppressed = self.inner.suppression.hold();
-        let result = store::with_lock(self.repository_root(), || {
-            let mut game = self.get_game(game_id)?;
-            if let Some(version) = restoring {
-                let restored: HashSet<Uuid> = self
-                    .history()
-                    .version_meta(version)?
-                    .files
-                    .iter()
-                    .map(|file| file.tracked_dir_uuid)
-                    .collect();
-                game.tracked_dirs.extend(
-                    self.history()
-                        .index
-                        .retired_tracked_dirs(game_id)?
-                        .into_iter()
-                        .filter(|dir| {
-                            Uuid::parse_str(&dir.uuid).is_ok_and(|uuid| restored.contains(&uuid))
-                        }),
-                );
-            }
+        self.exclusive(|| {
+            let game = self.covering(self.get_game(game_id)?, restoring)?;
             if !game.tracked_dirs.is_empty() {
                 self.inner
                     .checkpoint(&game, reason)
                     .context("Failed to checkpoint the current saves first")?;
             }
             apply(&self.get_game(game_id)?)
-        });
+        })
+    }
+
+    /// Runs `apply` with capture suppressed and the repository lock held.
+    /// `guarded` adds the checkpoint; only callers that must pull before they
+    /// know what to capture (adoption, a remotely deleted slot) use it directly.
+    fn exclusive<T>(&self, apply: impl FnOnce() -> Result<T>) -> Result<T> {
+        let suppressed = self.inner.suppression.hold();
+        let result = store::with_lock(self.repository_root(), apply);
         drop(suppressed);
         self.reload_watcher();
         result
+    }
+
+    /// `game` plus the retired tracked directories restoring `version` writes back.
+    fn covering(&self, mut game: FullGame, version: Option<&FullVersion>) -> Result<FullGame> {
+        let Some(version) = version else {
+            return Ok(game);
+        };
+        let restored: HashSet<Uuid> = self
+            .history()
+            .version_meta(version)?
+            .files
+            .iter()
+            .map(|file| file.tracked_dir_uuid)
+            .collect();
+        game.tracked_dirs.extend(
+            self.history()
+                .index
+                .retired_tracked_dirs(game.game.id)?
+                .into_iter()
+                .filter(|dir| {
+                    Uuid::parse_str(&dir.uuid).is_ok_and(|uuid| restored.contains(&uuid))
+                }),
+        );
+        Ok(game)
     }
 
     /// The version activating `slot_id` restores, if it has one.
@@ -805,9 +818,11 @@ impl TimelineCore {
     fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
         let history = self.history();
         let markers = remote.store.markers()?;
-        // Another device deleted the slot whose saves are live here. Handle it
-        // like a local delete: capture the live saves into that slot while it
-        // is still indexed, then load the slot the index falls back to.
+        let copy = || {
+            let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial);
+            transfer.copy_game(game, &markers, Heal::None)?;
+            Ok(transfer.report)
+        };
         let deleted_active = match history.index.game_id(game.meta.uuid)? {
             Some(id) => {
                 let local = self.get_game(id)?;
@@ -817,39 +832,92 @@ impl TimelineCore {
                     .any(|slot| {
                         slot.meta.deleted_at.is_some() && active == Some(slot.meta.uuid.to_string())
                     })
-                    .then_some(local)
+                    .then_some(id)
             }
             None => None,
         };
-        let suppressed = deleted_active
-            .as_ref()
-            .map(|_| self.inner.suppression.hold());
-        if let Some(local) = &deleted_active
-            && !local.tracked_dirs.is_empty()
-        {
-            store::with_lock(history.root(), || {
-                self.inner
-                    .checkpoint(&self.get_game(local.game.id)?, VersionReason::PreSwitch)
-                    .context("Failed to checkpoint the saves of a slot deleted elsewhere")
-            })?;
-        }
-        let report = store::with_lock(history.root(), || {
-            let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial);
-            transfer.copy_game(game, &markers, Heal::None)?;
-            Ok(transfer.report)
-        })?;
-        self.record_pulls(&report.copied_versions)?;
-        history.refresh_game(game.meta.uuid)?;
-        if deleted_active.is_some()
-            && let Some(id) = history.index.game_id(game.meta.uuid)?
-        {
-            let local = self.get_game(id)?;
-            if let Some(slot) = &local.active_slot {
-                store::with_lock(history.root(), || self.activate_slot(&local, slot.id))?;
+        let report = match deleted_active {
+            Some(id) => self.exclusive(|| {
+                let before = self.get_game(id)?;
+                let report = copy()?;
+                self.record_pulls(&report.copied_versions)?;
+                self.leave_deleted_slot(&before)?;
+                Ok(report)
+            })?,
+            None => {
+                let report = store::with_lock(history.root(), copy)?;
+                self.record_pulls(&report.copied_versions)?;
+                history.refresh_game(game.meta.uuid)?;
+                report
             }
-        }
-        drop(suppressed);
+        };
         Ok(report.not_arrived)
+    }
+
+    /// Indexes a pulled game whose slot active here (in `before`, read before
+    /// the pull) another device may have deleted. Progress that device never
+    /// saw (anything but the slot's newest version from before the deletion)
+    /// moves to a new slot of the same name, left live; otherwise the slot
+    /// the index falls back to is loaded. The caller holds the lock with
+    /// capture suppressed.
+    fn leave_deleted_slot(&self, before: &FullGame) -> Result<()> {
+        let history = self.history();
+        let uuid = crate::history::game_uuid(&before.game)?;
+        let record = history
+            .store
+            .game(uuid)?
+            .context("Pulled game is missing")?;
+        let deleted = before.active_slot.as_ref().and_then(|active| {
+            record
+                .slots
+                .into_iter()
+                .find(|slot| slot.meta.uuid.to_string() == active.uuid)
+                .filter(|slot| slot.meta.deleted_at.is_some())
+        });
+        history.refresh_game(uuid)?;
+        let (Some(deleted), Some(id)) = (deleted, history.index.game_id(uuid)?) else {
+            return Ok(());
+        };
+        let seen = deleted
+            .versions
+            .into_iter()
+            .filter(|version| Some(version.created_at) <= deleted.meta.deleted_at)
+            .max_by_key(|version| version.created_at);
+        let game = self.get_game(id)?;
+        let Some(fallback) = game.active_slot.clone() else {
+            return Ok(());
+        };
+        let target = self.slot_target(&game, fallback.id)?;
+        let live = self.covering(game.clone(), target.as_ref())?;
+        let files = history.capture(&live)?;
+        let dirs: HashSet<Uuid> = live
+            .tracked_dirs
+            .iter()
+            .filter_map(|dir| Uuid::parse_str(&dir.uuid).ok())
+            .collect();
+        let known: Vec<_> = seen
+            .map(|meta| meta.files)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file| dirs.contains(&file.tracked_dir_uuid))
+            .collect();
+        if files.is_empty() || files == known {
+            return self.activate_slot(&game, fallback.id);
+        }
+        let name = &deleted.meta.name;
+        let slot = history
+            .create_slot(id, name)
+            .or_else(|_| history.create_slot(id, &format!("{name} (kept)")))?;
+        history.index.set_active_slot(id, slot.id)?;
+        let kept = self.get_game(id)?;
+        self.inner.checkpoint(
+            &FullGame {
+                tracked_dirs: live.tracked_dirs,
+                ..kept
+            },
+            VersionReason::Initial,
+        )?;
+        Ok(())
     }
 
     /// Remembers pulled versions for push healing and forgets old entries.
@@ -1253,33 +1321,32 @@ impl TimelineCore {
         }
         // Decide under suppression and the lock, so saves written while the
         // pull ran are seen and never overwritten.
-        let suppressed = self.inner.suppression.hold();
-        let applied = store::with_lock(history.root(), || {
+        self.exclusive(|| {
             let game = self.get_game(game_id)?;
-            let saves_exist = game
-                .tracked_dirs
-                .iter()
-                .filter(|dir| dir.retired_at.is_none())
-                .any(|dir| {
-                    let path = crate::path_placeholders::expand_path_placeholders(&dir.path);
-                    std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
-                });
+            let version = game
+                .last_version
+                .as_ref()
+                .map(|active| self.get_version(active.id))
+                .transpose()?;
+            // Every folder the restore would write, retired ones included.
+            let live = self.covering(game.clone(), version.as_ref())?;
+            let saves_exist = live.tracked_dirs.iter().any(|dir| {
+                let path = crate::path_placeholders::expand_path_placeholders(&dir.path);
+                std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
+            });
             if saves_exist {
                 // Keep what is on disk: identical saves just join the remote
                 // history; different ones become a new version on top of it.
-                self.inner.checkpoint(&game, VersionReason::Initial)?;
+                self.inner.checkpoint(&live, VersionReason::Initial)?;
                 return Ok(false);
             }
-            let Some(active) = game.last_version.clone() else {
+            let Some(version) = version else {
                 return Ok(false);
             };
-            // The live folders are empty, so there is nothing to checkpoint first.
-            let version = self.get_version(active.id)?;
+            // The folders it writes are empty, so there is nothing to checkpoint first.
             self.restore_locked(&game, &version)?;
             Ok(true)
-        });
-        drop(suppressed);
-        applied
+        })
     }
 
     /// Moves slots other devices advanced: inactive slots by pointer only, the

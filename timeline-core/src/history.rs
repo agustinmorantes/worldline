@@ -209,6 +209,27 @@ impl History {
             .active_slot
             .as_ref()
             .context("game has no active slot")?;
+        let files = self.capture(game)?;
+        if game.last_version.is_none() && files.is_empty() {
+            return Ok(CheckpointOutcome::Empty);
+        }
+        if let Some(active) = &game.last_version {
+            let active_meta = self.store.version_meta(
+                &game.game.folder_slug,
+                &slot.folder_slug,
+                &active.folder_slug,
+            );
+            if active_meta.is_ok_and(|meta| meta.files == files) {
+                return Ok(CheckpointOutcome::Unchanged(active.clone()));
+            }
+        }
+        self.commit_version(game, slot, reason, files)
+            .map(CheckpointOutcome::Created)
+    }
+
+    /// The live contents of the tracked directories, stored as chunks. The
+    /// caller must hold the repository lock.
+    pub fn capture(&self, game: &FullGame) -> Result<Vec<FileEntry>> {
         let exclusions: Vec<_> = game
             .tracked_dirs
             .iter()
@@ -226,23 +247,7 @@ impl History {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let files = chunks::capture(&self.store, &roots)
-            .context("failed to capture tracked directories")?;
-        if game.last_version.is_none() && files.is_empty() {
-            return Ok(CheckpointOutcome::Empty);
-        }
-        if let Some(active) = &game.last_version {
-            let active_meta = self.store.version_meta(
-                &game.game.folder_slug,
-                &slot.folder_slug,
-                &active.folder_slug,
-            );
-            if active_meta.is_ok_and(|meta| meta.files == files) {
-                return Ok(CheckpointOutcome::Unchanged(active.clone()));
-            }
-        }
-        self.commit_version(game, slot, reason, files)
-            .map(CheckpointOutcome::Created)
+        chunks::capture(&self.store, &roots).context("failed to capture tracked directories")
     }
 
     fn commit_version(
@@ -425,8 +430,22 @@ pub fn game_uuid(game: &Game) -> Result<Uuid> {
     Uuid::parse_str(&game.uuid).map_err(|_| anyhow!("game {} has an invalid UUID", game.id))
 }
 
+/// Resolves `.` and `..` the way Windows does, by name, so aliases of one
+/// folder compare equal.
 fn normalize_path(path: &str) -> String {
     let path = path.replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "." => {}
+            "" if !parts.is_empty() => {}
+            ".." if parts.len() > 1 => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    let path = parts.join("/");
     let path = path.trim_end_matches('/').to_string();
     if cfg!(windows) {
         path.to_lowercase()
