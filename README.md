@@ -1,6 +1,6 @@
-# Savegame Timeline
+# Worldline
 
-Savegame Timeline keeps a history of game save folders. It watches tracked folders, creates checkpoints, and lets you browse branches and restore an earlier state. The desktop app and CLI use the same local repository. Optional sync copies history through a user-selected shared folder while preserving divergent progress.
+Worldline keeps a history of game save folders. It watches tracked folders, creates checkpoints, and lets you browse branches and restore an earlier state. The desktop app and CLI use the same local repository. Optional sync copies history through a user-selected shared folder while preserving divergent progress.
 
 ## Build and run
 

@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    savegame_timeline_lib::run()
+    worldline_lib::run()
 }

@@ -1,10 +1,10 @@
 mod common;
 
 use common::Device;
-use savegame_timeline_core::history::CheckpointOutcome;
-use savegame_timeline_core::models::GameForm;
-use savegame_timeline_core::{OpenOptions, TimelineCore};
 use std::fs;
+use worldline_core::history::CheckpointOutcome;
+use worldline_core::models::GameForm;
+use worldline_core::{OpenOptions, TimelineCore};
 
 #[test]
 fn creating_a_game_captures_its_saves_and_unchanged_checkpoints_are_no_ops() {
@@ -195,7 +195,7 @@ fn renaming_a_game_keeps_its_folder_and_history() {
 }
 
 impl Device {
-    fn add_game_result(&self, title: &str) -> anyhow::Result<savegame_timeline_core::models::Game> {
+    fn add_game_result(&self, title: &str) -> anyhow::Result<worldline_core::models::Game> {
         self.core.save_game(
             GameForm {
                 id: None,
@@ -250,7 +250,7 @@ fn pre_release_data_is_moved_aside_never_deleted() {
     fs::create_dir_all(data.path().join("repository")).unwrap();
     fs::write(
         data.path().join("repository").join("metadata.json"),
-        br#"{"format_version":2,"created_at":"2026-01-01T00:00:00Z","app":"savegame-timeline"}"#,
+        br#"{"format_version":2,"created_at":"2026-01-01T00:00:00Z","app":"worldline"}"#,
     )
     .unwrap();
     let (core, _) = TimelineCore::open(data.path(), OpenOptions::default()).unwrap();
@@ -285,8 +285,7 @@ fn recapture_repairs_a_chunk_that_verification_found_corrupt() {
     let device = Device::new();
     device.write("save.dat", "precious");
     let game = device.add_game("Repaired");
-    let store =
-        savegame_timeline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
+    let store = worldline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
     let (hash, _) = store.chunk_sizes().unwrap().into_iter().next().unwrap();
     fs::write(store.chunk_path(&hash).unwrap(), b"garbage").unwrap();
 
@@ -393,8 +392,7 @@ fn reopening_reconciles_the_index_with_newer_files() {
     let device = Device::new();
     device.write("save.dat", "x");
     let game = device.add_game("Before");
-    let store =
-        savegame_timeline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
+    let store = worldline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
     let mut meta = store.catalog().unwrap()[0].meta.clone();
     meta.title = "After".into();
     meta.updated_at += std::time::Duration::from_secs(1);
@@ -412,8 +410,7 @@ fn deep_integrity_rebuilds_files_and_flags_a_wrong_size() {
     let device = Device::new();
     device.write("save.dat", "sized");
     device.add_game("Sized");
-    let store =
-        savegame_timeline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
+    let store = worldline_core::store::Store::open_existing(device.core.repository_root()).unwrap();
     let record = store.catalog().unwrap().pop().unwrap();
     let slot = &record.slots[0];
     let mut version = slot.versions[0].clone();
@@ -425,7 +422,7 @@ fn deep_integrity_rebuilds_files_and_flags_a_wrong_size() {
         .join("versions")
         .join(&version.folder_slug)
         .join("metadata.json");
-    savegame_timeline_core::store::write_json(&path, &version).unwrap();
+    worldline_core::store::write_json(&path, &version).unwrap();
 
     let report = device.core.check_integrity(true).unwrap();
     assert!(!report.is_ok());

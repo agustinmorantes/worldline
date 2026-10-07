@@ -1,11 +1,11 @@
 use anyhow::Result;
-use savegame_timeline_core::install_scanner::InstallScannerItem;
-use savegame_timeline_core::models::*;
-use savegame_timeline_core::TimelineCore;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{generate_handler, Emitter, State};
+use worldline_core::install_scanner::InstallScannerItem;
+use worldline_core::models::*;
+use worldline_core::TimelineCore;
 
 #[tauri::command]
 fn get_games(core: State<Arc<TimelineCore>>) -> Result<Vec<FullGame>, String> {
@@ -130,7 +130,7 @@ fn update_monitoring_settings(
 }
 
 #[tauri::command]
-fn get_device(core: State<Arc<TimelineCore>>) -> savegame_timeline_core::sync::DeviceMetadata {
+fn get_device(core: State<Arc<TimelineCore>>) -> worldline_core::sync::DeviceMetadata {
     core.device_metadata()
 }
 
@@ -138,22 +138,22 @@ fn get_device(core: State<Arc<TimelineCore>>) -> savegame_timeline_core::sync::D
 fn update_device_name(
     name: String,
     core: State<Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::sync::DeviceMetadata, String> {
+) -> Result<worldline_core::sync::DeviceMetadata, String> {
     core.update_device_name(&name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_sync_settings(
     core: State<Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::sync::SyncSettings, String> {
+) -> Result<worldline_core::sync::SyncSettings, String> {
     core.get_sync_settings().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn update_sync_settings(
-    settings: savegame_timeline_core::sync::SyncSettings,
+    settings: worldline_core::sync::SyncSettings,
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::sync::SyncSettings, String> {
+) -> Result<worldline_core::sync::SyncSettings, String> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.update_sync_settings(settings))
         .await
@@ -164,7 +164,7 @@ async fn update_sync_settings(
 #[tauri::command]
 async fn refresh_sync(
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::sync::SyncReport, String> {
+) -> Result<worldline_core::sync::SyncReport, String> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.refresh_sync())
         .await
@@ -218,15 +218,15 @@ fn get_retired_versions(core: State<Arc<TimelineCore>>) -> Result<Vec<String>, S
 #[tauri::command]
 fn get_pruning_settings(
     core: State<Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::maintenance::RetentionSettings, String> {
+) -> Result<worldline_core::maintenance::RetentionSettings, String> {
     core.get_pruning_settings().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn update_pruning_settings(
-    settings: savegame_timeline_core::maintenance::RetentionSettings,
+    settings: worldline_core::maintenance::RetentionSettings,
     core: State<Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::maintenance::RetentionSettings, String> {
+) -> Result<worldline_core::maintenance::RetentionSettings, String> {
     core.update_pruning_settings(settings)
         .map_err(|e| e.to_string())
 }
@@ -234,7 +234,7 @@ fn update_pruning_settings(
 #[tauri::command]
 async fn preview_pruning(
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::core_facade::PruningPreview, String> {
+) -> Result<worldline_core::core_facade::PruningPreview, String> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.preview_pruning())
         .await
@@ -246,7 +246,7 @@ async fn preview_pruning(
 async fn run_pruning(
     core: State<'_, Arc<TimelineCore>>,
     app: tauri::AppHandle,
-) -> Result<savegame_timeline_core::core_facade::PruningRunReport, String> {
+) -> Result<worldline_core::core_facade::PruningRunReport, String> {
     let core = Arc::clone(&core);
     let report = tauri::async_runtime::spawn_blocking(move || core.run_pruning())
         .await
@@ -261,7 +261,7 @@ async fn run_pruning(
 #[tauri::command]
 async fn inspect_history_bundle(
     bundle_path: String,
-) -> Result<savegame_timeline_core::bundle::HistoryBundleSummary, String> {
+) -> Result<worldline_core::bundle::HistoryBundleSummary, String> {
     tauri::async_runtime::spawn_blocking(move || {
         TimelineCore::inspect_history_bundle(std::path::Path::new(&bundle_path))
     })
@@ -275,7 +275,7 @@ async fn export_game_history(
     game_id: i32,
     destination: String,
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::bundle::HistoryTransferReport, String> {
+) -> Result<worldline_core::bundle::HistoryTransferReport, String> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || {
         core.export_game_history(game_id, std::path::Path::new(&destination))
@@ -290,7 +290,7 @@ async fn import_game_history(
     bundle_path: String,
     mappings: HashMap<String, String>,
     core: State<'_, Arc<TimelineCore>>,
-) -> Result<savegame_timeline_core::bundle::HistoryTransferReport, String> {
+) -> Result<worldline_core::bundle::HistoryTransferReport, String> {
     let mappings = mappings
         .into_iter()
         .map(|(uuid, path)| {

@@ -5,20 +5,20 @@
 mod common;
 
 use common::Device;
-use savegame_timeline_core::OpenOptions;
-use savegame_timeline_core::TimelineCore;
-use savegame_timeline_core::detection::{Notification, NotificationReceiver};
-use savegame_timeline_core::maintenance::{self, RetentionSettings};
-use savegame_timeline_core::models::{GameForm, Slot};
-use savegame_timeline_core::store::Store;
-use savegame_timeline_core::sync::{Divergence, SyncSettings};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+use worldline_core::OpenOptions;
+use worldline_core::TimelineCore;
+use worldline_core::detection::{Notification, NotificationReceiver};
+use worldline_core::maintenance::{self, RetentionSettings};
+use worldline_core::models::{GameForm, Slot};
+use worldline_core::store::Store;
+use worldline_core::sync::{Divergence, SyncSettings};
 
-fn uuid_of(game: &savegame_timeline_core::models::FullGame) -> Uuid {
+fn uuid_of(game: &worldline_core::models::FullGame) -> Uuid {
     Uuid::parse_str(&game.game.uuid).unwrap()
 }
 
@@ -131,7 +131,7 @@ fn games_tracked_on_both_devices_before_sync_are_linked() {
     let b = Device::new();
     let local = b.add_game_at("twice", &a.save_dir());
     b.core
-        .update_sync_settings(savegame_timeline_core::sync::SyncSettings {
+        .update_sync_settings(worldline_core::sync::SyncSettings {
             remote_path: Some(remote.path().to_string_lossy().into_owned()),
         })
         .unwrap();
@@ -154,7 +154,7 @@ fn games_tracked_on_both_devices_before_sync_are_linked() {
     c.write("save.dat", "c");
     c.add_game("Twice");
     c.core
-        .update_sync_settings(savegame_timeline_core::sync::SyncSettings {
+        .update_sync_settings(worldline_core::sync::SyncSettings {
             remote_path: Some(remote.path().to_string_lossy().into_owned()),
         })
         .unwrap();
@@ -276,7 +276,7 @@ fn remote_pruning_with_two_devices_keeps_every_protected_version() {
     assert!(swept.chunks_deleted > 0);
     assert!(store.chunk_sizes().unwrap().len() < before);
     assert!(
-        savegame_timeline_core::integrity::check(&store, true)
+        worldline_core::integrity::check(&store, true)
             .unwrap()
             .is_ok()
     );
@@ -454,7 +454,7 @@ fn a_remotely_deleted_active_slot_keeps_uncaptured_progress() {
         .unwrap();
     assert!(!meta.files.is_empty());
     for file in &meta.files {
-        savegame_timeline_core::chunks::verify_file(&store, file).unwrap();
+        worldline_core::chunks::verify_file(&store, file).unwrap();
     }
 }
 
@@ -591,7 +591,7 @@ fn offline_checkpoints_in_a_remotely_deleted_slot_are_kept() {
         })
         .collect();
     for file in metas.iter().flat_map(|meta| &meta.files) {
-        savegame_timeline_core::chunks::verify_file(&store, file).unwrap();
+        worldline_core::chunks::verify_file(&store, file).unwrap();
     }
     // Both later checkpoints still branch from the first.
     let root = metas
@@ -616,7 +616,7 @@ fn offline_checkpoints_in_a_remotely_deleted_slot_are_kept() {
 }
 
 /// The store metadata of every version in `slot`.
-fn slot_metas(device: &Device, slot: i32) -> Vec<savegame_timeline_core::store::VersionMeta> {
+fn slot_metas(device: &Device, slot: i32) -> Vec<worldline_core::store::VersionMeta> {
     let store = Store::open_existing(device.core.repository_root()).unwrap();
     let record = store.catalog().unwrap().pop().unwrap();
     device
@@ -800,9 +800,8 @@ fn concurrent_deletions_of_every_slot_leave_a_live_slot() {
 fn maintenance_pointers(remote: &Path) -> std::collections::HashSet<Uuid> {
     let mut pointed = std::collections::HashSet::new();
     for device in fs::read_dir(remote.join("devices")).unwrap() {
-        let state: savegame_timeline_core::sync::DeviceState =
-            savegame_timeline_core::store::read_json(&device.unwrap().path().join("state.json"))
-                .unwrap();
+        let state: worldline_core::sync::DeviceState =
+            worldline_core::store::read_json(&device.unwrap().path().join("state.json")).unwrap();
         pointed.extend(state.pointed_versions());
     }
     pointed
@@ -833,7 +832,7 @@ fn a_chunk_deleted_from_the_remote_is_reuploaded_by_its_publisher() {
     assert!(!store.has_chunk(&hash));
     a.core.push_sync().unwrap();
     assert!(
-        savegame_timeline_core::integrity::check(&store, true)
+        worldline_core::integrity::check(&store, true)
             .unwrap()
             .is_ok()
     );
@@ -845,7 +844,7 @@ fn a_chunk_deleted_from_the_remote_is_reuploaded_by_its_publisher() {
 
 /// Opens `data` with the watcher and the sync loop, syncing with `remote`.
 fn open_running(data: &Path, remote: Option<&Path>) -> (Arc<TimelineCore>, NotificationReceiver) {
-    savegame_timeline_core::sync::save_settings(
+    worldline_core::sync::save_settings(
         &data.join("sync_settings.json"),
         &SyncSettings {
             remote_path: remote.map(|path| path.to_string_lossy().into_owned()),

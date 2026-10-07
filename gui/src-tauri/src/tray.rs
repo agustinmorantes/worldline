@@ -30,7 +30,7 @@ pub fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
 
     TrayIconBuilder::new()
         .icon(icon)
-        .tooltip("savegame-timeline")
+        .tooltip("Worldline")
         .menu(&menu)
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -72,7 +72,7 @@ pub fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
                     .app_handle()
                     .notification()
                     .builder()
-                    .title("savegame-timeline")
+                    .title("Worldline")
                     .body("Still running in the tray. Right-click the icon to exit.")
                     .show();
             }

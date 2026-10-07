@@ -1,9 +1,9 @@
 use crate::commands::add_handlers;
 use anyhow::Context;
-use savegame_timeline_core::detection;
-use savegame_timeline_core::{OpenOptions, TimelineCore};
 use std::sync::Arc;
 use tauri::{App, Emitter, Manager};
+use worldline_core::detection;
+use worldline_core::{OpenOptions, TimelineCore};
 
 pub mod commands;
 mod tray;

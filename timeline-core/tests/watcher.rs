@@ -3,11 +3,11 @@
 
 mod common;
 
-use savegame_timeline_core::detection::Notification;
-use savegame_timeline_core::models::{GameForm, MonitoringSettings};
-use savegame_timeline_core::{OpenOptions, TimelineCore};
 use std::fs;
 use std::time::{Duration, Instant};
+use worldline_core::detection::Notification;
+use worldline_core::models::{GameForm, MonitoringSettings};
+use worldline_core::{OpenOptions, TimelineCore};
 
 fn wait_for(
     rx: &std::sync::mpsc::Receiver<Notification>,
@@ -29,7 +29,7 @@ fn changes_are_captured_and_restores_do_not_create_versions() {
     let data = tempfile::tempdir().unwrap();
     let saves = tempfile::tempdir().unwrap();
     // Below the settings UI's bounds, so the test runs in seconds.
-    savegame_timeline_core::store::write_json(
+    worldline_core::store::write_json(
         &data.path().join("monitoring_settings.json"),
         &MonitoringSettings {
             version_cooldown_minutes: 0,
@@ -99,7 +99,7 @@ fn imported_history_is_not_snapshotted_until_a_version_is_chosen() {
     let data = tempfile::tempdir().unwrap();
     let saves = tempfile::tempdir().unwrap();
     let control = tempfile::tempdir().unwrap();
-    savegame_timeline_core::store::write_json(
+    worldline_core::store::write_json(
         &data.path().join("monitoring_settings.json"),
         &MonitoringSettings {
             version_cooldown_minutes: 0,

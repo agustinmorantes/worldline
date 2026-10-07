@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use savegame_timeline_core::models::*;
-use savegame_timeline_core::sync::SyncSettings;
-use savegame_timeline_core::{OpenOptions, TimelineCore};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+use worldline_core::models::*;
+use worldline_core::sync::SyncSettings;
+use worldline_core::{OpenOptions, TimelineCore};
 
 /// One installation: its own data directory and save folder.
 pub struct Device {

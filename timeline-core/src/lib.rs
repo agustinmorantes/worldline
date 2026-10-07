@@ -1,5 +1,5 @@
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-compile_error!("savegame-timeline-core supports Windows and Linux only");
+compile_error!("worldline-core supports Windows and Linux only");
 
 pub mod bundle;
 pub mod chunks;

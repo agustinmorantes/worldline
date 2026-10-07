@@ -189,7 +189,7 @@ impl Store {
             &marker,
             &StoreMeta {
                 format_version: FORMAT_VERSION,
-                app: "savegame-timeline".into(),
+                app: "worldline".into(),
                 created_at: Utc::now(),
             },
         )?;
@@ -1117,7 +1117,7 @@ mod tests {
             &root.path().join(METADATA),
             &StoreMeta {
                 format_version: 2,
-                app: "savegame-timeline".into(),
+                app: "worldline".into(),
                 created_at: Utc::now(),
             },
         )

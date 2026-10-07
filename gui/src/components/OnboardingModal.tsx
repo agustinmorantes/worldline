@@ -125,7 +125,7 @@ export function OnboardingModal({
         >
           {isSlideStep(step) && (
             <DialogHeader className="sr-only">
-              <DialogTitle>Savegame Timeline onboarding</DialogTitle>
+              <DialogTitle>Worldline onboarding</DialogTitle>
               <DialogDescription>
                 A short guide to importing games, automatic checkpoints, and branching story paths.
               </DialogDescription>

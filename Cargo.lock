@@ -598,9 +598,9 @@ dependencies = [
  "ctrlc",
  "dirs 5.0.1",
  "predicates",
- "savegame-timeline-core",
  "tempfile",
  "uuid",
+ "worldline-core",
 ]
 
 [[package]]
@@ -3925,54 +3925,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "savegame-timeline"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "savegame-timeline-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "uuid",
-]
-
-[[package]]
-name = "savegame-timeline-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "diesel",
- "diesel_migrations",
- "dirs 5.0.1",
- "fastcdc",
- "fs_extra",
- "glob",
- "image",
- "keyvalues-parser",
- "libsqlite3-sys",
- "mockall",
- "notify-debouncer-full",
- "rustix",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2",
- "shellexpand",
- "sysinfo",
- "tempfile",
- "ureq",
- "uuid",
- "windows-sys 0.59.0",
- "winreg 0.52.0",
- "zstd",
-]
-
-[[package]]
 name = "scheduled-thread-pool"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6466,6 +6418,54 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "worldline"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "uuid",
+ "worldline-core",
+]
+
+[[package]]
+name = "worldline-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "diesel",
+ "diesel_migrations",
+ "dirs 5.0.1",
+ "fastcdc",
+ "fs_extra",
+ "glob",
+ "image",
+ "keyvalues-parser",
+ "libsqlite3-sys",
+ "mockall",
+ "notify-debouncer-full",
+ "rustix",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2",
+ "shellexpand",
+ "sysinfo",
+ "tempfile",
+ "ureq",
+ "uuid",
+ "windows-sys 0.59.0",
+ "winreg 0.52.0",
+ "zstd",
 ]
 
 [[package]]

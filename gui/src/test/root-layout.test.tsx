@@ -31,7 +31,7 @@ describe('RootLayout onboarding', () => {
     render(<RootLayout />);
 
     expect(screen.getByText(/your save-game time machine/i)).toBeInTheDocument();
-    expect(screen.getByText(/savegame timeline onboarding/i)).toBeInTheDocument();
+    expect(screen.getByText(/worldline onboarding/i)).toBeInTheDocument();
     expect(localStorage.getItem('timeline-onboarding-completed')).toBe('true');
   });
 
@@ -52,6 +52,6 @@ describe('RootLayout onboarding', () => {
     });
 
     expect(screen.getByText(/your save-game time machine/i)).toBeInTheDocument();
-    expect(screen.getByText(/savegame timeline onboarding/i)).toBeInTheDocument();
+    expect(screen.getByText(/worldline onboarding/i)).toBeInTheDocument();
   });
 });

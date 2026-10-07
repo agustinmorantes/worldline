@@ -3,17 +3,17 @@ use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand};
-use savegame_timeline_core::bundle::HistoryBundleSummary;
-use savegame_timeline_core::detection::Notification;
-use savegame_timeline_core::history::CheckpointOutcome;
-use savegame_timeline_core::maintenance::RetentionSettings;
-use savegame_timeline_core::models::GameForm;
-use savegame_timeline_core::sync::SyncSettings;
-use savegame_timeline_core::{OpenOptions, TimelineCore};
 use uuid::Uuid;
+use worldline_core::bundle::HistoryBundleSummary;
+use worldline_core::detection::Notification;
+use worldline_core::history::CheckpointOutcome;
+use worldline_core::maintenance::RetentionSettings;
+use worldline_core::models::GameForm;
+use worldline_core::sync::SyncSettings;
+use worldline_core::{OpenOptions, TimelineCore};
 
 #[derive(Parser)]
-#[command(name = "savegame-cli")]
+#[command(name = "worldline-cli")]
 struct Cli {
     #[arg(long)]
     data_dir: Option<PathBuf>,
@@ -207,7 +207,7 @@ fn default_data_dir() -> Result<PathBuf> {
     // Same path Tauri resolves for app_local_data_dir on each platform
     let local_data = dirs::data_local_dir()
         .ok_or_else(|| anyhow!("could not determine local data directory"))?;
-    Ok(local_data.join("agustinmorantes.savegame-timeline"))
+    Ok(local_data.join("agustinmorantes.worldline"))
 }
 
 fn resolve_game_id(core: &TimelineCore, game: &str) -> Result<i32> {
@@ -664,7 +664,7 @@ fn print_retention(settings: &RetentionSettings) {
     }
 }
 
-fn print_sync_report(report: &savegame_timeline_core::sync::SyncReport) {
+fn print_sync_report(report: &worldline_core::sync::SyncReport) {
     for game in &report.remote_games {
         let status = report.games.iter().find(|s| s.game_uuid == game.uuid);
         let relation = match status {

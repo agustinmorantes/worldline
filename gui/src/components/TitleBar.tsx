@@ -11,7 +11,7 @@ export function TitleBar(): ReactElement {
           <Save size={18} />
         </div>
         <div className="flex flex-col -space-y-1">
-          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">SaveGame</span>
+          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Worldline</span>
           <span className="text-sm font-black tracking-tight text-foreground">TIMELINE</span>
         </div>
       </div>
