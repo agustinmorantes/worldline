@@ -32,11 +32,11 @@ describe('RootLayout onboarding', () => {
 
     expect(screen.getByText(/your save-game time machine/i)).toBeInTheDocument();
     expect(screen.getByText(/worldline onboarding/i)).toBeInTheDocument();
-    expect(localStorage.getItem('timeline-onboarding-completed')).toBe('true');
+    expect(localStorage.getItem('worldline-onboarding-completed')).toBe('true');
   });
 
   it('does not auto-open onboarding when completion flag exists', () => {
-    localStorage.setItem('timeline-onboarding-completed', 'true');
+    localStorage.setItem('worldline-onboarding-completed', 'true');
     render(<RootLayout />);
 
     expect(screen.queryByText(/guided setup/i)).not.toBeInTheDocument();
@@ -44,7 +44,7 @@ describe('RootLayout onboarding', () => {
   });
 
   it('reopens onboarding from the help event after first run', () => {
-    localStorage.setItem('timeline-onboarding-completed', 'true');
+    localStorage.setItem('worldline-onboarding-completed', 'true');
     render(<RootLayout />);
 
     act(() => {

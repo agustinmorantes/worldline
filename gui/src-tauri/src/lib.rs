@@ -3,7 +3,7 @@ use anyhow::Context;
 use std::sync::Arc;
 use tauri::{App, Emitter, Manager};
 use worldline_core::detection;
-use worldline_core::{OpenOptions, TimelineCore};
+use worldline_core::{OpenOptions, WorldlineCore};
 
 pub mod commands;
 mod tray;
@@ -24,7 +24,7 @@ pub fn run() {
         .run(|app, event| {
             // Capture pending changes before the process ends.
             if let tauri::RunEvent::Exit = event {
-                if let Some(core) = app.try_state::<Arc<TimelineCore>>() {
+                if let Some(core) = app.try_state::<Arc<WorldlineCore>>() {
                     core.shutdown();
                 }
             }
@@ -36,7 +36,7 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .path()
         .app_local_data_dir()
         .context("failed to get app data directory")?;
-    let (core, notifications) = TimelineCore::open_shared(
+    let (core, notifications) = WorldlineCore::open_shared(
         &data_dir,
         OpenOptions {
             watch: true,

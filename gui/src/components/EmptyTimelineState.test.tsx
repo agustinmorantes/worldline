@@ -11,7 +11,7 @@ describe('EmptyTimelineState', () => {
       />
     );
 
-    expect(screen.getByText(/timeline is watching elden ring/i)).toBeInTheDocument();
+    expect(screen.getByText(/worldline is watching elden ring/i)).toBeInTheDocument();
     expect(screen.getByText(/2 monitored folders/i)).toBeInTheDocument();
     expect(screen.getByText(/waiting for the first save event/i)).toBeInTheDocument();
   });

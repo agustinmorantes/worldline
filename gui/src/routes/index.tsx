@@ -14,7 +14,7 @@ function WelcomeView(): ReactElement {
       </div>
       
       <h1 className="text-4xl font-black tracking-tight text-foreground mb-3">
-        Welcome to <span className="text-primary">Timeline</span>
+        Welcome to <span className="text-primary">Worldline</span>
       </h1>
       
       <p className="text-muted-foreground max-w-md text-sm leading-relaxed mb-12">
@@ -25,7 +25,7 @@ function WelcomeView(): ReactElement {
         <FeatureCard 
           icon={<History size={20} />} 
           title="Automated Snapshots" 
-          description="Timeline monitors your save folders and creates versions automatically while you play."
+          description="Worldline monitors your save folders and creates versions automatically while you play."
         />
         <FeatureCard 
           icon={<ListTree size={20} />} 

@@ -38,7 +38,7 @@ jobs:
       # the offline fallback for game discovery.
       - name: Fetch the Ludusavi manifest
         shell: bash
-        run: curl -fsSL --retry 3 -o timeline-core/assets/manifest.yaml https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml
+        run: curl -fsSL --retry 3 -o worldline-core/assets/manifest.yaml https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml
 
       - name: Build bundle
         working-directory: gui

@@ -10,7 +10,7 @@ use worldline_core::history::CheckpointOutcome;
 use worldline_core::maintenance::RetentionSettings;
 use worldline_core::models::GameForm;
 use worldline_core::sync::SyncSettings;
-use worldline_core::{OpenOptions, TimelineCore};
+use worldline_core::{OpenOptions, WorldlineCore};
 
 #[derive(Parser)]
 #[command(name = "worldline-cli")]
@@ -210,7 +210,7 @@ fn default_data_dir() -> Result<PathBuf> {
     Ok(local_data.join("agustinmorantes.worldline"))
 }
 
-fn resolve_game_id(core: &TimelineCore, game: &str) -> Result<i32> {
+fn resolve_game_id(core: &WorldlineCore, game: &str) -> Result<i32> {
     if let Ok(id) = game.parse() {
         return Ok(id);
     }
@@ -221,7 +221,7 @@ fn resolve_game_id(core: &TimelineCore, game: &str) -> Result<i32> {
         .ok_or_else(|| anyhow!("Game '{game}' not found"))
 }
 
-fn resolve_slot_id(core: &TimelineCore, game_id: i32, slot: &str) -> Result<i32> {
+fn resolve_slot_id(core: &WorldlineCore, game_id: i32, slot: &str) -> Result<i32> {
     let slots = core.get_game(game_id)?.slots;
     if let Ok(id) = slot.parse()
         && slots.iter().any(|candidate| candidate.id == id)
@@ -235,7 +235,7 @@ fn resolve_slot_id(core: &TimelineCore, game_id: i32, slot: &str) -> Result<i32>
         .ok_or_else(|| anyhow!("Slot '{slot}' not found for game {game_id}"))
 }
 
-fn report_moved_data(core: &TimelineCore) {
+fn report_moved_data(core: &WorldlineCore) {
     if let Some(backup) = core.moved_old_data() {
         eprintln!(
             "Data from a pre-release version was moved to {} and the app started fresh.",
@@ -247,7 +247,7 @@ fn report_moved_data(core: &TimelineCore) {
 /// Captures, syncs and prunes in the background until Ctrl+C, which drains
 /// pending captures and pushes them before exiting.
 fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()> {
-    let (core, notifications) = TimelineCore::open_shared(
+    let (core, notifications) = WorldlineCore::open_shared(
         data_dir,
         OpenOptions {
             watch: true,
@@ -286,7 +286,7 @@ fn main() -> Result<()> {
         action: HistoryAction::Inspect { bundle_dir },
     } = &cli.command
     {
-        print_history_summary(&TimelineCore::inspect_history_bundle(bundle_dir)?);
+        print_history_summary(&WorldlineCore::inspect_history_bundle(bundle_dir)?);
         return Ok(());
     }
     let data_dir = match cli.data_dir {
@@ -296,7 +296,7 @@ fn main() -> Result<()> {
     if let Commands::Watch = cli.command {
         return watch(&data_dir, cli.debounce_secs);
     }
-    let (core, _) = TimelineCore::open(
+    let (core, _) = WorldlineCore::open(
         &data_dir,
         OpenOptions {
             watch: false,

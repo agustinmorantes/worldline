@@ -7,7 +7,7 @@ use std::fs;
 use std::time::{Duration, Instant};
 use worldline_core::detection::Notification;
 use worldline_core::models::{GameForm, MonitoringSettings};
-use worldline_core::{OpenOptions, TimelineCore};
+use worldline_core::{OpenOptions, WorldlineCore};
 
 fn wait_for(
     rx: &std::sync::mpsc::Receiver<Notification>,
@@ -37,7 +37,7 @@ fn changes_are_captured_and_restores_do_not_create_versions() {
         },
     )
     .unwrap();
-    let (core, rx) = TimelineCore::open(
+    let (core, rx) = WorldlineCore::open(
         data.path(),
         OpenOptions {
             watch: true,
@@ -108,7 +108,7 @@ fn imported_history_is_not_snapshotted_until_a_version_is_chosen() {
     )
     .unwrap();
     let open = || {
-        TimelineCore::open(
+        WorldlineCore::open(
             data.path(),
             OpenOptions {
                 watch: true,
@@ -118,7 +118,7 @@ fn imported_history_is_not_snapshotted_until_a_version_is_chosen() {
         .unwrap()
     };
     let (core, _) = open();
-    let summary = TimelineCore::inspect_history_bundle(&bundle).unwrap();
+    let summary = WorldlineCore::inspect_history_bundle(&bundle).unwrap();
     let map = summary
         .active_tracked_dirs
         .iter()

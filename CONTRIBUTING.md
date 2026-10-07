@@ -1,6 +1,6 @@
 # Contributing
 
-Worldline is a Rust workspace with a React/Tauri desktop app. `timeline-core/` owns persistence, watching, snapshots, sync, and history transfer. `cli/` and `gui/src-tauri/` should stay thin adapters to the core. The frontend lives in `gui/src/`.
+Worldline is a Rust workspace with a React/Tauri desktop app. `worldline-core/` owns persistence, watching, snapshots, sync, and history transfer. `cli/` and `gui/src-tauri/` should stay thin adapters to the core. The frontend lives in `gui/src/`.
 
 Before sending a change, read the relevant `AGENTS.md` in the area you touch and run the focused tests for that area. The full checks are in the root [README.md](README.md#development). On Linux, install the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) before running workspace checks or building packages.
 

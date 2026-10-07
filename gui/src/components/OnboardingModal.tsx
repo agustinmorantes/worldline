@@ -422,7 +422,7 @@ function StartTrackingVisual(): ReactElement {
           <PreviewOption
             icon={<Save size={16} />}
             title="Add one game"
-            description="Point Timeline at a single game and its save folder."
+            description="Point Worldline at a single game and its save folder."
           />
         </div>
       </div>
@@ -518,7 +518,7 @@ function WelcomeCopy(): ReactElement {
         <CopyCard
           icon={<Save size={16} />}
           title="Play normally, protect your saves"
-          description="Timeline keeps backup checkpoints as you play."
+          description="Worldline keeps backup checkpoints as you play."
         />
         <CopyCard
           icon={<ListTree size={16} />}
@@ -554,7 +554,7 @@ function CheckpointCopy(): ReactElement {
       <div>
         <h2 className="text-3xl font-black tracking-tight text-foreground">Checkpoints while you play</h2>
         <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-          Timeline keeps moments you can return to. No ritual before every boss fight.
+          Worldline keeps moments you can return to. No ritual before every boss fight.
         </p>
       </div>
 
@@ -571,7 +571,7 @@ function BranchingCopy(): ReactElement {
       <div>
         <h2 className="text-3xl font-black tracking-tight text-foreground">Try both story paths</h2>
         <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-          Side with the governor, then jump back and back the rebels. Timeline starts a new branch while the first story stays intact.
+          Side with the governor, then jump back and back the rebels. Worldline starts a new branch while the first story stays intact.
         </p>
       </div>
 
@@ -714,7 +714,7 @@ function TourTooltip({
           </h3>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
             {step === "tour-add-game"
-              ? "Use this when you want to pick a specific game and point Timeline at the save folders yourself."
+              ? "Use this when you want to pick a specific game and point Worldline at the save folders yourself."
               : "Use Import Games to scan known libraries and save locations, then bring detected games into your timeline in bulk."}
           </p>
 

@@ -10,10 +10,7 @@ export function TitleBar(): ReactElement {
         <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-primary-foreground shadow-lg shadow-primary/20">
           <Save size={18} />
         </div>
-        <div className="flex flex-col -space-y-1">
-          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Worldline</span>
-          <span className="text-sm font-black tracking-tight text-foreground">TIMELINE</span>
-        </div>
+        <span className="text-sm font-black tracking-tight text-foreground">WORLDLINE</span>
       </div>
 
       {/* Content-area top: drag region + window controls */}

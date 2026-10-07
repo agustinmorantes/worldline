@@ -262,7 +262,7 @@ function SettingsView(): ReactElement {
     <div className="flex flex-col h-full bg-background overflow-hidden">
       <header className="p-8 pb-4">
         <h1 className="text-3xl font-black tracking-tight text-foreground">Settings</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Configure how Timeline watches save folders and creates checkpoints.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Configure how Worldline watches save folders and creates checkpoints.</p>
       </header>
 
       <ScrollArea className="flex-1 min-h-0" viewportClassName="p-8 pt-4">

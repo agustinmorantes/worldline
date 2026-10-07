@@ -7,7 +7,7 @@ import { TitleBar } from "@/components/TitleBar"
 import { motion, useAnimationControls } from "framer-motion"
 import { OnboardingModal, OnboardingStep } from "@/components/OnboardingModal"
 
-const ONBOARDING_STORAGE_KEY = "timeline-onboarding-completed";
+const ONBOARDING_STORAGE_KEY = "worldline-onboarding-completed";
 type OnboardingSlideStep = Extract<OnboardingStep, "slide-1" | "slide-2" | "slide-3" | "slide-4">;
 
 export const RootLayout = (): ReactElement => {

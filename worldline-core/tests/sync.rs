@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use worldline_core::OpenOptions;
-use worldline_core::TimelineCore;
+use worldline_core::WorldlineCore;
 use worldline_core::detection::{Notification, NotificationReceiver};
 use worldline_core::maintenance::{self, RetentionSettings};
 use worldline_core::models::{GameForm, Slot};
@@ -843,7 +843,7 @@ fn a_chunk_deleted_from_the_remote_is_reuploaded_by_its_publisher() {
 // ---- the background sync loop ----------------------------------------------
 
 /// Opens `data` with the watcher and the sync loop, syncing with `remote`.
-fn open_running(data: &Path, remote: Option<&Path>) -> (Arc<TimelineCore>, NotificationReceiver) {
+fn open_running(data: &Path, remote: Option<&Path>) -> (Arc<WorldlineCore>, NotificationReceiver) {
     worldline_core::sync::save_settings(
         &data.join("sync_settings.json"),
         &SyncSettings {
@@ -855,7 +855,7 @@ fn open_running(data: &Path, remote: Option<&Path>) -> (Arc<TimelineCore>, Notif
         watch: true,
         debounce_seconds: None,
     };
-    TimelineCore::open_shared(data, options).unwrap()
+    WorldlineCore::open_shared(data, options).unwrap()
 }
 
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
@@ -894,7 +894,7 @@ fn remote_version_count(remote: &Path) -> usize {
 }
 
 /// A running device with one game whose first version is already published.
-fn running_with_game(remote: &Path) -> (Device, Arc<TimelineCore>, NotificationReceiver, i32) {
+fn running_with_game(remote: &Path) -> (Device, Arc<WorldlineCore>, NotificationReceiver, i32) {
     let device = Device::new();
     device.write("save.dat", "1");
     let (core, rx) = open_running(device.data.path(), Some(remote));

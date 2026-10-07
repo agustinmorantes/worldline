@@ -2,7 +2,7 @@
 //! minutes passed" and "shutting down" into pushes and full syncs, so no
 //! front end schedules sync itself.
 
-use crate::core_facade::TimelineCore;
+use crate::core_facade::WorldlineCore;
 use crate::detection::Notification;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Weak};
@@ -25,7 +25,7 @@ pub(crate) struct SyncLoop {
 impl SyncLoop {
     /// Runs a full sync at once, then on every trigger or tick.
     pub(crate) fn start(
-        core: Weak<TimelineCore>,
+        core: Weak<WorldlineCore>,
         triggers: mpsc::Receiver<Trigger>,
         trigger: mpsc::Sender<Trigger>,
         notifications: mpsc::Sender<Notification>,
@@ -45,7 +45,7 @@ impl SyncLoop {
 }
 
 fn run(
-    core: Weak<TimelineCore>,
+    core: Weak<WorldlineCore>,
     triggers: mpsc::Receiver<Trigger>,
     notifications: mpsc::Sender<Notification>,
 ) {
@@ -78,7 +78,7 @@ fn run(
     }
 }
 
-fn full_sync(core: &Arc<TimelineCore>, notifications: &mpsc::Sender<Notification>) {
+fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notification>) {
     match core.sync_if_configured() {
         Ok(Some(report)) => {
             let _ = notifications.send(Notification::SyncCompleted(report));
@@ -99,7 +99,7 @@ fn full_sync(core: &Arc<TimelineCore>, notifications: &mpsc::Sender<Notification
     }
 }
 
-fn push_only(core: &Arc<TimelineCore>, notifications: &mpsc::Sender<Notification>) {
+fn push_only(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notification>) {
     match core.push_sync() {
         // Refresh the shown report; this device's pointers just moved.
         Ok(()) => {

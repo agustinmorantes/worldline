@@ -32,7 +32,7 @@ fn mapping(
     bundle: &std::path::Path,
     target: &std::path::Path,
 ) -> HashMap<Uuid, std::path::PathBuf> {
-    let summary = worldline_core::TimelineCore::inspect_history_bundle(bundle).unwrap();
+    let summary = worldline_core::WorldlineCore::inspect_history_bundle(bundle).unwrap();
     summary
         .active_tracked_dirs
         .iter()
@@ -163,7 +163,7 @@ fn a_bundle_with_cyclic_ancestry_is_rejected_by_inspect_and_import() {
     root["parent_uuid"] = child;
     fs::write(root_path, serde_json::to_vec(root).unwrap()).unwrap();
 
-    assert!(worldline_core::TimelineCore::inspect_history_bundle(&bundle).is_err());
+    assert!(worldline_core::WorldlineCore::inspect_history_bundle(&bundle).is_err());
     assert!(b.core.import_game_history(&bundle, &map).is_err());
     assert!(b.core.get_games().unwrap().is_empty());
     assert!(
@@ -196,7 +196,7 @@ fn a_bundle_with_unreadable_version_metadata_is_rejected() {
     let map = mapping(&bundle, &Device::new().save_dir());
     fs::write(&version_metadata(&bundle)[0], "invalid JSON").unwrap();
 
-    assert!(worldline_core::TimelineCore::inspect_history_bundle(&bundle).is_err());
+    assert!(worldline_core::WorldlineCore::inspect_history_bundle(&bundle).is_err());
     let b = Device::new();
     assert!(b.core.import_game_history(&bundle, &map).is_err());
     assert!(b.core.get_games().unwrap().is_empty());

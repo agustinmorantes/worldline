@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use worldline_core::models::*;
 use worldline_core::sync::SyncSettings;
-use worldline_core::{OpenOptions, TimelineCore};
+use worldline_core::{OpenOptions, WorldlineCore};
 
 /// One installation: its own data directory and save folder.
 pub struct Device {
-    pub core: TimelineCore,
+    pub core: WorldlineCore,
     pub data: TempDir,
     pub saves: TempDir,
 }
@@ -18,7 +18,7 @@ impl Device {
     pub fn new() -> Self {
         let data = tempfile::tempdir().unwrap();
         let saves = tempfile::tempdir().unwrap();
-        let (core, _) = TimelineCore::open(data.path(), OpenOptions::default()).unwrap();
+        let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
         Self { core, data, saves }
     }
 

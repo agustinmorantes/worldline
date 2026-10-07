@@ -4,7 +4,7 @@ use common::Device;
 use std::fs;
 use worldline_core::history::CheckpointOutcome;
 use worldline_core::models::GameForm;
-use worldline_core::{OpenOptions, TimelineCore};
+use worldline_core::{OpenOptions, WorldlineCore};
 
 #[test]
 fn creating_a_game_captures_its_saves_and_unchanged_checkpoints_are_no_ops() {
@@ -218,7 +218,7 @@ fn the_index_is_rebuilt_from_repository_files() {
     drop(core);
     fs::remove_file(data.path().join("database.db")).unwrap();
 
-    let (core, _) = TimelineCore::open(data.path(), OpenOptions::default()).unwrap();
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
     let games = core.get_games().unwrap();
     assert_eq!(games.len(), 1);
     assert_eq!(games[0].game.title, "Rebuilt");
@@ -238,7 +238,7 @@ fn reopening_a_data_dir_keeps_its_data() {
     device.add_game("Kept");
     let Device { core, data, saves } = device;
     drop(core);
-    let (core, _) = TimelineCore::open(data.path(), OpenOptions::default()).unwrap();
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
     assert!(core.moved_old_data().is_none());
     assert_eq!(core.get_games().unwrap().len(), 1);
     drop(saves);
@@ -253,7 +253,7 @@ fn pre_release_data_is_moved_aside_never_deleted() {
         br#"{"format_version":2,"created_at":"2026-01-01T00:00:00Z","app":"worldline"}"#,
     )
     .unwrap();
-    let (core, _) = TimelineCore::open(data.path(), OpenOptions::default()).unwrap();
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
     let backup = core.moved_old_data().expect("old data moved").to_path_buf();
     assert!(backup.join("repository").join("metadata.json").exists());
     assert!(core.get_games().unwrap().is_empty());
@@ -400,7 +400,7 @@ fn reopening_reconciles_the_index_with_newer_files() {
 
     let Device { core, data, saves } = device;
     drop(core);
-    let (core, _) = TimelineCore::open(data.path(), OpenOptions::default()).unwrap();
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
     assert_eq!(core.get_game(game.game.id).unwrap().game.title, "After");
     drop(saves);
 }

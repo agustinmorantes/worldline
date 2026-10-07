@@ -29,13 +29,13 @@ export function EmptyTimelineState({
           </div>
 
           <h2 className="text-2xl font-black tracking-tight text-foreground">
-            {isMonitoring ? `Timeline is watching ${gameTitle}` : `Set up monitoring for ${gameTitle}`}
+            {isMonitoring ? `Worldline is watching ${gameTitle}` : `Set up monitoring for ${gameTitle}`}
           </h2>
 
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
             {isMonitoring
-              ? `Your first version will appear here automatically after the next save change. Keep playing, save in-game, and Timeline will capture the moment for you.`
-              : `This game was added successfully, but Timeline needs at least one save folder to watch before it can create versions automatically.`}
+              ? `Your first version will appear here automatically after the next save change. Keep playing, save in-game, and Worldline will capture the moment for you.`
+              : `This game was added successfully, but Worldline needs at least one save folder to watch before it can create versions automatically.`}
           </p>
 
           <div className="mt-5 flex flex-wrap gap-3">

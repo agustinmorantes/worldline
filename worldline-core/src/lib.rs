@@ -21,7 +21,7 @@ pub mod sync;
 mod sync_loop;
 pub mod transfer;
 
-pub use core_facade::{OpenOptions, TimelineCore};
+pub use core_facade::{OpenOptions, WorldlineCore};
 
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");

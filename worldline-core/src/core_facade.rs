@@ -113,7 +113,7 @@ impl CaptureTarget for Inner {
     }
 }
 
-pub struct TimelineCore {
+pub struct WorldlineCore {
     inner: Arc<Inner>,
     watcher: Mutex<Option<Watcher>>,
     sync_loop: Mutex<Option<SyncLoop>>,
@@ -127,7 +127,7 @@ pub struct TimelineCore {
     moved_old_data: Option<PathBuf>,
 }
 
-impl TimelineCore {
+impl WorldlineCore {
     /// Opens (creating when needed) the data directory used by one-shot CLI
     /// commands. No sync loop runs (the watcher does only when `options.watch` is set).
     pub fn open(data_dir: &Path, options: OpenOptions) -> Result<(Self, NotificationReceiver)> {
@@ -1770,7 +1770,7 @@ impl TimelineCore {
     }
 }
 
-impl Drop for TimelineCore {
+impl Drop for WorldlineCore {
     fn drop(&mut self) {
         self.shutdown();
     }
