@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub const GRACE: Duration = Duration::hours(72);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RetentionSettings {
     /// Prune after each successful sync, and at most every 4 h.
     pub automatic: bool,
@@ -380,6 +381,7 @@ pub fn apply(store: &Store, plan: &Plan, now: DateTime<Utc>) -> Result<usize> {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GcReport {
     pub chunks_deleted: usize,
     pub bytes_deleted: u64,

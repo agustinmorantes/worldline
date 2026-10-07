@@ -43,7 +43,9 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy -p worldline --all-targets --features e2e --locked -- -D warnings
 
       - name: Check GUI
         working-directory: gui
@@ -56,3 +58,71 @@ jobs:
       - name: Build GUI
         working-directory: gui
         run: bun run build
+
+      - if: runner.os == 'Linux'
+        name: Check IPC bindings are up to date
+        run: |
+          cargo test -p worldline-core --features ts --locked export_bindings
+          git status --porcelain -- gui/src/ipc/bindings
+          test -z "$(git status --porcelain -- gui/src/ipc/bindings)"
+
+      - if: runner.os == 'Linux'
+        name: Run screen tests
+        working-directory: gui
+        run: |
+          bunx playwright install --with-deps chromium
+          bun run test:screens
+
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - if: runner.os == 'Linux'
+        name: Install Tauri system dependencies and WebKitWebDriver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file libayatana-appindicator3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev webkit2gtk-driver xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - if: runner.os == 'Windows'
+        name: Install an msedgedriver matching WebView2
+        shell: bash
+        run: |
+          cargo install --git https://github.com/chippers/msedgedriver-tool
+          msedgedriver-tool
+          echo "TAURI_NATIVE_DRIVER=$(cygpath -w "$PWD")\msedgedriver.exe" >> "$GITHUB_ENV"
+
+      - name: Install GUI dependencies
+        working-directory: gui
+        run: bun install --frozen-lockfile
+
+      - name: Build the app with the e2e feature
+        working-directory: gui
+        run: bun run e2e:build
+
+      - if: runner.os == 'Linux'
+        name: Run E2E tests
+        working-directory: gui
+        run: xvfb-run --auto-servernum bun run e2e
+
+      - if: runner.os == 'Windows'
+        name: Run E2E tests
+        working-directory: gui
+        run: bun run e2e

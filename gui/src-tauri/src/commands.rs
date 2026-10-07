@@ -319,6 +319,12 @@ fn get_startup_notice(core: State<Arc<WorldlineCore>>) -> Option<String> {
     })
 }
 
+/// The GUI preferences file, kept with the rest of the app data.
+#[tauri::command]
+fn get_prefs_path(data_dir: State<crate::DataDir>) -> String {
+    data_dir.0.join("prefs.json").display().to_string()
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
@@ -355,5 +361,10 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         export_game_history,
         import_game_history,
         get_startup_notice,
+        get_prefs_path,
+        crate::dialogs::pick_folder,
+        crate::dialogs::pick_file,
+        crate::dialogs::pick_save_path,
+        crate::dialogs::confirm,
     ])
 }

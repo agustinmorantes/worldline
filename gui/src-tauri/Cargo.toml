@@ -28,3 +28,10 @@ serde_json = "1"
 uuid = "1"
 anyhow = "1.0.100"
 tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
+tauri-plugin-log = "2"
+
+[features]
+# Test build for WebdriverIO: `WORLDLINE_E2E_DATA_DIR` overrides the data directory and
+# native dialogs are stubbed (pickers return `WORLDLINE_E2E_DIALOG_PATH`, confirms accept).
+e2e = []

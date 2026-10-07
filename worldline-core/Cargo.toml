@@ -26,6 +26,11 @@ glob = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 fastcdc = "3"
 zstd = "0.14.0"
+ts-rs = { version = "12", optional = true, features = ["chrono-impl", "uuid-impl"] }
+
+[features]
+# Exports the GUI-facing types as TypeScript (see `../.cargo/config.toml`).
+ts = ["dep:ts-rs"]
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

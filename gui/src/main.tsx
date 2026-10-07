@@ -1,18 +1,17 @@
 import * as ReactDOM from 'react-dom/client'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
-import { QueryClientProvider } from '@tanstack/react-query'
-// import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 
-import "./index.css"
+import "./app/index.css"
 
 // Import the generated route tree
-import { routeTree } from './routeTree.gen'
-import {listenNotifications} from "@/lib/notification-listener.ts";
-
-import { queryClient } from './lib/query-client'
+import { routeTree } from './app/routeTree.gen'
+import { listenNotifications } from "@/app/events"
+import { AppProviders } from "@/app/AppProviders"
+import { queryClient } from '@/app/query-client'
+import { loadPrefs } from '@/shared/prefs/prefs'
 
 // Create a new router instance
-const router = createRouter({ 
+const router = createRouter({
   routeTree,
   context: {
     queryClient,
@@ -26,18 +25,27 @@ declare module '@tanstack/react-router' {
   }
 }
 
-listenNotifications();
+async function start(): Promise<void> {
+  // `bun run dev:mock`: the UI on plain `vite dev`, with the backend replaced by fixtures.
+  if (import.meta.env.VITE_IPC_MOCKS === 'true') {
+    const { installMocks } = await import('@/ipc/mocks')
+    installMocks()
+  }
 
-// Render the app
-const rootElement = document.getElementById('root')
-if(!rootElement) throw new Error('Failed to find the root element')
+  await loadPrefs()
+  listenNotifications()
 
-if (!rootElement.innerHTML) {
-  const root = ReactDOM.createRoot(rootElement)
-  root.render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-      {/* <ReactQueryDevtools initialIsOpen={false} /> */}
-    </QueryClientProvider>,
-  )
+  const rootElement = document.getElementById('root')
+  if (!rootElement) throw new Error('Failed to find the root element')
+
+  if (!rootElement.innerHTML) {
+    const root = ReactDOM.createRoot(rootElement)
+    root.render(
+      <AppProviders>
+        <RouterProvider router={router} />
+      </AppProviders>,
+    )
+  }
 }
+
+void start()

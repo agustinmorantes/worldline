@@ -35,6 +35,7 @@ pub struct OpenOptions {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PruningPreview {
     pub retire_versions: Vec<Uuid>,
     pub live_bytes_before: u64,
@@ -45,6 +46,7 @@ pub struct PruningPreview {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PruningRunReport {
     pub retired_versions: Vec<Uuid>,
     pub budget_unreachable: bool,

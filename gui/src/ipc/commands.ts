@@ -1,0 +1,113 @@
+// Typed wrappers over the Tauri commands in `src-tauri/src/commands.rs` and
+// `dialogs.rs`. The only place in the GUI that calls `invoke`. Argument names
+// are camelCase; Tauri maps them to the Rust parameter names.
+import { invoke } from '@tauri-apps/api/core';
+import type { DeviceMetadata } from './bindings/DeviceMetadata';
+import type { FullGame } from './bindings/FullGame';
+import type { Game } from './bindings/Game';
+import type { GameForm } from './bindings/GameForm';
+import type { HistoryBundleSummary } from './bindings/HistoryBundleSummary';
+import type { HistoryTransferReport } from './bindings/HistoryTransferReport';
+import type { InstallScannerItem } from './bindings/InstallScannerItem';
+import type { MonitoringSettings } from './bindings/MonitoringSettings';
+import type { PruningPreview } from './bindings/PruningPreview';
+import type { PruningRunReport } from './bindings/PruningRunReport';
+import type { RetentionSettings } from './bindings/RetentionSettings';
+import type { SyncReport } from './bindings/SyncReport';
+import type { SyncSettings } from './bindings/SyncSettings';
+import type { Version } from './bindings/Version';
+
+// Games and playthroughs
+
+export const getGames = (): Promise<FullGame[]> => invoke('get_games');
+export const getGame = (id: number): Promise<FullGame> => invoke('get_game', { id });
+/** Creates or updates a game; `dirs` replaces its tracked directories when given. */
+export const saveGame = (game: GameForm, dirs: string[] | null): Promise<Game> =>
+  invoke('save_game', { game, dirs });
+export const deleteGame = (id: number): Promise<void> => invoke('delete_game', { id });
+export const setGameIcon = (gameId: number, sourcePath: string): Promise<string> =>
+  invoke('set_game_icon', { gameId, sourcePath });
+
+export const createSlot = (gameId: number, name: string): Promise<FullGame> =>
+  invoke('create_slot', { gameId, name });
+export const switchSlot = (gameId: number, slotId: number): Promise<FullGame> =>
+  invoke('switch_slot', { gameId, slotId });
+export const renameSlot = (slotId: number, name: string): Promise<FullGame> =>
+  invoke('rename_slot', { slotId, name });
+export const deleteSlot = (slotId: number, replacementSlotId?: number): Promise<FullGame> =>
+  invoke('delete_slot', { slotId, replacementSlotId });
+
+export const restoreVersion = (id: number): Promise<void> => invoke('restore_version', { id });
+/** An empty tag clears it. */
+export const tagVersion = (id: number, tag: string): Promise<Version> =>
+  invoke('tag_version', { id, tag });
+
+// Install scanning
+
+export const scanInstalled = (): Promise<InstallScannerItem[]> => invoke('scan_installed');
+export const getScanRoots = (): Promise<string[]> => invoke('get_scan_roots');
+export const addScanRoot = (path: string): Promise<void> => invoke('add_scan_root', { path });
+export const removeScanRoot = (path: string): Promise<void> => invoke('remove_scan_root', { path });
+
+// Settings
+
+export const getMonitoringSettings = (): Promise<MonitoringSettings> =>
+  invoke('get_monitoring_settings');
+export const updateMonitoringSettings = (
+  monitoringSettings: MonitoringSettings,
+): Promise<MonitoringSettings> => invoke('update_monitoring_settings', { monitoringSettings });
+
+export const getPruningSettings = (): Promise<RetentionSettings> => invoke('get_pruning_settings');
+export const updatePruningSettings = (settings: RetentionSettings): Promise<RetentionSettings> =>
+  invoke('update_pruning_settings', { settings });
+export const previewPruning = (): Promise<PruningPreview> => invoke('preview_pruning');
+export const runPruning = (): Promise<PruningRunReport> => invoke('run_pruning');
+export const getRetiredVersions = (): Promise<string[]> => invoke('get_retired_versions');
+
+/** Set once when pre-release data was moved aside on startup. */
+export const getStartupNotice = (): Promise<string | null> => invoke('get_startup_notice');
+/** Absolute path of the GUI preferences file. */
+export const getPrefsPath = (): Promise<string> => invoke('get_prefs_path');
+
+// Sync
+
+export const getDevice = (): Promise<DeviceMetadata> => invoke('get_device');
+export const updateDeviceName = (name: string): Promise<DeviceMetadata> =>
+  invoke('update_device_name', { name });
+export const getSyncSettings = (): Promise<SyncSettings> => invoke('get_sync_settings');
+export const updateSyncSettings = (settings: SyncSettings): Promise<SyncSettings> =>
+  invoke('update_sync_settings', { settings });
+export const refreshSync = (): Promise<SyncReport> => invoke('refresh_sync');
+export const adoptRemoteGame = (gameUuid: string): Promise<FullGame> =>
+  invoke('adopt_remote_game', { gameUuid });
+export const applyRemoteVersion = (versionId: number): Promise<void> =>
+  invoke('apply_remote_version', { versionId });
+export const removeSyncDevice = (deviceUuid: string): Promise<void> =>
+  invoke('remove_sync_device', { deviceUuid });
+
+// History bundles
+
+export const inspectHistoryBundle = (bundlePath: string): Promise<HistoryBundleSummary> =>
+  invoke('inspect_history_bundle', { bundlePath });
+export const exportGameHistory = (gameId: number, destination: string): Promise<HistoryTransferReport> =>
+  invoke('export_game_history', { gameId, destination });
+/** `mappings`: tracked directory UUID → destination path. */
+export const importGameHistory = (
+  bundlePath: string,
+  mappings: Record<string, string>,
+): Promise<HistoryTransferReport> => invoke('import_game_history', { bundlePath, mappings });
+
+// Native dialogs (stubbed in the `e2e` build). Pickers resolve to null when cancelled.
+
+export interface FileFilter {
+  name: string;
+  extensions: string[];
+}
+
+export const pickFolder = (title: string): Promise<string | null> => invoke('pick_folder', { title });
+export const pickFile = (title: string, filters: FileFilter[]): Promise<string | null> =>
+  invoke('pick_file', { title, filters });
+export const pickSavePath = (title: string, fileName: string): Promise<string | null> =>
+  invoke('pick_save_path', { title, fileName });
+export const confirm = (title: string, message: string): Promise<boolean> =>
+  invoke('confirm', { title, message });
