@@ -8,6 +8,7 @@ pub mod detection;
 pub mod exclusions;
 pub mod fs_utils;
 pub mod history;
+pub mod icon;
 pub mod index;
 pub mod install_scanner;
 pub mod integrity;

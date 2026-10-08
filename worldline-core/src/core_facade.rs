@@ -118,7 +118,6 @@ pub struct WorldlineCore {
     watcher: Mutex<Option<Watcher>>,
     sync_loop: Mutex<Option<SyncLoop>>,
     pub data_dir: PathBuf,
-    pub icons_dir: PathBuf,
     device: RwLock<DeviceMetadata>,
     sync_lock: Mutex<()>,
     /// Installed titles seen by the last full sync, for later reports.
@@ -187,7 +186,6 @@ impl WorldlineCore {
             watcher: Mutex::new(None),
             sync_loop: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
-            icons_dir: data_dir.join("icons"),
             device: RwLock::new(device),
             sync_lock: Mutex::new(()),
             last_installs: Mutex::new(HashMap::new()),
@@ -515,26 +513,40 @@ impl WorldlineCore {
         self.get_game(game.game.id)
     }
 
+    /// Stores an image (or an executable's icon) as the game's shared icon
+    /// and returns its local path.
     pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
-        std::fs::create_dir_all(&self.icons_dir).context("Failed to create icons directory")?;
-        let game = self.get_game(game_id)?;
         let source = Path::new(source_path);
-        let destination = self.icons_dir.join(format!("{}.png", game.game.uuid));
         let is_exe = source
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-        if is_exe {
-            extract_exe_icon(source, &destination)?;
+        let image = if is_exe {
+            let cache = self.data_dir.join("cache");
+            std::fs::create_dir_all(&cache).context("Failed to create the cache directory")?;
+            let extracted = cache.join(format!(".icon-{}.png", store::short_random()));
+            let image = extract_exe_icon(source, &extracted).and_then(|()| {
+                image::open(&extracted).context("Failed to read the extracted icon")
+            });
+            let _ = std::fs::remove_file(&extracted);
+            image?
         } else {
-            image::open(source)
-                .context("Failed to open image file")?
-                .save(&destination)
-                .context("Failed to save icon as PNG")?;
-        }
-        let icon_path = destination.to_string_lossy().into_owned();
-        self.history().index.set_icon(game_id, Some(&icon_path))?;
-        Ok(icon_path)
+            image::open(source).context("Failed to open image file")?
+        };
+        let png = crate::icon::normalize(&image)?;
+        let game = store::with_lock(self.repository_root(), || {
+            self.history().set_icon(game_id, &png)
+        })?;
+        game.game.icon_path.context("The icon was not stored")
+    }
+
+    /// `Some(hue)` (0–359) sets the game's accent color; `None` returns to
+    /// the color taken from its icon.
+    pub fn set_game_accent(&self, game_id: i32, hue: Option<u16>) -> Result<Game> {
+        store::with_lock(self.repository_root(), || {
+            self.history().set_accent(game_id, hue)
+        })
+        .map(|game| game.game)
     }
 
     /// Rebuilds a version's files under `destination` without touching live
@@ -1268,10 +1280,26 @@ impl WorldlineCore {
             .into_iter()
             .filter(|p| p.game == old.meta.uuid)
             .collect();
-        let icon = local.game.icon_path.clone();
-
         store::with_lock(history.root(), || {
             history.store.write_game(&remote_game.meta)?;
+            // The remote icon wins; the local one (e.g. the install
+            // scanner's) is kept only when the remote has none (ADR 0005).
+            if remote_game.meta.icon_sha256.is_none()
+                && let Some(wanted) = &old.meta.icon_sha256
+                && let Some(png) = history.store.read_icon(&old.meta.folder_slug)?
+                && crate::icon::sha256(&png) == *wanted
+            {
+                let mut meta = remote_game.meta.clone();
+                meta.icon_sha256 = Some(wanted.clone());
+                if meta.accent_hue_source == store::AccentHueSource::Auto {
+                    meta.accent_hue = old.meta.accent_hue;
+                    meta.accent_hue_source = old.meta.accent_hue_source;
+                }
+                meta.updated_at =
+                    Utc::now().max(meta.updated_at + chrono::Duration::milliseconds(1));
+                history.store.write_icon(&slug, &png)?;
+                history.store.write_game(&meta)?;
+            }
             for dir in old
                 .tracked_dirs
                 .iter()
@@ -1352,7 +1380,7 @@ impl WorldlineCore {
                 history.index.set_active_slot(id, slot_id)?;
             }
         }
-        history.index.set_icon(id, icon.as_deref())
+        Ok(())
     }
 
     /// Starts tracking a remote game here. Existing local saves are kept as

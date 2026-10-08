@@ -9,6 +9,8 @@ diesel::table! {
         folder_slug -> Text,
         active_slot_id -> Nullable<Integer>,
         icon_path -> Nullable<Text>,
+        accent_hue -> Integer,
+        accent_hue_source -> Text,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }

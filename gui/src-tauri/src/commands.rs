@@ -90,6 +90,16 @@ fn set_game_icon(
 }
 
 #[tauri::command]
+fn set_game_accent(
+    game_id: i32,
+    hue: Option<u16>,
+    core: State<Arc<WorldlineCore>>,
+) -> Result<Game, String> {
+    core.set_game_accent(game_id, hue)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn scan_installed(
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<Vec<InstallScannerItem>, String> {
@@ -332,6 +342,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         restore_version,
         tag_version,
         set_game_icon,
+        set_game_accent,
         scan_installed,
         get_scan_roots,
         add_scan_root,

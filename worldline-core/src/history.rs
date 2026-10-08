@@ -3,11 +3,12 @@
 //! crash leaves at worst a stale index that `reindex` repairs (ADR 0001).
 
 use crate::chunks::{self, CaptureRoot};
+use crate::icon;
 use crate::index::Index;
 use crate::models::*;
 use crate::store::{
-    FileEntry, GameMeta, GameRecord, SlotMeta, Store, TrackedDirMeta, VersionMeta, VersionReason,
-    folder_slug, normalize_display_name,
+    AccentHueSource, FileEntry, GameMeta, GameRecord, SlotMeta, Store, TrackedDirMeta, VersionMeta,
+    VersionReason, folder_slug, normalize_display_name, validate_hue,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
@@ -63,13 +64,16 @@ impl History {
 
     /// Rebuilds the whole index from the repository files.
     pub fn reindex(&self) -> Result<()> {
-        self.index.reindex(&self.store.catalog()?, &self.retired()?)
+        self.index
+            .reindex(&self.store.catalog()?, &self.retired()?, &self.store)
     }
 
     /// Re-projects one game from its files into the index.
     pub fn refresh_game(&self, uuid: Uuid) -> Result<()> {
         match self.store.game(uuid)? {
-            Some(record) => self.index.upsert_game(&record, &self.retired()?),
+            Some(record) => self
+                .index
+                .upsert_game(&record, &self.retired()?, &self.store),
             None => self.index.remove_game(uuid),
         }
     }
@@ -99,6 +103,9 @@ impl History {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            icon_sha256: None,
+            accent_hue: None,
+            accent_hue_source: AccentHueSource::Auto,
         };
         self.validate_dirs(None, dirs)?;
         self.store.write_game(&meta)?;
@@ -133,6 +140,61 @@ impl History {
         }
         self.refresh_game(record.meta.uuid)?;
         self.index.get_game(id)
+    }
+
+    /// Stores `png` (already normalized) as the game's icon. An automatic
+    /// accent hue follows the icon; a user-chosen one is kept. The caller
+    /// holds the repository lock.
+    pub fn set_icon(&self, id: i32, png: &[u8]) -> Result<FullGame> {
+        let mut meta = self.game_meta(id)?;
+        if meta.accent_hue_source == AccentHueSource::Auto {
+            meta.accent_hue = icon::dominant_hue(&icon::decode(png)?);
+        }
+        meta.icon_sha256 = Some(icon::sha256(png));
+        meta.updated_at = Utc::now().max(meta.updated_at + chrono::Duration::milliseconds(1));
+        // The icon first: the metadata must never name an icon not yet written.
+        self.store.write_icon(&meta.folder_slug, png)?;
+        self.store.write_game(&meta)?;
+        self.refresh_game(meta.uuid)?;
+        self.index.get_game(id)
+    }
+
+    /// `Some` sets a user-chosen accent hue; `None` returns to the hue of the
+    /// icon (or the UUID fallback when it has no usable color). The caller
+    /// holds the repository lock.
+    pub fn set_accent(&self, id: i32, hue: Option<u16>) -> Result<FullGame> {
+        let mut meta = self.game_meta(id)?;
+        match hue {
+            Some(hue) => {
+                validate_hue(hue)?;
+                meta.accent_hue = Some(hue);
+                meta.accent_hue_source = AccentHueSource::User;
+            }
+            None => {
+                meta.accent_hue = self.icon_hue(&meta);
+                meta.accent_hue_source = AccentHueSource::Auto;
+            }
+        }
+        meta.updated_at = Utc::now().max(meta.updated_at + chrono::Duration::milliseconds(1));
+        self.store.write_game(&meta)?;
+        self.refresh_game(meta.uuid)?;
+        self.index.get_game(id)
+    }
+
+    /// The dominant hue of the stored icon `meta` names, if it has arrived.
+    fn icon_hue(&self, meta: &GameMeta) -> Option<u16> {
+        let png = self.store.read_icon(&meta.folder_slug).ok()??;
+        if meta.icon_sha256.as_deref() != Some(icon::sha256(&png).as_str()) {
+            return None;
+        }
+        icon::dominant_hue(&icon::decode(&png).ok()?)
+    }
+
+    fn game_meta(&self, id: i32) -> Result<GameMeta> {
+        let game = self.index.get_game(id)?.game;
+        self.store
+            .game_meta(&game.folder_slug)?
+            .with_context(|| format!("files for game '{}' are missing", game.title))
     }
 
     pub fn delete_game(&self, id: i32) -> Result<()> {
