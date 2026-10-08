@@ -27,11 +27,12 @@ export function CloudSection({ report }: { report: SyncReport }): ReactElement {
         <Cloud size={16} strokeWidth={2} aria-hidden="true" />
         {t.addGames.inCloud}
       </h2>
-      <ul className="mt-3 flex min-h-[92px] flex-wrap gap-4">
+      <ul className="mt-3 grid min-h-[92px] max-w-[664px] grid-cols-2 gap-4">
         <AnimatePresence initial={false} mode="popLayout">
           {waiting.map((game) => (
             <motion.li
               key={game.uuid}
+              className="min-w-0"
               layout={!reduced}
               exit={reduced ? undefined : { opacity: 0, scale: 0.92, transition: { duration: 0.3, ease } }}
             >
@@ -44,7 +45,7 @@ export function CloudSection({ report }: { report: SyncReport }): ReactElement {
               initial={reduced ? false : { opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.42, ease, delay: 0.2 }}
-              className="flex h-[92px] items-center text-sm text-tx3"
+              className="col-span-2 flex h-[92px] items-center text-sm text-tx3"
             >
               {t.addGames.cloudEmpty}
             </motion.li>
@@ -81,13 +82,13 @@ function CloudCard({ game, report }: { game: RemoteGameSummary; report: SyncRepo
   }
 
   return (
-    <div className="flex h-[92px] min-w-[316px] max-w-[420px] items-center gap-3.5 rounded-[18px] bg-sf px-4">
+    <div className="flex h-[92px] w-full items-center gap-3.5 rounded-[18px] bg-sf px-4">
       <span ref={iconRef} className="shrink-0"><GameIcon title={game.title} size={48} /></span>
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-        <span className="truncate text-[15px] font-bold">{game.title}</span>
-        <span className="flex items-center gap-1.5 truncate text-[12.5px] text-tx2">
-          {game.source_device !== null && <span className="text-deck"><DeviceGlyph kind={kind} /></span>}
-          {t.addGames.fromDevice(game.source_device, game.version_count)}
+        <span className="truncate text-[15px] font-bold" title={game.title}>{game.title}</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-tx2" title={t.addGames.fromDevice(game.source_device, game.version_count)}>
+          {game.source_device !== null && <span className="shrink-0 text-deck"><DeviceGlyph kind={kind} /></span>}
+          <span className="truncate">{t.addGames.fromDevice(game.source_device, game.version_count)}</span>
         </span>
         <span className={cn('text-[12.5px]', game.installed ? 'text-live' : 'text-tx3')}>
           {game.installed ? t.addGames.installedHere : t.addGames.notInstalledHere}
