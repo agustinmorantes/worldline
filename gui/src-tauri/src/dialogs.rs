@@ -1,5 +1,5 @@
 //! Native dialogs, behind commands so the `e2e` build can stub them: pickers
-//! return `WORLDLINE_E2E_DIALOG_PATH` and confirmations accept.
+//! return what the test wrote to `dialog-answer` in the data dir, and confirmations accept.
 
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -98,7 +98,11 @@ async fn picked(
         .map_err(|e| e.to_string())
 }
 
+/// The file's contents in `$WORLDLINE_E2E_DATA_DIR/dialog-answer`, so each test can
+/// answer the next picker; no file means the picker was cancelled.
 #[cfg(feature = "e2e")]
 fn stub_path() -> Option<String> {
-    std::env::var("WORLDLINE_E2E_DIALOG_PATH").ok()
+    let dir = std::env::var_os("WORLDLINE_E2E_DATA_DIR")?;
+    let answer = std::fs::read_to_string(std::path::Path::new(&dir).join("dialog-answer")).ok()?;
+    Some(answer.trim().to_owned())
 }

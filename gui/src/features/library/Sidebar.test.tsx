@@ -43,7 +43,7 @@ function mockSync(remotePath: string | null, unadopted = 0) {
 }
 
 function renderSidebar(nav: Partial<ShellNav> = {}): void {
-  const value: ShellNav = { current: null, pending: null, go: vi.fn(), flying: { home: null, out: null }, ...nav };
+  const value: ShellNav = { current: null, pending: null, go: vi.fn(), land: vi.fn(), flying: { home: null, out: null, landing: [] }, ...nav };
   render(<ShellNavContext value={value}><Sidebar /></ShellNavContext>);
 }
 

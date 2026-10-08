@@ -51,22 +51,10 @@
   50%      { transform: scale(1.55); opacity: .32; }
 }
 
-@keyframes scanPulse {
-  0%   { transform: scale(0.92); opacity: .18; }
-  60%  { transform: scale(1.08); opacity: .48; }
-  100% { transform: scale(1.18); opacity: 0; }
-}
-
-@keyframes scanGlow {
-  0%, 100% { opacity: .2; transform: scale(0.95); }
-  50%      { opacity: .45; transform: scale(1.08); }
-}
-
-@keyframes scanSweep {
-  0%   { transform: translateX(-120%); opacity: 0; }
-  15%  { opacity: 1; }
-  85%  { opacity: 1; }
-  100% { transform: translateX(120%); opacity: 0; }
+/* Add games: the light sweeping across the scan box. */
+@keyframes sweep {
+  from { transform: translateX(-120%); }
+  to   { transform: translateX(420%); }
 }
 
 @layer base {

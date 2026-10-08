@@ -9,7 +9,7 @@ import type { CheckpointDevice } from '@/features/game/game-view';
 import { formatRelative, formatTime, useLocale, useT } from '@/shared/i18n';
 import { ease } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
-import { HoldButton } from './HoldButton';
+import { HoldButton } from '@/shared/ui/HoldButton';
 import { formatDuration } from './Timeline';
 import { timeOf } from './sessions';
 

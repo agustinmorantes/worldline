@@ -32,7 +32,6 @@ import { presetOf, RETENTION_PRESETS, type RetentionPreset } from '@/features/se
 import { queryClient } from '@/app/query-client';
 import { useSyncReport } from '@/features/library/queries';
 
-import { ImportHistorySection } from '@/features/add-games/ImportHistorySection';
 
 const MIB = 1024 * 1024;
 
@@ -317,8 +316,6 @@ function SettingsView(): ReactElement {
             </SettingsCard>
           </div>
         </section>
-
-        <ImportHistorySection />
 
         <section className="flex flex-col gap-4">
           <div className="flex items-center gap-2 px-1">

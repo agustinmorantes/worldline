@@ -9,16 +9,19 @@ import { DockedGameIcon } from '@/features/library/DockedGameIcon';
 import { useT } from '@/shared/i18n';
 import { spring } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { chip } from '@/shared/ui/classes';
 import { cn } from '@/shared/ui/utils';
 import type { SyncChip } from './game-view';
 import { GameMenu } from './GameMenu';
-import { chip, PlaythroughPicker } from './PlaythroughPicker';
+import { PlaythroughPicker } from './PlaythroughPicker';
 
 export type GameView = 'sessions' | 'graph';
 
-export function GameHeader({ game, sync, syncDevice, onSyncChip, played, sessions, view, onView, busy, onSwitchSlot, onCreateSlot }: {
+export function GameHeader({ game, sync, inCloud, syncDevice, onSyncChip, played, sessions, view, onView, busy, onSwitchSlot, onCreateSlot }: {
   game: FullGame;
   sync: SyncChip;
+  /** The game is in the cloud, so it can be removed from this PC. */
+  inCloud: boolean;
   /** What kind of device the chip names. */
   syncDevice: DeviceKind;
   onSyncChip: () => void;
@@ -41,7 +44,7 @@ export function GameHeader({ game, sync, syncDevice, onSyncChip, played, session
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <PlaythroughPicker game={game} disabled={busy} onSwitch={onSwitchSlot} onCreate={onCreateSlot} />
           {sync.kind !== 'off' && <SyncChipButton sync={sync} device={syncDevice} onClick={onSyncChip} />}
-          <GameMenu game={game} />
+          <GameMenu game={game} inCloud={inCloud} />
           <ViewToggle view={view} onView={onView} />
         </div>
       </div>

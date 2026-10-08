@@ -70,7 +70,7 @@ export function Sidebar(): ReactElement {
         <NavRow
           id="tour-add-game"
           target={{ view: 'add' }}
-          to="/import"
+          to="/add"
           label={t.shell.addGames}
           icon={<Plus size={16} strokeWidth={2.4} />}
           className="mt-2.5 outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
@@ -114,7 +114,7 @@ function GameRow({ game, status }: { game: FullGame; status: GameStatus }): Reac
   const onClick = useNavClick(target);
   const selected = current?.view === 'game' && current.gameId === game.id;
   // The open game's icon lives in the header; the row keeps an empty socket for it.
-  const away = selected || flying.home === game.id;
+  const away = selected || flying.home === game.id || flying.landing.includes(game.id);
 
   return (
     <Link
@@ -180,7 +180,7 @@ function StatusLine({ status }: { status: GameStatus }): ReactElement {
 function NavRow({ id, target, to, label, icon, className, badge }: {
   id?: string;
   target: NavTarget;
-  to: '/import' | '/settings';
+  to: '/add' | '/settings';
   label: string;
   icon: ReactNode;
   className?: string;

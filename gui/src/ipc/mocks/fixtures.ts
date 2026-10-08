@@ -5,6 +5,7 @@ import type { DeviceMetadata } from '../bindings/DeviceMetadata';
 import type { Divergence } from '../bindings/Divergence';
 import type { FullGame } from '../bindings/FullGame';
 import type { GameSyncStatus } from '../bindings/GameSyncStatus';
+import type { InstallScannerItem } from '../bindings/InstallScannerItem';
 import type { MonitoringSettings } from '../bindings/MonitoringSettings';
 import type { RetentionSettings } from '../bindings/RetentionSettings';
 import type { SyncReport } from '../bindings/SyncReport';
@@ -18,6 +19,9 @@ export interface Fixture {
   retentionSettings: RetentionSettings;
   /** What `refresh_sync` answers; `'pending'` never settles. Unset: sync fails. */
   syncReport?: SyncReport | 'pending';
+  /** What `scan_installed` answers; `'pending'` never settles. */
+  scan?: InstallScannerItem[] | 'pending';
+  scanRoots?: string[];
 }
 
 const minutesAgo = (minutes: number): string => naive(new Date(Date.now() - minutes * 60_000));
@@ -204,6 +208,42 @@ function sessions(relation: Divergence = 'in_sync', extra: Checkpoint[] = []): F
   };
 }
 
+
+/** The Add games view: three games in the cloud and a scan that finds a few more. */
+function addGames(scan: Fixture['scan']): Fixture {
+  const state = library();
+  const report = state.syncReport as SyncReport;
+  return {
+    ...state,
+    syncReport: {
+      ...report,
+      devices: [DECK, { ...DECK, device_uuid: '00000000-0000-4000-8000-00000000d003', name: 'Laptop', platform: 'windows', kind: 'laptop' }],
+      remote_games: [
+        ...report.remote_games,
+        { uuid: 'remote-2', title: 'Balatro', installed: true, adopted: false, source_device: 'Laptop', version_count: 12 },
+        { uuid: 'remote-3', title: 'Dave the Diver', installed: false, adopted: false, source_device: 'Steam Deck', version_count: 1 },
+        { uuid: 'remote-4', title: 'Tunic', installed: false, adopted: true, source_device: 'Laptop', version_count: 7 },
+      ],
+    },
+    scanRoots: ['D:/Games', 'E:/Emulation/Saves'],
+    scan,
+  };
+}
+
+const SCANNED: InstallScannerItem[] = [
+  { title: 'Hades', dirs: ['C:/Users/Player/Saved Games/Hades'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: Date.now() - 3_600_000, source: 'steam' },
+  { title: 'Sea of Stars', dirs: ['C:/Users/Player/AppData/LocalLow/Sabotage/SeaOfStars'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: Date.now() - 7_200_000, source: 'steam' },
+  { title: 'Outer Wilds', dirs: ['C:/Users/Player/AppData/LocalLow/Mobius Digital/Outer Wilds'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: Date.now() - 86_400_000, source: 'epic' },
+  { title: 'Cassette Beasts', dirs: ['D:/Games/Cassette Beasts/saves'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: null, source: 'custom' },
+];
+
+/** Everything in the cloud is already here, and the scan finds nothing new. */
+function addGamesDone(): Fixture {
+  const state = addGames([SCANNED[0]]);
+  const report = state.syncReport as SyncReport;
+  return { ...state, syncReport: { ...report, remote_games: report.remote_games.map((g) => ({ ...g, adopted: true })) } };
+}
+
 export const FIXTURES = {
   default: () => base([eldenRing(), hollowKnight()]),
   empty: () => base([]),
@@ -212,6 +252,10 @@ export const FIXTURES = {
   sessions: () => sessions(),
   ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
   diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),
+  addGames: () => addGames(undefined),
+  scanning: () => addGames('pending'),
+  scanned: () => addGames(SCANNED),
+  addGamesDone,
 } satisfies Record<string, () => Fixture>;
 
 export type FixtureName = keyof typeof FIXTURES;

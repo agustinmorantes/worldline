@@ -7,8 +7,7 @@ import { useLocation, useRouter } from '@tanstack/react-router';
 import { motion, useAnimationControls } from 'motion/react';
 import { useGames } from '@/features/library/queries';
 import { GameIcon } from '@/features/library/GameIcon';
-import { anchorKey, type NavTarget, ShellNavContext } from '@/features/library/shell-nav';
-import type { FullGame } from '@/ipc/bindings/FullGame';
+import { anchorKey, type FlyingGame, type NavTarget, ShellNavContext } from '@/features/library/shell-nav';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { accentVars, BRAND_HUE } from '@/shared/tokens/accent';
 
@@ -21,14 +20,14 @@ function targetOf(pathname: string): NavTarget | null {
   const game = /^\/game\/(\d+)/.exec(pathname);
   if (game) return { view: 'game', gameId: Number(game[1]) };
   if (pathname.startsWith('/settings')) return { view: 'settings' };
-  if (pathname.startsWith('/import') || pathname.startsWith('/remote')) return { view: 'add' };
+  if (pathname.startsWith('/add')) return { view: 'add' };
   return null;
 }
 
 function pathOf(target: NavTarget): string {
   switch (target.view) {
     case 'game': return `/game/${target.gameId.toString()}`;
-    case 'add': return '/import';
+    case 'add': return '/add';
     case 'settings': return '/settings';
   }
 }
@@ -49,9 +48,22 @@ interface Box { left: number; top: number; width: number; height: number }
 
 const boxOf = (rect: DOMRect): Box => ({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
 
+/** Calls `found` with the rect `find` returns once it has rendered (up to a second). */
+function whenRendered(find: () => DOMRect | null, found: (rect: DOMRect) => void): void {
+  let frames = 0;
+  const look = (): void => {
+    const rect = find();
+    if (rect !== null) found(rect);
+    else if (++frames < 60) requestAnimationFrame(look);
+  };
+  requestAnimationFrame(look);
+}
+
 interface Sheet { key: number; from: Box; to: Box; opening: boolean }
 
-interface Flight { key: number; game: FullGame; from: Box; to: Box; home: boolean }
+type FlightKind = 'home' | 'out' | 'land';
+
+interface Flight { key: number; game: FlyingGame; from: Box; to: Box; kind: FlightKind }
 
 export function Shell({ titleBar, sidebar, children }: {
   titleBar: ReactNode;
@@ -86,23 +98,27 @@ export function Shell({ titleBar, sidebar, children }: {
     timersRef.current.push(window.setTimeout(fn, ms));
   }, []);
 
-  const fly = useCallback((game: FullGame, from: Box, to: Box, home: boolean): void => {
+  const fly = useCallback((game: FlyingGame, from: Box, to: Box, kind: FlightKind): void => {
     const key = ++counterRef.current;
-    setFlights((all) => [...all.filter((f) => f.home !== home), { key, game, from, to, home }]);
-    later(home ? 400 : 560, () => { setFlights((all) => all.filter((f) => f.key !== key)); });
+    // One flight home and one out at a time; several games can land together.
+    setFlights((all) => [...all.filter((f) => kind === 'land' || f.kind !== kind), { key, game, from, to, kind }]);
+    later(kind === 'home' ? 400 : 560, () => { setFlights((all) => all.filter((f) => f.key !== key)); });
   }, [later]);
 
   /** Flies a game's icon from its sidebar row into the header once the header has rendered. */
-  const flyOut = useCallback((game: FullGame): void => {
+  const flyOut = useCallback((game: FlyingGame): void => {
     const from = anchorRect({ view: 'game', gameId: game.id });
-    let frames = 0;
-    const land = (): void => {
-      const to = dockRect(game.id);
-      if (to !== null && from !== null) fly(game, boxOf(from), boxOf(to), false);
-      else if (++frames < 60) requestAnimationFrame(land);
-    };
-    requestAnimationFrame(land);
+    if (from === null) return;
+    whenRendered(() => dockRect(game.id), (to) => { fly(game, boxOf(from), boxOf(to), 'out'); });
   }, [fly]);
+
+  const land = useCallback((game: FlyingGame, from: DOMRect): void => {
+    if (reduced) return;
+    whenRendered(
+      () => anchorRect({ view: 'game', gameId: game.id }),
+      (to) => { fly(game, boxOf(from), boxOf(to), 'land'); },
+    );
+  }, [reduced, fly]);
 
   const go = useCallback((target: NavTarget): void => {
     // Clicks during the fold are dropped; during the unfold they start the next switch.
@@ -130,7 +146,7 @@ export function Shell({ titleBar, sidebar, children }: {
     const leaving = current?.view === 'game' ? games?.find((g) => g.id === current.gameId) : undefined;
     const leavingDock = leaving !== undefined ? dockRect(leaving.id) : null;
     if (leaving !== undefined && leavingDock !== null && fromAnchor !== null) {
-      fly(leaving, boxOf(leavingDock), boxOf(fromAnchor), true);
+      fly(leaving, boxOf(leavingDock), boxOf(fromAnchor), 'home');
     }
 
     later(FOLD_MS, () => {
@@ -165,11 +181,12 @@ export function Shell({ titleBar, sidebar, children }: {
   }, [pathname, reduced, stage]);
 
   const flying = useMemo(() => ({
-    home: flights.find((f) => f.home)?.game.id ?? null,
-    out: flights.find((f) => !f.home)?.game.id ?? null,
+    home: flights.find((f) => f.kind === 'home')?.game.id ?? null,
+    out: flights.find((f) => f.kind === 'out')?.game.id ?? null,
+    landing: flights.filter((f) => f.kind === 'land').map((f) => f.game.id),
   }), [flights]);
 
-  const nav = useMemo(() => ({ current, pending, go, flying }), [current, pending, go, flying]);
+  const nav = useMemo(() => ({ current, pending, go, land, flying }), [current, pending, go, land, flying]);
 
   return (
     <ShellNavContext value={nav}>
@@ -231,7 +248,7 @@ export function Shell({ titleBar, sidebar, children }: {
               className="pointer-events-none fixed left-0 top-0 z-50 origin-top-left drop-shadow-[0_18px_40px_oklch(0%_0_0/0.5)]"
               initial={{ x: flight.from.left, y: flight.from.top, scale: flight.from.width / size }}
               animate={{ x: flight.to.left, y: flight.to.top, scale: flight.to.width / size }}
-              transition={{ duration: flight.home ? 0.38 : 0.52, ease }}
+              transition={{ duration: flight.kind === 'home' ? 0.38 : 0.52, ease }}
             >
               <GameIcon
                 title={flight.game.title}

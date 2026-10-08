@@ -2,7 +2,8 @@
 // (`bun run dev:mock`, Playwright screen tests). Never bundled into the app.
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { InvokeArgs } from '@tauri-apps/api/core';
-import { makeSlot } from '../builders';
+import { makeGame, makeSlot, makeTrackedDir } from '../builders';
+import type { FullGame } from '../bindings/FullGame';
 import { FIXTURES, type Fixture, type FixtureName } from './fixtures';
 
 const FIXTURE_KEY = 'worldline-mock-fixture';
@@ -77,8 +78,55 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       target.active_slot_id = id;
       return target;
     }
+    case 'save_game': {
+      const form = args.game as { id: number | null; title: string };
+      const dirs = args.dirs as string[] | null;
+      const ids = state.games.flatMap((g) => g.tracked_dirs.map((d) => d.id));
+      const tracked = (gameId: number): FullGame['tracked_dirs'] =>
+        (dirs ?? []).map((path, i) => makeTrackedDir({ id: Math.max(0, ...ids) + i + 1, game_id: gameId, path }));
+      if (form.id === null) {
+        const id = Math.max(0, ...state.games.map((g) => g.id)) + 1;
+        const created = makeGame({ id, title: form.title, tracked_dirs: tracked(id) });
+        state.games.push(created);
+        return structuredClone(created);
+      }
+      const target = game(form.id);
+      target.title = form.title;
+      if (dirs !== null) target.tracked_dirs = tracked(target.id);
+      return structuredClone(target);
+    }
+    case 'set_game_icon':
+      return null;
+    case 'set_game_accent': {
+      const target = game(args.gameId);
+      const hue = args.hue as number | null;
+      target.accent_hue = hue ?? 290;
+      target.accent_hue_source = hue === null ? 'auto' : 'user';
+      return structuredClone(target);
+    }
+    case 'delete_game':
     case 'untrack_game':
       state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
+    case 'adopt_remote_game': {
+      const report = state.syncReport;
+      const remote = typeof report === 'object' ? report.remote_games.find((g) => g.uuid === args.gameUuid) : undefined;
+      if (remote === undefined) throw new Error(`Remote game ${String(args.gameUuid)} not found`);
+      remote.adopted = true;
+      const id = Math.max(0, ...state.games.map((g) => g.id)) + 1;
+      const adopted = makeGame({ id, title: remote.title, uuid: remote.uuid });
+      state.games.push(adopted);
+      return structuredClone(adopted);
+    }
+    case 'scan_installed':
+      return state.scan === 'pending' ? new Promise(() => undefined) : structuredClone(state.scan ?? []);
+    case 'get_scan_roots':
+      return [...(state.scanRoots ?? [])];
+    case 'add_scan_root':
+      state.scanRoots = [...(state.scanRoots ?? []), args.path as string];
+      return null;
+    case 'remove_scan_root':
+      state.scanRoots = (state.scanRoots ?? []).filter((r) => r !== args.path);
       return null;
     case 'get_prefs_path':
       return 'mock://prefs.json';
@@ -93,8 +141,6 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       if (state.syncReport === undefined) throw new Error('Sync is not configured');
       return state.syncReport;
     case 'get_retired_versions':
-    case 'get_scan_roots':
-    case 'scan_installed':
       return [];
     case 'get_monitoring_settings':
       return state.monitoringSettings;

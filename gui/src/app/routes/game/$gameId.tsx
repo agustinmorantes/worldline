@@ -193,6 +193,7 @@ export function GameDetail(): ReactElement {
       <GameHeader
         game={game}
         sync={chipState}
+        inCloud={syncOn && report.data?.remote_games.some((g) => g.uuid === game.uuid) === true}
         syncDevice={remoteKind}
         onSyncChip={onSyncChip}
         played={versions.length === 0 ? null : formatDuration(playedMs(layout.lineage, versions, gapMs), t)}

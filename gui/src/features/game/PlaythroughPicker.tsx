@@ -5,13 +5,7 @@ import { Check, ChevronDown, Layers, Plus } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { formatRelative, useLocale, useT } from '@/shared/i18n';
 import { utcDate } from '@/ipc/time';
-
-export const chip =
-  'inline-flex h-[30px] items-center gap-[7px] whitespace-nowrap rounded-full bg-el px-3 text-[13px] font-semibold text-tx2 transition-[background-color,color,transform] duration-200 ease-spring hover:bg-ln active:scale-[0.94] disabled:opacity-60';
-export const popover =
-  'z-50 rounded-2xl bg-el p-1.5 shadow-[0_24px_60px_oklch(0%_0_0/0.55),inset_0_0_0_1px_oklch(100%_0_0/0.06)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95';
-export const row =
-  'flex min-h-10 w-full cursor-default items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-sm font-semibold outline-none transition-colors duration-150 data-[highlighted]:bg-[oklch(100%_0_0/0.06)] data-[disabled]:opacity-50';
+import { chip, popover, row } from '@/shared/ui/classes';
 
 export function PlaythroughPicker({ game, disabled, onSwitch, onCreate }: {
   game: FullGame;
