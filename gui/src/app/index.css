@@ -68,74 +68,43 @@
     outline-offset: 2px;
   }
 
+  /* The page behind the app, so nothing white shows before the body paints. */
   html {
-    scrollbar-width: thin;
-    scrollbar-color: rgb(from var(--tx) r g b / 0.12) transparent;
+    background: var(--bg);
   }
 
-  *::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-
-  *:hover::-webkit-scrollbar {
+  /* Scrollbars: a pill thumb inset from the edge on a clear track, no arrows. Pseudo-elements only:
+     `scrollbar-color`/`scrollbar-width` would override them in Chromium and lose the inset. */
+  ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
-  }
-
-  *::-webkit-scrollbar-track,
-  *::-webkit-scrollbar-track-piece {
     background: transparent;
-    border: 0;
-    box-shadow: none;
   }
 
-  *::-webkit-scrollbar-track-piece:start,
-  *::-webkit-scrollbar-track-piece:end {
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
     background: transparent;
-    border: 0;
-    box-shadow: none;
   }
 
-  *::-webkit-scrollbar-button,
-  *::-webkit-scrollbar-button:single-button,
-  *::-webkit-scrollbar-button:start:decrement,
-  *::-webkit-scrollbar-button:end:increment,
-  *::-webkit-scrollbar-button:horizontal:start:decrement,
-  *::-webkit-scrollbar-button:horizontal:end:increment,
-  *::-webkit-scrollbar-button:vertical:start:decrement,
-  *::-webkit-scrollbar-button:vertical:end:increment {
-    display: none !important;
-    width: 0 !important;
-    min-width: 0 !important;
-    max-width: 0 !important;
-    height: 0 !important;
-    min-height: 0 !important;
-    max-height: 0 !important;
-    background: transparent;
-    border: 0;
-    box-shadow: none;
+  ::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
   }
 
-  *::-webkit-scrollbar-thumb {
-    background: rgb(from var(--tx) r g b / 0.12);
-    border: 1px solid transparent;
-    border-radius: 999px;
+  ::-webkit-scrollbar-thumb {
+    background-color: rgb(from var(--tx) r g b / 0.14);
     background-clip: padding-box;
-    box-shadow: none;
-  }
-
-  *::-webkit-scrollbar-thumb:hover {
-    background: rgb(from var(--tx) r g b / 0.22);
     border: 2px solid transparent;
+    border-radius: 999px;
   }
 
-  *::-webkit-scrollbar-thumb:active {
-    background: rgb(from var(--tx) r g b / 0.3);
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(from var(--tx) r g b / 0.26);
   }
 
-  *::-webkit-scrollbar-corner {
-    background: transparent;
+  ::-webkit-scrollbar-thumb:active {
+    background-color: rgb(from var(--tx) r g b / 0.34);
   }
 
   body {

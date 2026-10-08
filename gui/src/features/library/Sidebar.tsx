@@ -1,6 +1,6 @@
-import { type MouseEvent, type ReactElement, type ReactNode, useMemo } from 'react';
+import { type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, useCallback, useMemo, useState } from 'react';
 import { Link } from '@tanstack/react-router';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, type Transition } from 'motion/react';
 import { Plus, SlidersHorizontal } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
@@ -9,13 +9,17 @@ import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { accentVars } from '@/shared/tokens/accent';
 import { cn } from '@/shared/ui/utils';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { fadeLabel, type Fold, useNarrow } from './fold';
 import { GameIcon } from './GameIcon';
-import { type GameStatus, type GameSyncView, gameStatus, sortLibrary } from './library';
+import { type GameStatus, type GameSyncView, gameStatus, matchesTitle, sortLibrary } from './library';
+import { LibrarySearch } from './LibrarySearch';
 import { useGames, useRunningGames, useSyncReport, useSyncSettings } from './queries';
 import { anchorKey, type NavTarget, useShellNav } from './shell-nav';
 import { SyncCard } from './SyncCard';
 import { useNow } from './useNow';
 
+/** The rail's width spring: a touch heavier than `spring`, as the panel is big. No overshoot, so the main pane doesn't wobble. */
+const panelSpring: Transition = { type: 'spring', stiffness: 260, damping: 32, mass: 1 };
 
 export function Sidebar(): ReactElement {
   const t = useT();
@@ -24,6 +28,23 @@ export function Sidebar(): ReactElement {
   const { data: report } = useSyncReport();
   const { data: running } = useRunningGames();
   const reduced = useMotionReduced();
+  const { go } = useShellNav();
+  const collapsed = useNarrow();
+  // Labels leave the layout only once the rail has finished narrowing.
+  const [folded, setFolded] = useState(collapsed);
+  const [wasCollapsed, setWasCollapsed] = useState(collapsed);
+  if (wasCollapsed !== collapsed) {
+    setWasCollapsed(collapsed);
+    setFolded(false);
+  }
+  const fold: Fold = { collapsed, hidden: collapsed && (reduced || folded), reduced };
+  const [searching, setSearching] = useState(false);
+  const [query, setQuery] = useState('');
+  const openSearch = useCallback(() => { setSearching(true); }, []);
+  const closeSearch = (): void => {
+    setSearching(false);
+    setQuery('');
+  };
   const sorted = useMemo(() => (games ? sortLibrary(games) : []), [games]);
   const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
   const notHere = report?.remote_games.filter((g) => !g.adopted).length ?? 0;
@@ -35,14 +56,43 @@ export function Sidebar(): ReactElement {
   });
   const rows = sorted.map((game) => ({ game, status: gameStatus(game, syncView(game), running?.includes(game.id) === true) }));
   const fromDevice = rows.find((r) => r.status.kind === 'new-from' || r.status.kind === 'played-too');
+  const shown = rows.filter((r) => matchesTitle(r.game.title, query));
+  const empty = query !== '' && shown.length === 0;
+
+  // Typing while focus is in the sidebar starts a search with that key ("/" opens it empty).
+  const typeToSearch = (event: KeyboardEvent): void => {
+    if (event.key.length !== 1 || event.key === ' ' || event.key === '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input, textarea, select') !== null)) return;
+    event.preventDefault();
+    setQuery(event.key);
+    setSearching(true);
+  };
 
   return (
-    <aside
+    <motion.aside
       aria-label={t.shell.library}
-      className={`relative z-[4] flex w-[240px] shrink-0 flex-col rounded-br-[12px] bg-tint max-[1099px]:w-[72px]`}
+      // Above the main pane while the rail's search flyout is out over it.
+      className={cn('relative flex w-[240px] shrink-0 flex-col rounded-br-[12px] bg-tint max-[1099px]:w-[72px]', searching && collapsed ? 'z-[7]' : 'z-[4]')}
+      initial={false}
+      animate={{ width: collapsed ? 72 : 240 }}
+      transition={reduced ? { duration: 0 } : panelSpring}
+      onAnimationComplete={() => { setFolded(collapsed); }}
+      onKeyDown={typeToSearch}
     >
-      <div className={`px-6 pb-2 pt-5 text-[11px] font-bold uppercase tracking-[0.12em] text-tx3 max-[1099px]:invisible`}>
-        {t.shell.library}
+      <div className="relative px-6 pb-2 pt-5">
+        <div className={cn('whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.12em] text-tx3', fadeLabel({ ...fold, collapsed: collapsed || searching, hidden: false }), fold.hidden && 'invisible')}>
+          {t.shell.library}
+        </div>
+        <LibrarySearch
+          fold={fold}
+          open={searching}
+          query={query}
+          empty={empty}
+          onOpen={openSearch}
+          onQuery={setQuery}
+          onClose={closeSearch}
+          onSubmit={() => { if (shown.length > 0) go({ view: 'game', gameId: shown[0].game.id }); }}
+        />
       </div>
       <nav aria-label={t.shell.library} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 [scrollbar-width:none]">
         {isLoading ? (
@@ -50,44 +100,68 @@ export function Sidebar(): ReactElement {
             {[0, 1, 2].map((i) => (
               <div key={i} className="flex h-[52px] items-center gap-3 px-2.5">
                 <span className="size-9 shrink-0 animate-pulse rounded-[11px] bg-el" />
-                <span className={`h-3 w-24 animate-pulse rounded bg-el max-[1099px]:hidden`} />
+                <span className={cn('h-3 w-24 animate-pulse rounded bg-el', fadeLabel(fold, 'hidden'))} />
               </div>
             ))}
           </div>
         ) : error ? (
-          <p className={`px-3 py-2 text-xs text-err max-[1099px]:sr-only`}>{t.errors.loadFailed}</p>
+          <p className={cn('px-3 py-2 text-xs text-err', fadeLabel(fold))}>{t.errors.loadFailed}</p>
         ) : (
-          <ul className="flex flex-col gap-1">
-            {rows.map(({ game, status }) => (
-              <motion.li
-                key={game.id}
-                layout="position"
-                initial={reduced ? false : { opacity: 0, x: -12 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.56, ease }}
-              >
-                <GameRow game={game} status={status} />
-              </motion.li>
-            ))}
-          </ul>
+          <>
+            <ul className="relative flex flex-col gap-1">
+              {/* Rows a search filters out shrink and fade; the rest glide up into their place. */}
+              <AnimatePresence mode="popLayout">
+                {shown.map(({ game, status }) => (
+                  <motion.li
+                    key={game.id}
+                    layout="position"
+                    initial={reduced ? false : { opacity: 0, x: -12 }}
+                    animate={{ opacity: 1, x: 0, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.92, transition: { duration: reduced ? 0 : 0.2, ease } }}
+                    transition={{ duration: 0.56, ease }}
+                  >
+                    <GameRow game={game} status={status} fold={fold} />
+                  </motion.li>
+                ))}
+              </AnimatePresence>
+            </ul>
+            <AnimatePresence>
+              {empty && !collapsed && (
+                <motion.p
+                  key="no-matches"
+                  className="whitespace-nowrap px-3 py-2 text-xs text-tx3"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: reduced ? 0 : 0.24, ease }}
+                >
+                  {t.shell.noMatches}
+                </motion.p>
+              )}
+            </AnimatePresence>
+          </>
         )}
-        <NavRow
-          target={{ view: 'add' }}
-          to="/add"
-          label={t.shell.addGames}
-          icon={<Plus size={16} strokeWidth={2.4} />}
-          className="mt-2.5 outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
-          badge={notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
-        />
+        {/* Follows the rows as a search filters them. */}
+        <motion.div layout="position" transition={{ duration: reduced ? 0 : 0.56, ease }}>
+          <NavRow
+            target={{ view: 'add' }}
+            to="/add"
+            label={t.shell.addGames}
+            icon={<Plus size={16} strokeWidth={2.4} />}
+            className="mt-2.5 outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
+            badge={notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
+            fold={fold}
+          />
+        </motion.div>
       </nav>
       <div className="flex flex-col gap-2 px-3 pb-3">
-        <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} />
-        <SyncCard />
+        <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} fold={fold} />
+        <SyncCard fold={fold} />
       </div>
       {fromDevice !== undefined && 'device' in fromDevice.status && (
         <SecondDeviceHint anchor={anchorKey({ view: 'game', gameId: fromDevice.game.id })} device={fromDevice.status.device} />
       )}
-    </aside>
+    </motion.aside>
   );
 }
 
@@ -114,7 +188,7 @@ function useNavClick(target: NavTarget): (event: MouseEvent) => void {
   };
 }
 
-function GameRow({ game, status }: { game: FullGame; status: GameStatus }): ReactElement {
+function GameRow({ game, status, fold }: { game: FullGame; status: GameStatus; fold: Fold }): ReactElement {
   const { current, pending, flying } = useShellNav();
   const target: NavTarget = { view: 'game', gameId: game.id };
   const onClick = useNavClick(target);
@@ -129,10 +203,11 @@ function GameRow({ game, status }: { game: FullGame; status: GameStatus }): Reac
       onClick={onClick}
       aria-current={selected ? 'page' : undefined}
       title={game.title}
-      className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04] max-[1099px]:justify-center max-[1099px]:px-0`}
+      className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04]`}
     >
       {selected && <SelectionPill hidden={pending !== null} />}
-      <span className="relative size-9 shrink-0" data-nav-anchor={anchorKey(target)}>
+      {/* Left-anchored, the icon holds still as the rail narrows, then glides the last 4 px to centre. */}
+      <span className={cn('relative size-9 shrink-0 transition-[translate] duration-[350ms] ease-ez', fold.collapsed && '-translate-x-1')} data-nav-anchor={anchorKey(target)}>
         {away ? (
           <span
             aria-hidden="true"
@@ -149,10 +224,10 @@ function GameRow({ game, status }: { game: FullGame; status: GameStatus }): Reac
         )}
         {/* The narrow rail hides the status line, so the icon carries the live dot. */}
         {status.kind === 'recording' && (
-          <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 hidden size-2 rounded-full bg-live [animation:blink_1.4s_ease-in-out_infinite] max-[1099px]:block" />
+          <span aria-hidden="true" className={cn('absolute -right-0.5 -top-0.5 size-2 rounded-full bg-live transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
         )}
       </span>
-      <span className={`relative flex min-w-0 flex-col gap-[3px] max-[1099px]:sr-only`}>
+      <span className={cn('relative flex min-w-0 flex-col gap-[3px]', fadeLabel(fold))}>
         <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
         <StatusLine status={status} />
       </span>
@@ -200,13 +275,14 @@ function StatusLine({ status }: { status: GameStatus }): ReactElement {
   );
 }
 
-function NavRow({ target, to, label, icon, className, badge }: {
+function NavRow({ target, to, label, icon, className, badge, fold }: {
   target: NavTarget;
   to: '/add' | '/settings';
   label: string;
   icon: ReactNode;
   className?: string;
   badge?: { count: number; label: string };
+  fold: Fold;
 }): ReactElement {
   const { current, pending } = useShellNav();
   const onClick = useNavClick(target);
@@ -219,18 +295,22 @@ function NavRow({ target, to, label, icon, className, badge }: {
       aria-current={selected ? 'page' : undefined}
       title={label}
       className={cn(
-        `group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-semibold transition-colors duration-200 hover:bg-white/[0.05] hover:text-tx max-[1099px]:justify-center max-[1099px]:px-0`,
+        `group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-semibold transition-colors duration-200 hover:bg-white/[0.05] hover:text-tx`,
         className,
         selected ? 'text-tx outline-transparent' : 'text-tx2',
       )}
     >
       {selected && <SelectionPill hidden={pending !== null} />}
-      <span className="relative flex" data-nav-anchor={anchorKey(target)}>{icon}</span>
-      <span className={`relative flex-1 max-[1099px]:sr-only`}>{label}</span>
+      <span className={cn('relative flex transition-[translate] duration-[350ms] ease-ez', fold.collapsed && 'translate-x-0.5')} data-nav-anchor={anchorKey(target)}>{icon}</span>
+      <span className={cn('relative min-w-0 flex-1 overflow-hidden whitespace-nowrap', fadeLabel(fold))}>{label}</span>
       {badge !== undefined && (
         <span
           title={badge.label}
-          className={`relative flex h-5 min-w-5 items-center justify-center rounded-full bg-tx2 px-1.5 text-xs font-bold text-bg max-[1099px]:absolute max-[1099px]:right-1 max-[1099px]:top-1 max-[1099px]:h-4 max-[1099px]:min-w-4 max-[1099px]:px-1 max-[1099px]:text-[10px]`}
+          // Pinned to the row's right edge, it rides in with the rail, then shrinks into the corner.
+          className={cn(
+            'absolute right-3.5 top-3 flex h-5 min-w-5 origin-top-right items-center justify-center rounded-full bg-tx2 px-1.5 text-xs font-bold text-bg transition-[translate,scale] duration-[350ms] ease-ez',
+            fold.collapsed && 'translate-x-2.5 -translate-y-2 scale-[0.8]',
+          )}
         >
           <span aria-hidden="true">{badge.count}</span>
           <span className="sr-only">{badge.label}</span>

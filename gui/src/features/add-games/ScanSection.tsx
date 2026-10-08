@@ -1,20 +1,22 @@
 // Installed games on this PC: scan on request, pick from what turns up, add them all at once.
 // Also where the folders the scan looks in are managed.
-import { type ReactElement, useMemo, useRef, useState } from 'react';
-import { motion } from 'motion/react';
-import { Check, Plus, X } from 'lucide-react';
+import { type ReactElement, type RefObject, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import { Check, LayoutGrid, List, Plus, Search, X } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
 import { addScanRoot, pickFolder, removeScanRoot, saveGame, setGameIcon } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { GameIcon } from '@/features/library/GameIcon';
+import { matchesTitle } from '@/features/library/library';
 import { useShellNav } from '@/features/library/shell-nav';
 import { reportError } from '@/shared/errors/report';
 import { useT } from '@/shared/i18n';
-import { ease, useMotionReduced } from '@/shared/motion/motion';
-import { btn, btnQuiet, chip, eyebrow } from '@/shared/ui/classes';
+import { ease, spring, springEase, useMotionReduced } from '@/shared/motion/motion';
+import { setPref, usePrefs } from '@/shared/prefs/prefs';
+import { btn, btnQuiet, chip, eyebrow, field } from '@/shared/ui/classes';
 import { cn } from '@/shared/ui/utils';
-import { newScanResults } from './add-games';
+import { newScanResults, scanRevealDelay } from './add-games';
 import { useInstalledScan, useScanRoots } from './queries';
 
 export function ScanSection({ library, cloudTitles, autoScan = false }: {
@@ -70,13 +72,41 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(found.map((f) => f.title)));
   const [added, setAdded] = useState<ReadonlySet<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState('');
+  const [ripple, setRipple] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const { scanView } = usePrefs();
+  const list = scanView === 'list';
+  const revealedRef = useRef(false);
+  useEffect(() => { revealedRef.current = true; }, []);
+  const [topSentinel, topFloating] = useStickyEdge('top');
+  const [bottomSentinel, bottomFloating] = useStickyEdge('bottom');
+  const allRef = useRef<HTMLInputElement>(null);
   const iconsRef = useRef(new Map<string, HTMLElement>());
   const chosen = useMemo(() => items.filter((i) => selected.has(i.title) && !added.has(i.title)), [items, selected, added]);
+  const visible = items.filter((item) => matchesTitle(item.title, query));
+  const available = visible.filter((item) => !added.has(item.title));
+  const checked = available.filter((item) => selected.has(item.title)).length;
+  const allChecked = available.length > 0 && checked === available.length;
+  const mixed = checked > 0 && !allChecked;
+  useEffect(() => { if (allRef.current !== null) allRef.current.indeterminate = mixed; }, [mixed]);
 
   function toggle(title: string): void {
+    setRipple(new Map());
     setSelected((all) => {
       const next = new Set(all);
       if (!next.delete(title)) next.add(title);
+      return next;
+    });
+  }
+
+  function toggleAll(): void {
+    setRipple(new Map(available.map((item, i) => [item.title, i * 0.25 / Math.max(1, available.length - 1)])));
+    setSelected((all) => {
+      const next = new Set(all);
+      for (const item of available) {
+        if (allChecked) next.delete(item.title);
+        else next.add(item.title);
+      }
       return next;
     });
   }
@@ -111,17 +141,47 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
   }
 
   return (
-    <>
-      <ul className="flex flex-wrap gap-4">
-        {items.map((item, i) => {
+    <div className="relative">
+      <div ref={topSentinel} className="h-px" aria-hidden="true" />
+      <div className="sticky top-0 z-[2] mb-4 flex flex-wrap items-center gap-3 py-2">
+        <StickyBackdrop floating={topFloating} edge="top" />
+        <div className="relative min-w-[180px] flex-1">
+          <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-3 text-tx3" />
+          <input type="search" aria-label={t.addGames.searchPlaceholder} placeholder={t.addGames.searchPlaceholder} value={query}
+            onChange={(event) => { setQuery(event.target.value); }} className={cn(field, 'pl-9')} />
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-[13px] font-semibold text-tx2">
+          <input ref={allRef} type="checkbox" checked={allChecked} aria-checked={mixed ? 'mixed' : allChecked}
+            disabled={busy || available.length === 0} onChange={toggleAll} className="size-4 accent-acc" />
+          {t.addGames.selectAll}
+        </label>
+        <div className="flex rounded-xl bg-el p-1">
+          {(['grid', 'list'] as const).map((view) => (
+            <button key={view} type="button" aria-label={view === 'grid' ? t.addGames.gridView : t.addGames.listView}
+              aria-pressed={scanView === view} onClick={() => { setPref('scanView', view); }}
+              className="relative flex size-8 items-center justify-center rounded-lg text-tx2">
+              {scanView === view && <motion.span layoutId="scan-view-thumb" className="absolute inset-0 rounded-lg bg-ln" transition={reduced ? { duration: 0 } : spring} />}
+              {view === 'grid' ? <LayoutGrid size={16} className="relative" /> : <List size={16} className="relative" />}
+            </button>
+          ))}
+        </div>
+      </div>
+      <ul className={cn('relative flex gap-4', list ? 'flex-col gap-2' : 'flex-wrap')}>
+        <AnimatePresence mode="popLayout">
+        {visible.map((item) => {
+          const i = items.indexOf(item);
           const done = added.has(item.title);
           const on = selected.has(item.title) && !done;
           return (
             <motion.li
               key={item.title}
-              initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }}
+              layout
+              layoutId={`scan-item-${item.title}`}
+              className={list ? 'w-full' : 'w-[210px]'}
+              initial={reduced || revealedRef.current ? false : { opacity: 0, y: 10, scale: 0.97 }}
               animate={{ opacity: done ? 0.35 : 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.42, ease, delay: reduced ? 0 : i * 0.09 }}
+              exit={{ opacity: 0, scale: 0.95, transition: { duration: reduced ? 0 : 0.2 } }}
+              transition={{ duration: reduced ? 0 : 0.42, ease, delay: reduced || revealedRef.current ? 0 : scanRevealDelay(i), layout: reduced ? { duration: 0 } : spring }}
             >
               <button
                 type="button"
@@ -129,40 +189,79 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
                 disabled={done || busy}
                 onClick={() => { toggle(item.title); }}
                 className={cn(
-                  'relative flex h-[176px] w-[210px] flex-col justify-end gap-1 rounded-[18px] bg-sf p-[18px] text-left transition-[box-shadow,transform] duration-200 ease-spring hover:-translate-y-0.5 active:scale-[0.97] disabled:pointer-events-none',
+                  'relative flex w-full rounded-[18px] bg-sf text-left transition-[box-shadow,transform] duration-200 ease-spring hover:-translate-y-0.5 active:scale-[0.97] disabled:pointer-events-none',
+                  list ? 'h-[52px] items-center gap-3 px-3' : 'h-[176px] flex-col justify-end gap-1 p-[18px]',
                   on && 'shadow-[inset_0_0_0_2px_var(--acc)]',
                 )}
               >
-                <span
-                  className="absolute left-[18px] top-[18px]"
-                  ref={(el) => { if (el !== null) iconsRef.current.set(item.title, el); }}
+                <motion.span
+                  layout layoutId={`scan-icon-${item.title}`}
+                  transition={reduced ? { duration: 0 } : spring}
+                  className={list ? 'shrink-0' : 'absolute left-[18px] top-[18px]'}
+                  ref={(el) => { if (el !== null) iconsRef.current.set(item.title, el); else iconsRef.current.delete(item.title); }}
                 >
-                  <GameIcon title={item.title} iconPath={item.icon_path ?? undefined} size={56} />
-                </span>
-                <span
+                  <GameIcon title={item.title} iconPath={item.icon_path ?? undefined} size={list ? 32 : 56} />
+                </motion.span>
+                <motion.span
                   aria-hidden="true"
                   className={cn(
-                    'absolute right-4 top-4 flex size-6 items-center justify-center rounded-lg text-acc-ink transition-colors duration-200',
-                    on ? 'bg-acc' : 'shadow-[inset_0_0_0_1.5px_var(--tx3)]',
+                    'absolute right-4 flex size-6 items-center justify-center rounded-lg text-acc-ink shadow-[inset_0_0_0_1.5px_var(--tx3)]',
+                    list ? 'top-[14px]' : 'top-4',
                   )}
+                  animate={{ backgroundColor: on ? 'var(--acc)' : 'transparent', scale: on ? [1, 1.15, 1] : 1 }}
+                  transition={{ duration: reduced ? 0 : 0.24, ease: springEase, delay: reduced ? 0 : (ripple.get(item.title) ?? 0) }}
                 >
-                  {on && <Check size={14} strokeWidth={3} />}
-                </span>
-                <span className="truncate text-[15px] font-bold">{item.title}</span>
-                <span className="text-[12.5px] text-tx3">{t.addGames.source[item.source]}</span>
+                  <motion.span animate={{ opacity: on ? 1 : 0 }} transition={{ duration: reduced ? 0 : 0.16, delay: reduced ? 0 : (ripple.get(item.title) ?? 0) }}><Check size={14} strokeWidth={3} /></motion.span>
+                </motion.span>
+                <span className={cn('truncate text-[15px] font-bold', list && 'min-w-0 flex-1')}>{item.title}</span>
+                <span className={cn('text-[12.5px] text-tx3', list && 'mr-10 shrink-0')}>{t.addGames.source[item.source]}</span>
               </button>
             </motion.li>
           );
         })}
+        </AnimatePresence>
       </ul>
-      <div className="mt-4 flex items-center gap-3">
+      <AnimatePresence>
+        {visible.length === 0 && <motion.p role="status" className="py-6 text-sm text-tx3"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: reduced ? 0 : 0.2 }}>{t.addGames.noMatches}</motion.p>}
+      </AnimatePresence>
+      <motion.div layout="position" transition={reduced ? { duration: 0 } : spring} className="sticky bottom-0 z-[2] mt-4 flex items-center gap-3 py-2">
+        <StickyBackdrop floating={bottomFloating} edge="bottom" />
         <button type="button" className={btn} disabled={chosen.length === 0 || busy} onClick={() => { void addChosen(); }}>
           {chosen.length > 0 || added.size === 0 ? t.addGames.addFound(chosen.length) : t.addGames.allAdded}
         </button>
         <button type="button" className={btnQuiet} disabled={busy} onClick={onLookAgain}>{t.addGames.lookAgain}</button>
-      </div>
-    </>
+      </motion.div>
+      <div ref={bottomSentinel} className="h-px" aria-hidden="true" />
+    </div>
   );
+}
+
+/** Observe the natural position, so a bar lifts only while pinned to the scrollport. */
+function useStickyEdge(edge: 'top' | 'bottom'): [RefObject<HTMLDivElement | null>, boolean] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [floating, setFloating] = useState(false);
+  useEffect(() => {
+    const sentinel = ref.current;
+    if (sentinel === null) return;
+    const root = sentinel.closest('[data-add-scroll]');
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.rootBounds === null) return;
+      setFloating(edge === 'top' ? entry.boundingClientRect.top < entry.rootBounds.top : entry.boundingClientRect.bottom > entry.rootBounds.bottom);
+    }, { root, threshold: [0, 1] });
+    observer.observe(sentinel);
+    return () => { observer.disconnect(); };
+  }, [edge]);
+  return [ref, floating];
+}
+
+function StickyBackdrop({ floating, edge }: { floating: boolean; edge: 'top' | 'bottom' }): ReactElement {
+  const reduced = useMotionReduced();
+  return <motion.span aria-hidden="true" initial={false} animate={{ opacity: floating ? 1 : 0 }}
+    transition={{ duration: reduced ? 0 : 0.24, ease }}
+    className={cn('pointer-events-none absolute -inset-x-2 inset-y-0 -z-10 rounded-xl bg-[color-mix(in_oklch,var(--bg)_85%,transparent)] backdrop-blur-md',
+      edge === 'bottom' ? 'shadow-[0_-12px_24px_oklch(0%_0_0/0.15)]' : 'shadow-[0_12px_24px_oklch(0%_0_0/0.15)]')} />;
 }
 
 function ScanRoots(): ReactElement {

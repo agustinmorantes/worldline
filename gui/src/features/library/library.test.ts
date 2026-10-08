@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeGame, makeVersion, naive } from '@/ipc/builders';
 import type { GameSyncStatus } from '@/ipc/bindings/GameSyncStatus';
-import { gameStatus, initials, sortLibrary, withRunning } from './library';
+import { gameStatus, initials, matchesTitle, sortLibrary, withRunning } from './library';
 
 const played = (id: number, title: string, iso: string | null) =>
   makeGame({ id, title, versions: iso === null ? [] : [makeVersion({ id, created_at: naive(new Date(iso)) })] });
@@ -33,6 +33,33 @@ describe('sortLibrary', () => {
       played(4, 'Balatro', '2026-01-02T10:00:00Z'),
     ];
     expect(sortLibrary(games).map((g) => g.title)).toEqual(['Balatro', 'Hades', 'Celeste', 'Zelda']);
+  });
+
+  it('orders never-played games by title whatever order they arrive in', () => {
+    const titles = ['Outer Wilds', 'Celeste', 'Tunic', 'Animal Well'];
+    const games = titles.map((title, i) => played(i, title, null));
+    const sorted = ['Animal Well', 'Celeste', 'Outer Wilds', 'Tunic'];
+    expect(sortLibrary(games).map((g) => g.title)).toEqual(sorted);
+    expect(sortLibrary([...games].reverse()).map((g) => g.title)).toEqual(sorted);
+  });
+});
+
+describe('matchesTitle', () => {
+  it('matches anywhere in the title, ignoring case', () => {
+    expect(matchesTitle('Elden Ring', 'ring')).toBe(true);
+    expect(matchesTitle('Elden Ring', 'ELD')).toBe(true);
+    expect(matchesTitle('Elden Ring', 'hades')).toBe(false);
+  });
+
+  it('ignores accents on either side', () => {
+    expect(matchesTitle('Pokémon Legends', 'pokemon')).toBe(true);
+    expect(matchesTitle('Celeste', 'céleste')).toBe(true);
+    expect(matchesTitle('Ōkami', 'okami')).toBe(true);
+  });
+
+  it('treats a blank query as matching everything', () => {
+    expect(matchesTitle('Hades', '')).toBe(true);
+    expect(matchesTitle('Hades', '   ')).toBe(true);
   });
 });
 

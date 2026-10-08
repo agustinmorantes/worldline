@@ -13,6 +13,7 @@ export interface Prefs {
   language: LanguagePref;
   tone: Tone;
   motion: MotionPref;
+  scanView: 'grid' | 'list';
   onboardingSeen: boolean;
   /** Contextual hints already shown, by id. */
   hints: Record<string, boolean>;
@@ -22,6 +23,7 @@ export const DEFAULT_PREFS: Prefs = {
   language: 'system',
   tone: 'slate',
   motion: 'system',
+  scanView: 'grid',
   onboardingSeen: false,
   hints: {},
 };
@@ -43,6 +45,7 @@ export function parsePrefs(raw: unknown): Prefs {
     language: oneOf(['system', ...LOCALES], stored.language, DEFAULT_PREFS.language),
     tone: oneOf(TONES, stored.tone, DEFAULT_PREFS.tone),
     motion: oneOf(MOTION_PREFS, stored.motion, DEFAULT_PREFS.motion),
+    scanView: oneOf(['grid', 'list'], stored.scanView, DEFAULT_PREFS.scanView),
     onboardingSeen: typeof stored.onboardingSeen === 'boolean' ? stored.onboardingSeen : DEFAULT_PREFS.onboardingSeen,
     hints: hints,
   };

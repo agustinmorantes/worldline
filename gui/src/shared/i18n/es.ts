@@ -4,6 +4,7 @@ import { plural } from './plural';
 export const es: Messages = {
   common: {
     checkpoints: (count) => plural('es', count, { one: '# punto de control', other: '# puntos de control' }),
+    justNow: 'hace un momento',
   },
   errors: {
     loadFailed: 'No se pudo cargar. Inténtalo de nuevo en un momento.',
@@ -19,6 +20,9 @@ export const es: Messages = {
     settings: 'Configuración',
     inCloudBadge: (count) =>
       plural('es', count, { one: '# juego de tu nube aún no está en esta PC', other: '# juegos de tu nube aún no están en esta PC' }),
+    search: 'Buscar en la biblioteca',
+    searchPlaceholder: 'Busca un juego',
+    noMatches: 'Ningún juego coincide',
     help: 'Ayuda y recorrido',
     minimize: 'Minimizar',
     maximize: 'Maximizar',
@@ -37,7 +41,8 @@ export const es: Messages = {
     syncing: 'Sincronizando…',
     synced: (when) => `Sincronizado ${when}`,
     notSynced: 'Aún sin sincronizar',
-    unreachable: 'No se pudo llegar a la nube',
+    syncFailed: 'Falló la sincronización',
+    failedHint: 'Algo salió mal. Haz clic para reintentar.',
     unavailable: 'Carpeta de la nube no disponible',
     unavailableHint: 'Verifica que tu app de nube esté abierta y su unidad conectada. Los puntos de control quedan en esta PC hasta que vuelva.',
     syncNow: 'Sincronizar ahora',
@@ -127,6 +132,11 @@ export const es: Messages = {
     allAdded: 'Todos agregados',
     nothingFound: 'Nada nuevo. Todos los juegos encontrados ya están aquí.',
     lookAgain: 'Buscar otra vez',
+    searchPlaceholder: 'Busca un juego instalado',
+    selectAll: 'Seleccionar todos',
+    gridView: 'Vista de cuadrícula',
+    listView: 'Vista de lista',
+    noMatches: 'Ningún juego coincide',
     source: { steam: 'Steam', epic: 'Epic', custom: 'Tus carpetas', local: 'Encontrado en esta PC' },
     yourFolders: 'También busca en',
     addScanFolder: 'Agregar una carpeta',
@@ -223,6 +233,7 @@ export const es: Messages = {
     forgetHint: 'Otras líneas temporales que no nombraste ni jugaste desde entonces',
     off: 'Nunca',
     wouldFree: (size) => `Liberaría unos ${size}`,
+    nothingToClean: 'No hay nada que limpiar',
     freed: (size) => `Se liberaron ${size} · los puntos de control con nombre se conservan`,
     cleanUpNow: 'Limpiar ahora',
     cloud: 'Nube',

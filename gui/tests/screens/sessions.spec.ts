@@ -28,6 +28,27 @@ test.describe('sessions list', () => {
     await expect(panel.getByText('You are here')).toBeVisible();
   });
 
+  test('rewinds only after a full hold, rumbling while it charges', async ({ page }) => {
+    await page.goto('/game/1');
+    await page.getByRole('button', { name: /^Elysium/ }).click();
+    const panel = page.getByRole('complementary', { name: 'Selected checkpoint' });
+    const hold = panel.getByRole('button', { name: 'Hold to rewind' });
+    // An early release drains away and does nothing.
+    await hold.focus();
+    await page.keyboard.down('Space');
+    await page.waitForTimeout(400);
+    await page.keyboard.up('Space');
+    await page.waitForTimeout(600);
+    await expect(panel.getByText('Rewind to')).toBeVisible();
+    // A full hold shakes the button near the end, and rewinds once it completes.
+    await page.keyboard.down('Space');
+    await page.waitForTimeout(750);
+    expect(await hold.evaluate((el) => getComputedStyle(el).transform)).not.toBe('none');
+    await expect(panel.getByText('Rewind to')).toBeVisible();
+    await expect(panel.getByText('You are here')).toBeVisible();
+    await page.keyboard.up('Space');
+  });
+
   test('opens another timeline from its stub', async ({ page }) => {
     await page.goto('/game/1');
     const stub = page.getByRole('button', { name: /another timeline · 1 session/i });

@@ -15,6 +15,18 @@ vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string) => `asset://${path}`,
 }));
 
+// jsdom has no media queries: the window is always wide.
+window.matchMedia = (query: string) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+  addListener: () => undefined,
+  removeListener: () => undefined,
+  dispatchEvent: () => false,
+});
+
 vi.mock('@tauri-apps/plugin-log', () => ({
   error: vi.fn().mockResolvedValue(undefined),
 }));

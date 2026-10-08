@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Sidebar } from './Sidebar';
 import { type ShellNav, ShellNavContext } from './shell-nav';
+import { setSyncOutcome } from './sync-activity';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { makeGame } from '@/ipc/builders';
 
@@ -106,5 +107,109 @@ describe('Sidebar', () => {
     renderSidebar();
     expect(screen.getByRole('link', { name: /dark souls/i })).toHaveTextContent('Recording');
     expect(screen.getByRole('link', { name: /elden ring/i })).not.toHaveTextContent('Recording');
+  });
+});
+
+describe('the sync card', () => {
+  function mockReport(report: { data?: object; isFetching?: boolean; isError?: boolean }): void {
+    vi.mocked(useSyncSettings).mockReturnValue({ data: { remote_path: '/remote' } } as unknown as ReturnType<typeof useSyncSettings>);
+    vi.mocked(useSyncReport).mockReturnValue({
+      data: undefined, isFetching: false, isError: false, refetch: vi.fn(), ...report,
+    } as unknown as ReturnType<typeof useSyncReport>);
+  }
+  const synced = { synced_at: new Date().toISOString(), games: [], remote_games: [] };
+
+  afterEach(() => { setSyncOutcome(null); });
+
+  it.each([
+    ['synced', { data: synced }, /synced/i, 'lucide-cloud-check'],
+    ['syncing', { data: synced, isFetching: true }, /syncing/i, 'lucide-cloud'],
+    ['failed', { data: synced, isError: true }, /sync failed/i, 'lucide-cloud-alert'],
+    ['idle', {}, /not synced yet/i, 'lucide-cloud'],
+  ] as const)('shows the %s state with its own icon', (state, report, status, icon) => {
+    mockGames([]);
+    mockReport(report);
+    renderSidebar();
+    const card = screen.getByRole('button', { name: /sync now/i });
+    expect(card).toHaveAttribute('data-state', state);
+    expect(card).toHaveAccessibleName(status);
+    expect(card.querySelector(`svg.${icon}`)).not.toBeNull();
+  });
+
+  it('shows an unreachable folder with the cloud-off icon', () => {
+    mockGames([]);
+    mockReport({ isError: true });
+    setSyncOutcome({ kind: 'sync_folder_unreachable', message: 'gone' });
+    renderSidebar();
+    const card = screen.getByRole('button', { name: /sync now/i });
+    expect(card).toHaveAttribute('data-state', 'unavailable');
+    expect(card).toHaveAccessibleName(/cloud folder not available/i);
+    expect(card.querySelector('svg.lucide-cloud-off')).not.toBeNull();
+  });
+
+  it('hints at retrying when a sync failed', () => {
+    mockGames([]);
+    mockReport({ isError: true });
+    renderSidebar();
+    expect(screen.getByRole('button', { name: /sync now/i })).toHaveAttribute('title', 'Something went wrong. Click to try again.');
+  });
+});
+
+// The test double of `motion` remounts its elements on every render, so the field is looked up afresh each time.
+describe('library search', () => {
+  const games = (): FullGame[] => [
+    makeGame({ id: 1, title: 'Elden Ring' }),
+    makeGame({ id: 2, title: 'Pokémon Legends' }),
+    makeGame({ id: 3, title: 'Hades' }),
+  ];
+  const library = (): HTMLElement => screen.getByRole('complementary', { name: 'Library' });
+
+  it('filters by title, ignoring accents, and says when nothing matches', () => {
+    mockGames(games());
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Search the library' }));
+    expect(screen.getByRole('searchbox', { name: 'Search the library' })).toHaveFocus();
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'pokemon' } });
+    expect(within(library()).getByRole('link', { name: /pokémon legends/i })).toBeInTheDocument();
+    expect(within(library()).queryByRole('link', { name: /elden ring/i })).toBeNull();
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'zelda' } });
+    expect(screen.getByText('No games match')).toBeInTheDocument();
+  });
+
+  it('closes on Escape and shows every game again', () => {
+    mockGames(games());
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Search the library' }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'hades' } });
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' });
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(screen.getAllByRole('link', { name: /elden ring|pokémon|hades/i })).toHaveLength(3);
+  });
+
+  it('opens the first match on Enter', () => {
+    mockGames(games());
+    const go = vi.fn();
+    renderSidebar({ go });
+    fireEvent.click(screen.getByRole('button', { name: 'Search the library' }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'e' } });
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Enter' });
+    expect(go).toHaveBeenCalledWith({ view: 'game', gameId: 1 });
+  });
+
+  it('opens with Ctrl+F or a slash, and when typing in the sidebar', () => {
+    mockGames(games());
+    renderSidebar();
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true });
+    expect(screen.getByRole('searchbox')).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' });
+
+    fireEvent.keyDown(window, { key: '/' });
+    expect(screen.getByRole('searchbox')).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' });
+
+    fireEvent.keyDown(screen.getByRole('link', { name: /hades/i }), { key: 'h' });
+    expect(screen.getByRole('searchbox')).toHaveValue('h');
   });
 });

@@ -5,6 +5,8 @@ import { plural } from './plural';
 export const en = {
   common: {
     checkpoints: (count: number): string => plural('en', count, { one: '# checkpoint', other: '# checkpoints' }),
+    /** A relative time under a minute, mid-sentence: "Synced just now". */
+    justNow: 'just now',
   },
   errors: {
     loadFailed: 'Couldn’t load this. Try again in a moment.',
@@ -20,6 +22,9 @@ export const en = {
     settings: 'Settings',
     inCloudBadge: (count: number): string =>
       plural('en', count, { one: '# game in your cloud isn’t on this PC yet', other: '# games in your cloud aren’t on this PC yet' }),
+    search: 'Search the library',
+    searchPlaceholder: 'Find a game',
+    noMatches: 'No games match',
     help: 'Help and tour',
     minimize: 'Minimize',
     maximize: 'Maximize',
@@ -38,7 +43,8 @@ export const en = {
     syncing: 'Syncing…',
     synced: (when: string): string => `Synced ${when}`,
     notSynced: 'Not synced yet',
-    unreachable: 'Couldn’t reach the cloud',
+    syncFailed: 'Sync failed',
+    failedHint: 'Something went wrong. Click to try again.',
     unavailable: 'Cloud folder not available',
     unavailableHint: 'Check that your cloud app is running and its drive is connected. Checkpoints stay on this PC until it’s back.',
     syncNow: 'Sync now',
@@ -128,6 +134,11 @@ export const en = {
     allAdded: 'All added',
     nothingFound: 'Nothing new. Every game the scan found is already here.',
     lookAgain: 'Look again',
+    searchPlaceholder: 'Find an installed game',
+    selectAll: 'Select all',
+    gridView: 'Grid view',
+    listView: 'List view',
+    noMatches: 'No games match',
     source: { steam: 'Steam', epic: 'Epic', custom: 'Your folders', local: 'Found on this PC' },
     yourFolders: 'Also looks in',
     addScanFolder: 'Add a folder',
@@ -224,6 +235,7 @@ export const en = {
     forgetHint: 'Other timelines you haven’t named or played since',
     off: 'Off',
     wouldFree: (size: string): string => `Would free about ${size}`,
+    nothingToClean: 'Nothing to clean up',
     freed: (size: string): string => `Freed ${size} · named checkpoints kept`,
     cleanUpNow: 'Clean up now',
     cloud: 'Cloud',

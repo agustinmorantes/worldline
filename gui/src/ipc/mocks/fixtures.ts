@@ -273,12 +273,17 @@ export const FIXTURES = {
   syncing: () => ({ ...library(), syncReport: 'pending' as const }),
   /** Sync on, but the cloud folder is gone (an unplugged drive, the cloud app closed). */
   offline: () => ({ ...settings(), syncReport: 'unreachable' as const }),
+  /** Sync on, but syncing fails for another reason than the folder. */
+  syncFailed: () => ({ ...library(), syncReport: undefined }),
   sessions: () => sessions(),
   ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
   diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),
   addGames: () => addGames(undefined),
   scanning: () => addGames('pending'),
   scanned: () => addGames(SCANNED),
+  scannedMany: () => addGames(Array.from({ length: 60 }, (_, i) => ({
+    ...SCANNED[1], title: `Game ${i.toString().padStart(2, '0')}`, dirs: [`C:/saves/game-${i.toString()}`],
+  }))),
   addGamesDone,
   settings,
   /** Sync off; the folder picker answers with a cloud folder. */

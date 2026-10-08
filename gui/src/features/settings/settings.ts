@@ -103,6 +103,8 @@ export function formatBytes(bytes: number, locale: Locale): string {
     value /= 1000;
     unit++;
   }
+  // CLDR's short `byte` reads "byte" for every count ("5 byte"); spell it like KB/MB instead.
+  if (unit === 0) return `${new Intl.NumberFormat(locale).format(value)} B`;
   return new Intl.NumberFormat(locale, {
     style: 'unit',
     unit: BYTE_UNITS[unit],
