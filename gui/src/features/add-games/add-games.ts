@@ -6,6 +6,11 @@ import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
 
 const normalize = (title: string): string => title.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 
+/** Keep the first 90 ms beat, then accelerate so even a large scan lands within 1.2 s. */
+export function scanRevealDelay(index: number): number {
+  return 1.2 * (1 - Math.exp(-index / (1.2 / 0.09)));
+}
+
 /**
  * Scan results worth offering: not in the library, not waiting in the cloud. Most recently
  * saved first; games without a save time last, by title.

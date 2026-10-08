@@ -31,4 +31,10 @@ describe('parsePrefs', () => {
     expect(stored.version).toBe(PREFS_VERSION);
     expect(parsePrefs(JSON.parse(JSON.stringify(stored)))).toEqual(prefs);
   });
+
+  it('keeps the scan view and defaults older or invalid preferences to grid', () => {
+    expect(parsePrefs({ scanView: 'list' }).scanView).toBe('list');
+    expect(parsePrefs({}).scanView).toBe('grid');
+    expect(parsePrefs({ scanView: 'table' }).scanView).toBe('grid');
+  });
 });

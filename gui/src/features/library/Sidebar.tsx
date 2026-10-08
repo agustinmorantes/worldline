@@ -62,7 +62,7 @@ export function Sidebar(): ReactElement {
   // Typing while focus is in the sidebar starts a search with that key ("/" opens it empty).
   const typeToSearch = (event: KeyboardEvent): void => {
     if (event.key.length !== 1 || event.key === ' ' || event.key === '/' || event.ctrlKey || event.metaKey || event.altKey) return;
-    if (event.target instanceof HTMLInputElement) return;
+    if (event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input, textarea, select') !== null)) return;
     event.preventDefault();
     setQuery(event.key);
     setSearching(true);

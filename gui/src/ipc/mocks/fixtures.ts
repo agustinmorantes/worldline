@@ -281,6 +281,9 @@ export const FIXTURES = {
   addGames: () => addGames(undefined),
   scanning: () => addGames('pending'),
   scanned: () => addGames(SCANNED),
+  scannedMany: () => addGames(Array.from({ length: 60 }, (_, i) => ({
+    ...SCANNED[1], title: `Game ${i.toString().padStart(2, '0')}`, dirs: [`C:/saves/game-${i.toString()}`],
+  }))),
   addGamesDone,
   settings,
   /** Sync off; the folder picker answers with a cloud folder. */

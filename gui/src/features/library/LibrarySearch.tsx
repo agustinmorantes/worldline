@@ -34,9 +34,10 @@ export function LibrarySearch({ fold, open, query, empty, onOpen, onQuery, onClo
   const buttonRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Ctrl+F anywhere, or "/" outside a text field.
+  // Ctrl+F or "/" outside a text field.
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent): void => {
+      if (inTextField(event.target)) return;
       const find = event.ctrlKey && event.key.toLowerCase() === 'f';
       const slash = event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey && !inTextField(event.target);
       if (!find && !slash) return;

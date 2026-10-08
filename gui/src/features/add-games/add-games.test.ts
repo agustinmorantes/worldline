@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { makeGame, makeTrackedDir } from '@/ipc/builders';
 import type { HistoryBundleSummary } from '@/ipc/bindings/HistoryBundleSummary';
 import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
-import { dirsToMap, folderName, newScanResults } from './add-games';
+import { dirsToMap, folderName, newScanResults, scanRevealDelay } from './add-games';
+
+describe('scanRevealDelay', () => {
+  it('keeps the opening beat, accelerates, and stays bounded for large scans', () => {
+    expect(scanRevealDelay(0)).toBe(0);
+    expect(scanRevealDelay(1)).toBeCloseTo(0.09, 2);
+    expect(scanRevealDelay(59)).toBeLessThan(1.2);
+    expect(scanRevealDelay(1000)).toBeLessThanOrEqual(1.2);
+    expect(scanRevealDelay(20) - scanRevealDelay(19)).toBeLessThan(scanRevealDelay(1));
+  });
+});
 
 const item = (title: string, last_modified_at: number | null = null): InstallScannerItem => ({
   title,

@@ -56,6 +56,78 @@ test.describe('scan results', () => {
     await expect(scan.getByText('D:/Games')).toHaveCount(0);
     await expect(scan.getByText('E:/Emulation/Saves')).toBeVisible();
   });
+
+  test('filters without losing hidden selections and selects only visible games', async ({ page }) => {
+    await page.goto('/add');
+    const scan = page.getByRole('region', { name: 'On this PC' });
+    await page.getByRole('button', { name: 'Look for installed games' }).click();
+    const all = scan.getByRole('checkbox', { name: 'Select all' });
+    await all.uncheck();
+    const search = scan.getByRole('searchbox');
+    await search.fill('sea');
+    await search.press('Control+f');
+    await expect(page.getByRole('complementary').getByRole('searchbox')).toHaveCount(0);
+    await all.check();
+    await expect(scan.getByRole('button', { name: 'Add 1 game' })).toBeEnabled();
+    await search.fill('outer');
+    await expect(all).not.toBeChecked();
+    await scan.getByRole('button', { name: /Outer Wilds/ }).click();
+    await search.fill('');
+    await expect(all).toHaveJSProperty('indeterminate', true);
+    await search.fill('no such game');
+    await expect(scan.getByRole('status')).toHaveText('No games match');
+    await expect(all).toBeDisabled();
+    await scan.getByRole('button', { name: 'Add 2 games' }).click();
+    await expect(page.getByRole('complementary').getByText('Sea of Stars')).toBeVisible();
+    await expect(page.getByRole('complementary').getByText('Outer Wilds')).toBeVisible();
+  });
+
+  test('morphs into rows and persists the view without losing selections', async ({ page }) => {
+    await page.goto('/add');
+    await page.getByRole('button', { name: 'Look for installed games' }).click();
+    const scan = page.getByRole('region', { name: 'On this PC' });
+    await scan.getByRole('button', { name: /Outer Wilds/ }).click();
+    await scan.getByRole('button', { name: 'List view', exact: true }).click();
+    await expect(scan.getByRole('button', { name: /Outer Wilds/ })).toHaveAttribute('aria-pressed', 'false');
+    await expect(scan.getByRole('button', { name: /Sea of Stars/ })).toHaveCSS('height', '52px');
+    await expect.poll(() => page.evaluate(() => {
+      const store = JSON.parse(localStorage.getItem('worldline-mock-store') ?? '{}') as { prefs: { scanView: string } };
+      return store.prefs.scanView;
+    })).toBe('list');
+    // A new page shares the stored preference without replaying the fixture's page init script.
+    const reopened = await page.context().newPage();
+    await reopened.goto('/add');
+    await reopened.getByRole('button', { name: 'Look for installed games' }).click();
+    await expect(reopened.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await reopened.close();
+  });
+});
+
+test.describe('large scan', () => {
+  test.use({ fixture: 'scannedMany' });
+
+  test('keeps toolbar and actions reachable in both views with one scroll area', async ({ page }) => {
+    await page.goto('/add');
+    await page.getByRole('button', { name: 'Look for installed games' }).click();
+    const scan = page.getByRole('region', { name: 'On this PC' });
+    const scroll = page.locator('[data-add-scroll]');
+    const add = scan.getByRole('button', { name: 'Add 60 games' });
+    await expect(scan.getByRole('button', { name: /^Game / })).toHaveCount(60);
+    const inScrollport = async (): Promise<boolean> => {
+      const box = await add.boundingBox();
+      const root = await scroll.boundingBox();
+      return box !== null && root !== null && box.y >= root.y && box.y + box.height <= root.y + root.height;
+    };
+    await expect.poll(inScrollport).toBe(true);
+    await scroll.evaluate((el) => { el.scrollTop = el.scrollHeight / 2; });
+    await expect.poll(inScrollport).toBe(true);
+    await expect(scan.getByRole('searchbox')).toBeInViewport();
+    await scroll.evaluate((el) => { el.scrollTop = 0; });
+    await scan.getByRole('button', { name: 'List view', exact: true }).click();
+    await expect.poll(inScrollport).toBe(true);
+    await scroll.evaluate((el) => { el.scrollTop = el.scrollHeight - el.clientHeight - 100; });
+    await expect.poll(inScrollport).toBe(true);
+  });
 });
 
 test.describe('empty', () => {
