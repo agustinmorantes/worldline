@@ -2106,10 +2106,14 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
 
 #[cfg(target_os = "windows")]
 fn extract_exe_icon(exe_path: &Path, output_path: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
     let script = "Add-Type -AssemblyName System.Drawing; \
                   $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:EXE_PATH); \
                   $icon.ToBitmap().Save($env:OUT_PATH)";
+    // CREATE_NO_WINDOW: the GUI is a windowed app, so a console would flash per icon.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let status = std::process::Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("EXE_PATH", exe_path)
         .env("OUT_PATH", output_path)
