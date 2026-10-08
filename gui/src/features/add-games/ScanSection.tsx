@@ -2,7 +2,7 @@
 // Also where the folders the scan looks in are managed.
 import { type ReactElement, type RefObject, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Check, LayoutGrid, List, Plus, Search, X } from 'lucide-react';
+import { Check, LayoutGrid, List, Minus, Plus, Search, X } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
 import { addScanRoot, pickFolder, removeScanRoot, saveGame, setGameIcon } from '@/ipc/commands';
@@ -150,9 +150,19 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
           <input type="search" aria-label={t.addGames.searchPlaceholder} placeholder={t.addGames.searchPlaceholder} value={query}
             onChange={(event) => { setQuery(event.target.value); }} className={cn(field, 'pl-9')} />
         </div>
-        <label className="flex cursor-pointer items-center gap-2 text-[13px] font-semibold text-tx2">
+        {/* A native checkbox (keyboard, indeterminate) drawn like the cards' check boxes. */}
+        <label className="relative flex h-10 cursor-pointer items-center gap-2.5 rounded-xl bg-el pl-3 pr-3.5 text-[13px] font-semibold text-tx2 transition-colors duration-200 hover:text-tx has-[:disabled]:pointer-events-none has-[:disabled]:opacity-40 has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-acc">
           <input ref={allRef} type="checkbox" checked={allChecked} aria-checked={mixed ? 'mixed' : allChecked}
-            disabled={busy || available.length === 0} onChange={toggleAll} className="size-4 accent-acc" />
+            disabled={busy || available.length === 0} onChange={toggleAll} className="absolute inset-0 m-0 size-full cursor-pointer appearance-none rounded-xl opacity-0" />
+          <span
+            aria-hidden="true"
+            className={cn(
+              'flex size-[18px] items-center justify-center rounded-[6px] text-acc-ink transition-[background-color,box-shadow] duration-200',
+              allChecked || mixed ? 'bg-acc' : 'shadow-[inset_0_0_0_1.5px_var(--tx3)]',
+            )}
+          >
+            {allChecked ? <Check size={12} strokeWidth={3.5} /> : mixed && <Minus size={12} strokeWidth={3.5} />}
+          </span>
           {t.addGames.selectAll}
         </label>
         <div className="flex rounded-xl bg-el p-1">
@@ -229,7 +239,7 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
       <motion.div layout="position" transition={reduced ? { duration: 0 } : spring} className="sticky bottom-0 z-[2] mt-4 flex items-center gap-3 py-2">
         <StickyBackdrop floating={bottomFloating} edge="bottom" />
         <button type="button" className={btn} disabled={chosen.length === 0 || busy} onClick={() => { void addChosen(); }}>
-          {chosen.length > 0 || added.size === 0 ? t.addGames.addFound(chosen.length) : t.addGames.allAdded}
+          {chosen.length > 0 ? t.addGames.addFound(chosen.length) : added.size === 0 ? t.addGames.title : t.addGames.allAdded}
         </button>
         <button type="button" className={btnQuiet} disabled={busy} onClick={onLookAgain}>{t.addGames.lookAgain}</button>
       </motion.div>
