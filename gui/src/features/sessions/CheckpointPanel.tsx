@@ -121,6 +121,7 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
             hint={t.checkpoint.holdHint}
             disabled={busy}
             onComplete={onRewind}
+            rumble
           />
           {aheadDevice !== null && (
             <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-warn">
