@@ -9,6 +9,7 @@ use worldline_core::detection::Notification;
 use worldline_core::history::CheckpointOutcome;
 use worldline_core::maintenance::RetentionSettings;
 use worldline_core::models::GameForm;
+use worldline_core::sync::DeviceKind;
 use worldline_core::sync::SyncSettings;
 use worldline_core::{OpenOptions, WorldlineCore};
 
@@ -81,6 +82,10 @@ enum GamesAction {
         id: i32,
     },
     Delete {
+        id: i32,
+    },
+    /// Stop tracking a game on this device; its history stays in the sync folder.
+    Untrack {
         id: i32,
     },
 }
@@ -184,7 +189,42 @@ enum SyncAction {
 #[derive(Subcommand)]
 enum DevicesAction {
     List,
-    Remove { device_uuid: Uuid },
+    /// Rename this device and set its kind; an omitted value is kept.
+    Set {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
+    },
+    Remove {
+        device_uuid: Uuid,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum KindArg {
+    Desktop,
+    Laptop,
+    Handheld,
+}
+
+impl From<KindArg> for DeviceKind {
+    fn from(kind: KindArg) -> Self {
+        match kind {
+            KindArg::Desktop => DeviceKind::Desktop,
+            KindArg::Laptop => DeviceKind::Laptop,
+            KindArg::Handheld => DeviceKind::Handheld,
+        }
+    }
+}
+
+/// How a device's kind reads in listings; unknown reads as desktop.
+fn kind_label(kind: Option<DeviceKind>) -> &'static str {
+    match kind {
+        None | Some(DeviceKind::Desktop) => "desktop",
+        Some(DeviceKind::Laptop) => "laptop",
+        Some(DeviceKind::Handheld) => "handheld",
+    }
 }
 
 #[derive(Subcommand)]
@@ -268,6 +308,7 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
                 version_number,
             } => println!("Version {version_number} created for game {game_id}"),
             Notification::Error(err) => eprintln!("Error: {err}"),
+            Notification::SyncStarted => {}
             Notification::SyncCompleted(report) => {
                 println!("Synced.");
                 print_sync_report(&report);
@@ -356,6 +397,10 @@ fn main() -> Result<()> {
             GamesAction::Delete { id } => {
                 core.delete_game(id)?;
                 println!("Deleted game {id}");
+            }
+            GamesAction::Untrack { id } => {
+                core.untrack_game(id)?;
+                println!("Untracked game {id}; its history stays in the sync folder");
             }
         },
         Commands::Versions { action } => match action {
@@ -469,7 +514,7 @@ fn main() -> Result<()> {
                 print_retention(&settings);
             }
             PruneAction::Preview => {
-                let preview = core.preview_pruning()?;
+                let preview = core.preview_pruning(&core.get_pruning_settings()?)?;
                 println!(
                     "{} checkpoint(s) eligible for retirement",
                     preview.retire_versions.len()
@@ -591,17 +636,33 @@ fn main() -> Result<()> {
         Commands::Devices { action } => match action {
             DevicesAction::List => {
                 let me = core.device_metadata();
-                println!("This device: {} ({})", me.name, me.device_uuid);
+                println!(
+                    "This device: {} ({}), {}",
+                    me.name,
+                    me.device_uuid,
+                    kind_label(me.kind)
+                );
                 if core.get_sync_settings()?.remote_path.is_some() {
                     for device in core.sync_status()?.devices {
                         if device.device_uuid != me.device_uuid {
                             println!(
-                                "  {} ({}) — last seen {}",
-                                device.name, device.device_uuid, device.last_seen
+                                "  {} ({}), {} — last seen {}",
+                                device.name,
+                                device.device_uuid,
+                                kind_label(device.kind),
+                                device.last_seen
                             );
                         }
                     }
                 }
+            }
+            DevicesAction::Set { name, kind } => {
+                let me = core.device_metadata();
+                let device = core.update_device(
+                    name.as_deref().unwrap_or(&me.name),
+                    kind.map(DeviceKind::from).or(me.kind),
+                )?;
+                println!("This device: {} ({})", device.name, kind_label(device.kind));
             }
             DevicesAction::Remove { device_uuid } => {
                 core.remove_sync_device(device_uuid)?;
@@ -672,7 +733,15 @@ fn print_sync_report(report: &worldline_core::sync::SyncReport) {
             None if game.adopted => "Unknown".into(),
             None => "Not tracked here".into(),
         };
-        println!("{} ({}) — {relation}", game.title, game.uuid);
+        let source = game
+            .source_device
+            .as_deref()
+            .map(|device| format!(", last played on {device}"))
+            .unwrap_or_default();
+        println!(
+            "{} ({}) — {relation}; {} version(s){source}",
+            game.title, game.uuid, game.version_count
+        );
     }
     for problem in &report.problems {
         println!("! {problem}");

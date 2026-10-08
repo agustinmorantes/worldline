@@ -8,7 +8,7 @@ use crate::models::*;
 use crate::restore;
 use crate::store::{self, GameRecord, Store, VersionReason, read_json, write_json};
 use crate::sync::{
-    self, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
+    self, DeviceKind, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
 };
 use crate::sync_loop::{SyncLoop, Trigger};
 use crate::transfer::{Completeness, Heal, Transfer};
@@ -118,7 +118,6 @@ pub struct WorldlineCore {
     watcher: Mutex<Option<Watcher>>,
     sync_loop: Mutex<Option<SyncLoop>>,
     pub data_dir: PathBuf,
-    pub icons_dir: PathBuf,
     device: RwLock<DeviceMetadata>,
     sync_lock: Mutex<()>,
     /// Installed titles seen by the last full sync, for later reports.
@@ -174,6 +173,7 @@ impl WorldlineCore {
             &data_dir.join("repository"),
             Index::new(pool),
             device.device_uuid,
+            &data_dir.join("untracked_games.json"),
         )?;
         let (sync_trigger, triggers) = mpsc::channel();
         let inner = Arc::new(Inner {
@@ -187,7 +187,6 @@ impl WorldlineCore {
             watcher: Mutex::new(None),
             sync_loop: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
-            icons_dir: data_dir.join("icons"),
             device: RwLock::new(device),
             sync_lock: Mutex::new(()),
             last_installs: Mutex::new(HashMap::new()),
@@ -296,9 +295,42 @@ impl WorldlineCore {
         Ok(game.game)
     }
 
+    /// Deletes a game everywhere: the tombstone reaches every device.
     pub fn delete_game(&self, id: i32) -> Result<()> {
         self.history().delete_game(id)?;
         self.reload_watcher();
+        Ok(())
+    }
+
+    /// Stops tracking a game on this device only (ADR 0006). Pending changes
+    /// are captured and published first; the history stays in the local
+    /// store and the sync folder, and `adopt_remote_game` brings it back.
+    /// Only a game already in the sync folder can be untracked: otherwise
+    /// nothing could bring it back.
+    pub fn untrack_game(&self, id: i32) -> Result<()> {
+        let game = self.get_game(id)?;
+        let uuid = game_uuid(&game.game)?;
+        let remote = self.remote()?.with_context(|| {
+            format!(
+                "'{}' can only be removed from this device when sync is on",
+                game.game.title
+            )
+        })?;
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if remote.store.game(uuid)?.is_none() {
+            bail!(
+                "'{}' is not in the sync folder yet; sync before removing it from this device",
+                game.game.title
+            );
+        }
+        self.guarded(id, VersionReason::Watcher, None, |_| {
+            self.history().set_untracked(uuid, true)?;
+            self.history().refresh_game(uuid)
+        })?;
+        // Publishes the captured progress, and pointers without the game.
+        for problem in self.push_locked(&remote)? {
+            eprintln!("Sync: {problem}");
+        }
         Ok(())
     }
 
@@ -515,26 +547,40 @@ impl WorldlineCore {
         self.get_game(game.game.id)
     }
 
+    /// Stores an image (or an executable's icon) as the game's shared icon
+    /// and returns its local path.
     pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
-        std::fs::create_dir_all(&self.icons_dir).context("Failed to create icons directory")?;
-        let game = self.get_game(game_id)?;
         let source = Path::new(source_path);
-        let destination = self.icons_dir.join(format!("{}.png", game.game.uuid));
         let is_exe = source
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-        if is_exe {
-            extract_exe_icon(source, &destination)?;
+        let image = if is_exe {
+            let cache = self.data_dir.join("cache");
+            std::fs::create_dir_all(&cache).context("Failed to create the cache directory")?;
+            let extracted = cache.join(format!(".icon-{}.png", store::short_random()));
+            let image = extract_exe_icon(source, &extracted).and_then(|()| {
+                image::open(&extracted).context("Failed to read the extracted icon")
+            });
+            let _ = std::fs::remove_file(&extracted);
+            image?
         } else {
-            image::open(source)
-                .context("Failed to open image file")?
-                .save(&destination)
-                .context("Failed to save icon as PNG")?;
-        }
-        let icon_path = destination.to_string_lossy().into_owned();
-        self.history().index.set_icon(game_id, Some(&icon_path))?;
-        Ok(icon_path)
+            image::open(source).context("Failed to open image file")?
+        };
+        let png = crate::icon::normalize(&image)?;
+        let game = store::with_lock(self.repository_root(), || {
+            self.history().set_icon(game_id, &png)
+        })?;
+        game.game.icon_path.context("The icon was not stored")
+    }
+
+    /// `Some(hue)` (0–359) sets the game's accent color; `None` returns to
+    /// the color taken from its icon.
+    pub fn set_game_accent(&self, game_id: i32, hue: Option<u16>) -> Result<Game> {
+        store::with_lock(self.repository_root(), || {
+            self.history().set_accent(game_id, hue)
+        })
+        .map(|game| game.game)
     }
 
     /// Rebuilds a version's files under `destination` without touching live
@@ -603,6 +649,11 @@ impl WorldlineCore {
         let report = store::with_lock(self.repository_root(), || {
             crate::bundle::import(self.history(), bundle_path, mappings)
         })?;
+        // Importing an untracked game's history tracks it again.
+        if self.history().untracked()?.contains(&report.game_uuid) {
+            self.history().set_untracked(report.game_uuid, false)?;
+            self.history().refresh_game(report.game_uuid)?;
+        }
         self.reload_watcher();
         Ok(report)
     }
@@ -699,13 +750,15 @@ impl WorldlineCore {
             .clone()
     }
 
-    pub fn update_device_name(&self, name: &str) -> Result<DeviceMetadata> {
+    /// Sets this device's name and kind together; both are published with it.
+    pub fn update_device(&self, name: &str, kind: Option<DeviceKind>) -> Result<DeviceMetadata> {
         let name = name.trim();
         if name.is_empty() {
             bail!("Device name cannot be empty");
         }
         let mut device = self.device.write().unwrap_or_else(|e| e.into_inner());
         device.name = name.to_string();
+        device.kind = kind;
         sync::save_device(&self.data_dir, &device)?;
         Ok(device.clone())
     }
@@ -1010,14 +1063,16 @@ impl WorldlineCore {
         write_json(&state_path, &state)
     }
 
-    /// Every game this device has history for, tombstones included.
-    fn local_game_uuids(&self) -> Result<HashSet<Uuid>> {
+    /// Every game this device has history for, tombstones included, except
+    /// untracked games: those are remote games not on this device.
+    fn local_game_uuids(&self, untracked: &HashSet<Uuid>) -> Result<HashSet<Uuid>> {
         Ok(self
             .history()
             .store
             .game_metas()?
             .iter()
             .map(|g| g.uuid)
+            .filter(|uuid| !untracked.contains(uuid))
             .collect())
     }
 
@@ -1051,14 +1106,17 @@ impl WorldlineCore {
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut problems = Vec::new();
         let remote_games = remote.store.catalog()?;
+        // Only an explicit adoption brings an untracked game back.
+        let untracked = self.history().untracked()?;
 
         // Link games tracked on both devices before sync was enabled.
         for remote_game in remote_games.iter().filter(|g| g.meta.deleted_at.is_none()) {
-            if self
-                .history()
-                .index
-                .game_id(remote_game.meta.uuid)?
-                .is_some()
+            if untracked.contains(&remote_game.meta.uuid)
+                || self
+                    .history()
+                    .index
+                    .game_id(remote_game.meta.uuid)?
+                    .is_some()
             {
                 continue;
             }
@@ -1075,7 +1133,7 @@ impl WorldlineCore {
             }
         }
 
-        let local_uuids = self.local_game_uuids()?;
+        let local_uuids = self.local_game_uuids(&untracked)?;
         problems.extend(self.pull_locked(&remote, &remote_games, &local_uuids));
 
         // Adopt remote games installed here. Scanning is slow, so it runs
@@ -1109,6 +1167,10 @@ impl WorldlineCore {
             if !installed_titles()
                 .contains_key(&store::normalize_display_name(&remote_game.meta.title))
             {
+                continue;
+            }
+            // Checked after the scan, so the report still says it's installed.
+            if untracked.contains(&remote_game.meta.uuid) {
                 continue;
             }
             if !matches!(self.match_local_game(remote_game)?, LocalMatch::None) {
@@ -1174,7 +1236,12 @@ impl WorldlineCore {
         if game.meta.deleted_at.is_some() {
             bail!("This game was deleted on another device");
         }
-        match self.match_local_game(&game)? {
+        let found = self.match_local_game(&game)?;
+        if !matches!(found, LocalMatch::Collision(_)) {
+            // Adopting is how an untracked game comes back.
+            self.history().set_untracked(uuid, false)?;
+        }
+        match found {
             LocalMatch::None => {
                 self.adopt(&remote, &game)?;
             }
@@ -1268,10 +1335,26 @@ impl WorldlineCore {
             .into_iter()
             .filter(|p| p.game == old.meta.uuid)
             .collect();
-        let icon = local.game.icon_path.clone();
-
         store::with_lock(history.root(), || {
             history.store.write_game(&remote_game.meta)?;
+            // The remote icon wins; the local one (e.g. the install
+            // scanner's) is kept only when the remote has none (ADR 0005).
+            if remote_game.meta.icon_sha256.is_none()
+                && let Some(wanted) = &old.meta.icon_sha256
+                && let Some(png) = history.store.read_icon(&old.meta.folder_slug)?
+                && crate::icon::sha256(&png) == *wanted
+            {
+                let mut meta = remote_game.meta.clone();
+                meta.icon_sha256 = Some(wanted.clone());
+                if meta.accent_hue_source == store::AccentHueSource::Auto {
+                    meta.accent_hue = old.meta.accent_hue;
+                    meta.accent_hue_source = old.meta.accent_hue_source;
+                }
+                meta.updated_at =
+                    Utc::now().max(meta.updated_at + chrono::Duration::milliseconds(1));
+                history.store.write_icon(&slug, &png)?;
+                history.store.write_game(&meta)?;
+            }
             for dir in old
                 .tracked_dirs
                 .iter()
@@ -1352,7 +1435,7 @@ impl WorldlineCore {
                 history.index.set_active_slot(id, slot_id)?;
             }
         }
-        history.index.set_icon(id, icon.as_deref())
+        Ok(())
     }
 
     /// Starts tracking a remote game here. Existing local saves are kept as
@@ -1390,6 +1473,17 @@ impl WorldlineCore {
                     history.index.set_active_slot(game_id, slot_id)?;
                 }
             }
+        } else if let Some(slot) = self.get_game(game_id)?.active_slot {
+            // No device points into it (the last one untracked it): resume
+            // from the newest version rather than start a second root.
+            let newest = self
+                .get_slot(slot.id)?
+                .versions
+                .into_iter()
+                .find(|version| !version.retired);
+            history
+                .index
+                .set_active_version(slot.id, newest.map(|version| version.id))?;
         }
         // Decide under suppression and the lock, so saves written while the
         // pull ran are seen and never overwritten.
@@ -1546,6 +1640,18 @@ impl WorldlineCore {
                     installed: installed_titles
                         .contains_key(&store::normalize_display_name(&g.meta.title)),
                     adopted: local.contains(&g.meta.uuid.to_string()),
+                    source_device: g
+                        .versions()
+                        .max_by_key(|v| v.created_at)
+                        .and_then(|v| v.origin_device)
+                        .and_then(|origin| {
+                            remote
+                                .devices
+                                .iter()
+                                .find(|d| d.device_uuid == origin)
+                                .map(|d| d.name.clone())
+                        }),
+                    version_count: g.versions().count(),
                 })
                 .collect(),
             devices: remote.devices.clone(),
@@ -1575,12 +1681,7 @@ impl WorldlineCore {
         &self,
         settings: RetentionSettings,
     ) -> Result<RetentionSettings> {
-        if settings.keep_all_hours > settings.hourly_until_hours
-            || settings.hourly_until_hours > settings.daily_until_days * 24
-            || settings.daily_until_days > settings.weekly_until_days
-        {
-            bail!("Retention tiers must not overlap: keep-all ≤ hourly ≤ daily ≤ weekly");
-        }
+        validate_retention(&settings)?;
         let settings = RetentionSettings {
             updated_at: Utc::now(),
             ..settings
@@ -1656,17 +1757,17 @@ impl WorldlineCore {
         })
     }
 
-    pub fn preview_pruning(&self) -> Result<PruningPreview> {
+    /// What pruning with `settings` (saved or not) would do. Writes nothing.
+    pub fn preview_pruning(&self, settings: &RetentionSettings) -> Result<PruningPreview> {
+        validate_retention(settings)?;
         let remote = self.remote()?;
-        let settings =
-            maintenance::sync_settings(&self.retention_path(), remote.as_ref().map(|r| &r.store))?;
         let inputs = self.retention_inputs(remote.as_ref())?;
         let plan = maintenance::plan(&maintenance::PlanInput {
             games: &inputs.games,
             retired: &inputs.retired,
             pointed: &inputs.pointed,
             chunk_sizes: &self.planning_chunk_sizes(remote.as_ref())?,
-            settings: &settings,
+            settings,
             now: planning_now(),
         });
         Ok(PruningPreview {
@@ -1789,6 +1890,16 @@ struct RetentionInputs {
     retired: HashSet<Uuid>,
     pointed: HashSet<Uuid>,
     local_pointed: HashSet<Uuid>,
+}
+
+fn validate_retention(settings: &RetentionSettings) -> Result<()> {
+    if settings.keep_all_hours > settings.hourly_until_hours
+        || settings.hourly_until_hours > settings.daily_until_days * 24
+        || settings.daily_until_days > settings.weekly_until_days
+    {
+        bail!("Retention tiers must not overlap: keep-all ≤ hourly ≤ daily ≤ weekly");
+    }
+    Ok(())
 }
 
 /// Retention decisions depend on `now` truncated to the hour, so devices

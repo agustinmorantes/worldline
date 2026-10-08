@@ -13,6 +13,7 @@ use uuid::Uuid;
 use worldline_core::OpenOptions;
 use worldline_core::WorldlineCore;
 use worldline_core::detection::{Notification, NotificationReceiver};
+use worldline_core::error::{ErrorKind, error_kind};
 use worldline_core::maintenance::{self, RetentionSettings};
 use worldline_core::models::{GameForm, Slot};
 use worldline_core::store::Store;
@@ -961,6 +962,33 @@ fn opening_with_the_loop_picks_up_another_devices_progress() {
 }
 
 #[test]
+fn the_loop_announces_every_sync_and_push_before_its_report() {
+    let remote = tempfile::tempdir().unwrap();
+    let (device, core, rx, game) = running_with_game(remote.path());
+    device.write("save.dat", "2");
+    core.checkpoint(game).unwrap();
+    wait_until("the checkpoint on the remote", || {
+        remote_version_count(remote.path()) == 2
+    });
+    core.shutdown();
+    let events: Vec<&str> = rx
+        .iter()
+        .filter_map(|n| match n {
+            Notification::SyncStarted => Some("started"),
+            Notification::SyncCompleted(_) => Some("completed"),
+            Notification::SyncFailed(_) => Some("failed"),
+            _ => None,
+        })
+        .collect();
+    // At least the start-up sync and the final push (the checkpoint's push
+    // can coalesce with the start-up sync): each announced first.
+    assert!(events.len() >= 4, "{events:?}");
+    for pair in events.chunks(2) {
+        assert_eq!(pair, ["started", "completed"], "{events:?}");
+    }
+}
+
+#[test]
 fn the_loop_stops_on_shutdown_and_its_notifications_end() {
     let remote = tempfile::tempdir().unwrap();
     let (_device, core, rx, _game) = running_with_game(remote.path());
@@ -1069,8 +1097,99 @@ fn budget_planning_counts_chunks_that_only_the_remote_holds() {
         .unwrap()[&hash];
     fs::remove_file(local.chunk_path(&hash).unwrap()).unwrap();
 
-    let preview = a.core.preview_pruning().unwrap();
+    let settings = a.core.get_pruning_settings().unwrap();
+    let preview = a.core.preview_pruning(&settings).unwrap();
     assert_eq!(preview.live_bytes_before, remote_size);
+}
+
+#[test]
+fn previewing_unsaved_settings_uses_them_and_writes_nothing() {
+    let remote = tempfile::tempdir().unwrap();
+    let device = Device::synced(remote.path());
+    device.write("save.dat", "1");
+    let game = device.add_game("Previewed");
+    for n in 2..=4 {
+        device.write("save.dat", &n.to_string());
+        device.checkpoint(game.game.id);
+    }
+    device.core.push_sync().unwrap();
+    // Age the versions a month apart on both sides: the saved tiers keep them all.
+    for entry in walk(&device.data.path().join("repository"))
+        .into_iter()
+        .chain(walk(remote.path()))
+    {
+        if entry.file_name().is_some_and(|n| n == "metadata.json")
+            && entry.to_string_lossy().contains("versions")
+        {
+            let mut meta: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&entry).unwrap()).unwrap();
+            meta["created_at"] = format!("2020-0{}-01T00:00:00Z", meta["version_number"]).into();
+            fs::write(&entry, serde_json::to_string(&meta).unwrap()).unwrap();
+        }
+    }
+    device.core.reindex().unwrap();
+    let saved = device.core.get_pruning_settings().unwrap();
+    let remote_settings = remote.path().join("settings").join("retention.json");
+    let before = fs::read(&remote_settings).ok();
+    assert!(
+        device
+            .core
+            .preview_pruning(&saved)
+            .unwrap()
+            .retire_versions
+            .is_empty()
+    );
+
+    let strict = RetentionSettings {
+        max_bytes: Some(1),
+        ..saved
+    };
+    assert_eq!(
+        device
+            .core
+            .preview_pruning(&strict)
+            .unwrap()
+            .retire_versions
+            .len(),
+        2,
+        "everything but the root and the active version"
+    );
+    assert_eq!(device.core.get_pruning_settings().unwrap(), saved);
+    assert!(!device.data.path().join("retention_settings.json").exists());
+    assert_eq!(fs::read(&remote_settings).ok(), before);
+    assert!(device.core.retired_versions().unwrap().is_empty());
+
+    let overlapping = RetentionSettings {
+        keep_all_hours: saved.hourly_until_hours + 1,
+        ..saved
+    };
+    assert!(device.core.preview_pruning(&overlapping).is_err());
+}
+
+#[test]
+fn an_unreachable_sync_folder_has_its_own_error_kind() {
+    let remote = tempfile::tempdir().unwrap();
+    let device = Device::synced(remote.path());
+    let missing = remote.path().join("unplugged");
+    let error = device
+        .core
+        .update_sync_settings(SyncSettings {
+            remote_path: Some(missing.to_string_lossy().into_owned()),
+        })
+        .unwrap_err();
+    assert_eq!(error_kind(&error), Some(ErrorKind::SyncFolderUnreachable));
+
+    let later = remote.path().join("later");
+    fs::create_dir_all(&later).unwrap();
+    let synced = Device::synced(&later);
+    fs::remove_dir_all(&later).unwrap();
+    for error in [
+        synced.core.refresh_sync().unwrap_err(),
+        synced.core.push_sync().unwrap_err(),
+    ] {
+        assert_eq!(error_kind(&error), Some(ErrorKind::SyncFolderUnreachable));
+    }
+    assert_eq!(error_kind(&device.core.get_game(999).unwrap_err()), None);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Devices, their published pointers and divergence classification. Copying
 //! history lives in `transfer`; the refresh flow lives in the facade.
 
+use crate::error::ErrorKind;
 use crate::index::Pointer;
 use crate::store::{self, GameRecord, Store, read_json, write_json};
 use anyhow::{Context, Result, bail};
@@ -17,6 +18,17 @@ pub struct DeviceMetadata {
     pub platform: String,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
+    /// Chosen by the user, never detected; `None` reads as desktop.
+    #[serde(default)]
+    pub kind: Option<DeviceKind>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceKind {
+    Desktop,
+    Laptop,
+    Handheld,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +106,10 @@ pub struct RemoteGameSummary {
     pub title: String,
     pub installed: bool,
     pub adopted: bool,
+    /// Name of the device that created its newest version, when known.
+    pub source_device: Option<String>,
+    /// Versions across all its slots, retired ones included.
+    pub version_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,6 +151,7 @@ pub fn load_or_create_device(data_dir: &Path) -> Result<DeviceMetadata> {
         platform: std::env::consts::OS.to_string(),
         first_seen: now,
         last_seen: now,
+        kind: None,
     };
     save_device(data_dir, &device)?;
     Ok(device)
@@ -169,7 +186,7 @@ pub struct Remote {
 impl Remote {
     /// Opens (initializing when empty) a remote that must not overlap `data_dir`.
     pub fn open(path: &Path, data_dir: &Path) -> Result<Self> {
-        let remote = std::fs::canonicalize(path).context("Sync folder is unavailable")?;
+        let remote = std::fs::canonicalize(path).context(ErrorKind::SyncFolderUnreachable)?;
         let local =
             std::fs::canonicalize(data_dir).context("Local data directory is unavailable")?;
         if !remote.is_dir() {

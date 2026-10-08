@@ -28,6 +28,7 @@ pub enum Notification {
     ChangeDetected { game_id: i32 },
     VersionCreated { game_id: i32, version_number: i32 },
     Error(String),
+    SyncStarted,
     SyncCompleted(SyncReport),
     SyncFailed(String),
     HistoryPruned,
