@@ -25,7 +25,27 @@ declare module '@tanstack/react-router' {
   }
 }
 
+/** The webview is a browser underneath: no Back/Refresh/Print menu on right-click, and none of the
+ * shortcuts it advertises (reload, print, history). Dev builds keep both, so Inspect stays reachable. */
+function suppressBrowserChrome(): void {
+  window.addEventListener('contextmenu', (e) => {
+    const target = e.target
+    // Fields keep their menu for cut, copy and paste.
+    if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea') !== null)) return
+    e.preventDefault()
+  })
+  window.addEventListener('keydown', (e) => {
+    const key = e.key.toLowerCase()
+    const reload = key === 'f5' || (e.ctrlKey && key === 'r')
+    const print = e.ctrlKey && key === 'p'
+    const history = e.altKey && (key === 'arrowleft' || key === 'arrowright')
+    if (reload || print || history) e.preventDefault()
+  })
+}
+
 async function start(): Promise<void> {
+  if (!import.meta.env.DEV) suppressBrowserChrome()
+
   // `bun run dev:mock`: the UI on plain `vite dev`, with the backend replaced by fixtures.
   if (import.meta.env.VITE_IPC_MOCKS === 'true') {
     const { installMocks } = await import('@/ipc/mocks')

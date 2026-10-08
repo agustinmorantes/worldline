@@ -13,6 +13,17 @@ function typing(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
 }
 
+/** A drawn `?`, centred on its box so the circle around it is too (a text glyph sits on font metrics).
+ * Same rendered stroke as the window controls' 14 px lucide icons. */
+function QuestionMark(): ReactElement {
+  return (
+    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={14 / 18 * 2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
 export function HelpMenu(): ReactElement {
   const t = useT();
   const tour = useTour();
@@ -37,12 +48,12 @@ export function HelpMenu(): ReactElement {
           {...{ [HELP_ANCHOR]: '' }}
           aria-label={t.shell.help}
           className={cn(
-            'relative flex size-6 items-center justify-center rounded-full font-display text-[13px] font-bold text-tx3 transition-[color,background-color,transform] duration-200 ease-spring hover:bg-white/[0.08] hover:text-tx active:scale-90 data-[state=open]:bg-white/[0.08] data-[state=open]:text-tx',
+            'relative flex size-6 items-center justify-center rounded-full text-tx3 transition-[color,background-color,transform] duration-200 ease-spring hover:bg-white/[0.08] hover:text-tx active:scale-90 data-[state=open]:bg-white/[0.08] data-[state=open]:text-tx',
             tip && 'bg-acc-soft text-acc',
           )}
         >
           {tip && <span aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-full border-2 border-acc [animation:halo_1.8s_ease-out_infinite]" />}
-          ?
+          <QuestionMark />
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Content align="end" sideOffset={8} className={cn(popover, 'w-[280px]')}>

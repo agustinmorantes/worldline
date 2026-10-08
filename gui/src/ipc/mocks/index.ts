@@ -233,7 +233,7 @@ export function installMocks(): void {
       const args = (payload ?? {}) as Args;
       if (cmd.startsWith('plugin:store|')) return storeCommand(cmd.slice('plugin:store|'.length), args);
       if (cmd === 'plugin:log|log') return null;
-      if (cmd.startsWith('plugin:window|')) return null;
+      if (cmd.startsWith('plugin:window|') || cmd.startsWith('plugin:webview|')) return null;
       return backendCommand(state, cmd, args);
     },
     { shouldMockEvents: true },
