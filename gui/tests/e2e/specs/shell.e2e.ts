@@ -9,8 +9,7 @@ async function addGame(title: string): Promise<void> {
 
 describe('Shell', () => {
   before(async () => {
-    await $('button=Skip').click();
-    await $('button=Yes, skip everything').click();
+    await $('button=Skip, I’ll explore').click();
     await addGame('Celeste');
     await addGame('Hades');
     await browser.refresh();

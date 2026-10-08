@@ -16,8 +16,7 @@ describe('Sessions', () => {
   const save = path.join(saves, 'save.dat');
 
   before(async () => {
-    await $('button=Skip').click();
-    await $('button=Yes, skip everything').click();
+    await $('button=Skip, I’ll explore').click();
 
     // Two checkpoints in a line: the first is taken when the game is added; restoring it
     // over a changed file checkpoints that change first, and restoring that comes back.

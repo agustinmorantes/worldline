@@ -3,9 +3,9 @@ import path from 'node:path';
 import { $, browser, expect } from '@wdio/globals';
 
 describe('Worldline', () => {
-  it('starts on an empty data directory and shows first-run onboarding', async () => {
+  it('starts on an empty data directory and shows the first-run tour', async () => {
     await expect($('aside')).toBeDisplayed();
-    await expect($('h2=Your save-game time machine')).toBeDisplayed();
+    await expect($('h1=Every save. Every timeline.')).toBeDisplayed();
   });
 
   it('keeps its preferences in the data directory', async () => {

@@ -6,7 +6,7 @@ import { CloudSection } from './CloudSection';
 import { ManualSection } from './ManualSection';
 import { ScanSection } from './ScanSection';
 
-export function AddGamesView(): ReactElement {
+export function AddGamesView({ scan = false }: { scan?: boolean }): ReactElement {
   const t = useT();
   const { data: games = [] } = useGames();
   const { data: report } = useSyncReport();
@@ -17,7 +17,7 @@ export function AddGamesView(): ReactElement {
       <h1 className="font-display text-[34px] font-extrabold leading-[1.15]">{t.addGames.title}</h1>
       <div className="mt-8 flex flex-col gap-10">
         {report !== undefined && <CloudSection report={report} />}
-        <ScanSection library={games} cloudTitles={cloudTitles} />
+        <ScanSection library={games} cloudTitles={cloudTitles} autoScan={scan} />
         <ManualSection library={games} />
       </div>
     </div>

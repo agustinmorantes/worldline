@@ -40,8 +40,7 @@ describe('Add games', () => {
   let remote = '';
 
   before(async () => {
-    await $('button=Skip').click();
-    await $('button=Yes, skip everything').click();
+    await $('button=Skip, I’ll explore').click();
 
     mkdirSync(saves, { recursive: true });
     writeFileSync(path.join(saves, 'save.dat'), 'first');

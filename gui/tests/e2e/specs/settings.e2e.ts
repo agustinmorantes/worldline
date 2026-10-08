@@ -28,8 +28,7 @@ describe('Settings', () => {
   let remote = '';
 
   before(async () => {
-    await $('button=Skip').click();
-    await $('button=Yes, skip everything').click();
+    await $('button=Skip, I’ll explore').click();
     // The sync folder can't live inside the data directory.
     remote = mkdtempSync(path.join(os.tmpdir(), 'worldline-e2e-remote-'));
     await library().$('a*=Settings').click();

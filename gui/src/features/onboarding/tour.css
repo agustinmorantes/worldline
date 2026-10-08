@@ -1,0 +1,59 @@
+/* The tour: Lantern Knight (the demo game), the Worldline strip under it and the self-drawing
+   mark. Reduced motion is handled globally in `tokens.css`; only the flying save is hidden. */
+
+.lk-star { animation: lk-twinkle 2.6s ease-in-out infinite; }
+.lk-flame { transform-box: fill-box; transform-origin: 50% 100%; animation: lk-flick 260ms ease-in-out infinite alternate; }
+.lk-flame-inner { animation-duration: 190ms; }
+.lk-fire-glow { animation: lk-glow 1.2s ease-in-out infinite alternate; }
+.lk-flag { transform-box: fill-box; transform-origin: 0 50%; animation: lk-flag 900ms ease-in-out infinite alternate; }
+.lk-walk { animation: lk-bob 200ms ease-in-out infinite alternate; }
+.lk-hurt { animation: lk-hurt 600ms ease-out; }
+.lk-mimic { transform-box: fill-box; transform-origin: 50% 100%; animation: lk-chomp 520ms var(--spring); }
+.lk-eye { animation: blink 1.2s ease-in-out infinite; }
+.lk-shake { animation: lk-shake 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+.lk-rewinding svg { filter: saturate(0.3) contrast(1.2) brightness(1.1); animation: lk-jitter 110ms steps(2) infinite; }
+.lk-gold-fx { animation: lk-gold-fx 1300ms var(--ez) both; }
+.lk-flash { animation: lk-flash 700ms ease-out both; }
+.lk-band { animation: lk-band 420ms linear infinite; }
+.lk-rewind-text { animation: blink 500ms steps(2) infinite; }
+.lk-spin { animation: lk-spin 700ms linear infinite; }
+.lk-pop { animation: lk-pop 560ms var(--spring) both; animation-delay: var(--d, 0ms); }
+.lk-label-in { animation: lk-label-in 420ms var(--ez) both; animation-delay: var(--d, 0ms); }
+.lk-fade-in { animation: lk-fade-in 400ms both; }
+.lk-draw { stroke-dasharray: 1 1.2; animation: lk-draw 800ms var(--ez) both; animation-delay: var(--d, 0ms); }
+.lk-draw-branch { stroke-dasharray: 1 1; animation: lk-draw 620ms var(--ez) both; }
+.lk-fly { animation: lk-fly 440ms cubic-bezier(0.5, 0, 0.3, 1) both; }
+.lk-tip { animation: lk-tip 360ms var(--spring) both; }
+
+:root[data-motion='reduced'] .lk-fly { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  :root[data-motion='system'] .lk-fly { display: none; }
+}
+
+@keyframes lk-twinkle { 50% { opacity: 0.25; } }
+@keyframes lk-flick { from { transform: scale(1, 1); } to { transform: scale(0.88, 1.12); } }
+@keyframes lk-glow { to { opacity: 0.6; } }
+@keyframes lk-flag { to { transform: scaleX(0.8) skewY(6deg); } }
+@keyframes lk-bob { to { transform: translateY(-3px); } }
+@keyframes lk-hurt { 0%, 40% { filter: brightness(2) saturate(0); } 20% { transform: translateX(-6px); } }
+@keyframes lk-chomp { 0% { transform: scale(0.9, 0.5); } 100% { transform: none; } }
+@keyframes lk-shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-7px); }
+  40%, 60% { transform: translateX(7px); }
+}
+@keyframes lk-jitter { 50% { transform: translateX(3px); } }
+@keyframes lk-gold-fx { 0% { opacity: 0; transform: translateY(4px); } 15% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(-16px); } }
+@keyframes lk-flash { from { opacity: 1; } to { opacity: 0; } }
+@keyframes lk-band { from { top: -46px; } to { top: 300px; } }
+@keyframes lk-spin { to { transform: rotate(360deg); } }
+@keyframes lk-pop { 0% { transform: scale(0); } 60% { transform: scale(1.4); } 100% { transform: scale(1); } }
+@keyframes lk-label-in { from { opacity: 0; translate: 0 6px; } }
+@keyframes lk-fade-in { from { opacity: 0; } }
+@keyframes lk-draw { from { stroke-dashoffset: 1.05; } to { stroke-dashoffset: 0; } }
+@keyframes lk-fly {
+  from { transform: translate(var(--x0), var(--y0)) scale(1.4); }
+  to { transform: translate(var(--x1), var(--y1)) scale(0.8); }
+}
+@keyframes lk-tip { from { opacity: 0; transform: translateY(8px); } }

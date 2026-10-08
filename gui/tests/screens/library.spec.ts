@@ -11,17 +11,6 @@ test('lists the games and opens one', async ({ page }) => {
   await expect(page.getByRole('complementary', { name: 'Selected checkpoint' }).getByText('Before Malenia')).toBeVisible();
 });
 
-test.describe('first run', () => {
-  test.use({ fixture: 'empty', prefs: {} });
-
-  test('opens onboarding and remembers it was seen', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByText(/your save-game time machine/i)).toBeVisible();
-    const stored = await page.evaluate(() => localStorage.getItem('worldline-mock-store'));
-    expect(JSON.parse(stored ?? '{}')).toMatchObject({ prefs: { onboardingSeen: true } });
-  });
-});
-
 test.describe('preferences', () => {
   test.use({ prefs: { onboardingSeen: true, language: 'es', tone: 'warm', motion: 'reduced' } });
 

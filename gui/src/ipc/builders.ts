@@ -1,4 +1,4 @@
-// Builders for IPC payloads: unit tests, the `vite dev` mock fixtures and onboarding sample data.
+// Builders for IPC payloads: unit tests and the `vite dev` mock fixtures.
 import type { FullGame } from './bindings/FullGame';
 import type { Slot } from './bindings/Slot';
 import type { TrackedDir } from './bindings/TrackedDir';

@@ -17,9 +17,15 @@ import { cn } from '@/shared/ui/utils';
 import { newScanResults } from './add-games';
 import { useInstalledScan, useScanRoots } from './queries';
 
-export function ScanSection({ library, cloudTitles }: { library: FullGame[]; cloudTitles: string[] }): ReactElement {
+export function ScanSection({ library, cloudTitles, autoScan = false }: {
+  library: FullGame[];
+  cloudTitles: string[];
+  /** Skip the "Scan this PC" prompt. */
+  autoScan?: boolean;
+}): ReactElement {
   const t = useT();
-  const [started, setStarted] = useState(false);
+  const [asked, setAsked] = useState(false);
+  const started = asked || autoScan;
   const scan = useInstalledScan(started);
 
   return (
@@ -28,7 +34,7 @@ export function ScanSection({ library, cloudTitles }: { library: FullGame[]; clo
       <div className="mt-3">
         {!started ? (
           <div className="flex h-[176px] max-w-[664px] flex-col items-center justify-center gap-3 rounded-[18px] border-[1.5px] border-dashed border-ln">
-            <button type="button" className={btn} onClick={() => { setStarted(true); }}>{t.addGames.lookForGames}</button>
+            <button type="button" className={btn} onClick={() => { setAsked(true); }}>{t.addGames.lookForGames}</button>
             <span className="text-[13px] text-tx3">{t.addGames.scanSources}</span>
           </div>
         ) : scan.isFetching ? (

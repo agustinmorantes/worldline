@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router';
 import { motion } from 'motion/react';
 import { Plus, SlidersHorizontal } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
+import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
 import { formatRelative, type Messages, useLocale, useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { accentVars } from '@/shared/tokens/accent';
@@ -31,6 +32,8 @@ export function Sidebar(): ReactElement {
     reported: report !== undefined,
     status: report?.games.find((s) => s.game_uuid === game.uuid),
   });
+  const rows = sorted.map((game) => ({ game, status: gameStatus(game, syncView(game)) }));
+  const fromDevice = rows.find((r) => r.status.kind === 'new-from' || r.status.kind === 'played-too');
 
   return (
     <aside
@@ -54,7 +57,7 @@ export function Sidebar(): ReactElement {
           <p className={`px-3 py-2 text-xs text-err max-[1099px]:sr-only`}>{t.errors.loadFailed}</p>
         ) : (
           <ul className="flex flex-col gap-1">
-            {sorted.map((game) => (
+            {rows.map(({ game, status }) => (
               <motion.li
                 key={game.id}
                 layout="position"
@@ -62,13 +65,12 @@ export function Sidebar(): ReactElement {
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.56, ease }}
               >
-                <GameRow game={game} status={gameStatus(game, syncView(game))} />
+                <GameRow game={game} status={status} />
               </motion.li>
             ))}
           </ul>
         )}
         <NavRow
-          id="tour-add-game"
           target={{ view: 'add' }}
           to="/add"
           label={t.shell.addGames}
@@ -81,6 +83,9 @@ export function Sidebar(): ReactElement {
         <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} />
         <SyncCard />
       </div>
+      {fromDevice !== undefined && 'device' in fromDevice.status && (
+        <SecondDeviceHint anchor={anchorKey({ view: 'game', gameId: fromDevice.game.id })} device={fromDevice.status.device} />
+      )}
     </aside>
   );
 }
@@ -177,8 +182,7 @@ function StatusLine({ status }: { status: GameStatus }): ReactElement {
   );
 }
 
-function NavRow({ id, target, to, label, icon, className, badge }: {
-  id?: string;
+function NavRow({ target, to, label, icon, className, badge }: {
   target: NavTarget;
   to: '/add' | '/settings';
   label: string;
@@ -192,7 +196,6 @@ function NavRow({ id, target, to, label, icon, className, badge }: {
 
   return (
     <Link
-      id={id}
       to={to}
       onClick={onClick}
       aria-current={selected ? 'page' : undefined}
