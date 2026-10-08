@@ -54,7 +54,8 @@ CREATE TABLE versions (
     reason TEXT NOT NULL,
     tag TEXT,
     retired BOOLEAN NOT NULL DEFAULT 0,
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP NOT NULL,
+    origin_device TEXT
 );
 CREATE INDEX versions_slot_id ON versions(slot_id);
 

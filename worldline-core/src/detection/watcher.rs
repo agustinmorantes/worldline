@@ -312,6 +312,7 @@ mod tests {
                 },
                 tracked_dirs: Vec::<TrackedDir>::new(),
                 slots: vec![],
+                slot_summaries: vec![],
                 active_slot: None,
                 versions: vec![],
                 last_version: None,

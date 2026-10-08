@@ -18,6 +18,17 @@ pub struct DeviceMetadata {
     pub platform: String,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
+    /// Chosen by the user, never detected; `None` reads as desktop.
+    #[serde(default)]
+    pub kind: Option<DeviceKind>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceKind {
+    Desktop,
+    Laptop,
+    Handheld,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +106,10 @@ pub struct RemoteGameSummary {
     pub title: String,
     pub installed: bool,
     pub adopted: bool,
+    /// Name of the device that created its newest version, when known.
+    pub source_device: Option<String>,
+    /// Versions across all its slots, retired ones included.
+    pub version_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -136,6 +151,7 @@ pub fn load_or_create_device(data_dir: &Path) -> Result<DeviceMetadata> {
         platform: std::env::consts::OS.to_string(),
         first_seen: now,
         last_seen: now,
+        kind: None,
     };
     save_device(data_dir, &device)?;
     Ok(device)

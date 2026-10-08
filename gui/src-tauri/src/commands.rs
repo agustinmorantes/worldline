@@ -154,11 +154,12 @@ fn get_device(core: State<Arc<WorldlineCore>>) -> worldline_core::sync::DeviceMe
 }
 
 #[tauri::command]
-fn update_device_name(
+fn update_device(
     name: String,
+    kind: Option<worldline_core::sync::DeviceKind>,
     core: State<Arc<WorldlineCore>>,
 ) -> Result<worldline_core::sync::DeviceMetadata, String> {
-    core.update_device_name(&name).map_err(|e| e.to_string())
+    core.update_device(&name, kind).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -369,7 +370,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_monitoring_settings,
         update_monitoring_settings,
         get_device,
-        update_device_name,
+        update_device,
         get_sync_settings,
         update_sync_settings,
         refresh_sync,
