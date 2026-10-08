@@ -273,6 +273,8 @@ export const FIXTURES = {
   syncing: () => ({ ...library(), syncReport: 'pending' as const }),
   /** Sync on, but the cloud folder is gone (an unplugged drive, the cloud app closed). */
   offline: () => ({ ...settings(), syncReport: 'unreachable' as const }),
+  /** Sync on, but syncing fails for another reason than the folder. */
+  syncFailed: () => ({ ...library(), syncReport: undefined }),
   sessions: () => sessions(),
   ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
   diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),

@@ -43,6 +43,12 @@ export function sortLibrary(games: FullGame[]): FullGame[] {
   });
 }
 
+/** Whether `title` contains `query`, ignoring case and accents: "pokemon" finds "Pokémon". */
+export function matchesTitle(title: string, query: string): boolean {
+  const plain = (text: string): string => text.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase();
+  return plain(title).includes(plain(query.trim()));
+}
+
 export type GameStatus =
   | { kind: 'recording' }
   | { kind: 'new-from'; device: string }

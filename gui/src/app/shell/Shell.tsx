@@ -205,11 +205,14 @@ export function Shell({ titleBar, sidebar, children }: {
         {titleBar}
         <div className="relative flex min-h-0 flex-1">
           {sidebar}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-0 z-[5] size-3 left-[240px] max-[1099px]:left-[72px]"
-            style={{ background: 'radial-gradient(circle at 100% 100%, transparent 11.5px, var(--tint) 12px)' }}
-          />
+          {/* Zero-width, so the corner sits on the sidebar's edge and follows it as it folds. */}
+          <div className="relative w-0 shrink-0">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute left-0 top-0 z-[5] size-3"
+              style={{ background: 'radial-gradient(circle at 100% 100%, transparent 11.5px, var(--tint) 12px)' }}
+            />
+          </div>
           <main ref={mainRef} className="relative z-[6] min-w-0 flex-1 overflow-hidden rounded-tl-[12px]">
             <motion.div
               animate={stage}
