@@ -316,6 +316,8 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
             Notification::SyncFailed(error) => eprintln!("Sync error: {error}"),
             Notification::HistoryPruned => println!("Old versions were pruned."),
             Notification::PruningFailed(error) => eprintln!("Pruning error: {error}"),
+            Notification::GameStarted { game_id } => println!("Game {game_id} is running"),
+            Notification::GameStopped { game_id } => println!("Game {game_id} stopped"),
         }
     }
     Ok(())
@@ -380,6 +382,9 @@ fn main() -> Result<()> {
             GamesAction::Show { id } => {
                 let g = core.get_game(id)?;
                 println!("[{}] {} ({})", g.game.id, g.game.title, g.game.uuid);
+                if let Some(dir) = &g.game.install_dir {
+                    println!("  Installed in: {dir}");
+                }
                 println!("  Tracked dirs:");
                 for d in &g.tracked_dirs {
                     println!("    [{}] {}", d.id, d.path);
