@@ -13,7 +13,6 @@
 @import "@fontsource/jetbrains-mono/latin-700.css";
 
 @import "../shared/tokens/tokens.css";
-@import "./legacy-theme.css";
 
 @keyframes travel {
   from { left: 0; }
@@ -59,7 +58,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-ln outline-acc/50;
   }
 
   html {
@@ -133,7 +132,7 @@
   }
 
   body {
-    @apply bg-background text-foreground flex flex-col overscroll-none overflow-hidden font-sans;
+    @apply bg-bg text-tx flex flex-col overscroll-none overflow-hidden font-sans;
   }
 
   html, body, #root {

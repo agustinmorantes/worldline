@@ -102,3 +102,11 @@
   --ease-ez: var(--ez);
   --ease-spring: var(--spring);
 }
+
+/* Radius scale: kept at the sizes the screens were built with (Tailwind's defaults run 2px smaller). */
+@theme {
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+}

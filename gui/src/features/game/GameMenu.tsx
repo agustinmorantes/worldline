@@ -162,7 +162,7 @@ export function GameMenu({ game, inCloud }: {
       </Menu.Root>
 
       <Dialog open={open === 'rename'} onOpenChange={(o) => { if (!o) setOpen(null); }}>
-        <DialogContent className="border-border/40 bg-sf sm:max-w-[400px]">
+        <DialogContent className="bg-sf sm:max-w-[400px]">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold tracking-tight">{t.game.renameGame}</DialogTitle>
           </DialogHeader>
@@ -177,7 +177,7 @@ export function GameMenu({ game, inCloud }: {
       </Dialog>
 
       <Dialog open={open === 'folders'} onOpenChange={(o) => { if (!o) setOpen(null); }}>
-        <DialogContent className="border-border/40 bg-sf sm:max-w-[520px]">
+        <DialogContent className="bg-sf sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold tracking-tight">{t.game.saveFolders}</DialogTitle>
             <DialogDescription className="text-tx3">{t.game.saveFoldersHint}</DialogDescription>
@@ -209,7 +209,7 @@ export function GameMenu({ game, inCloud }: {
       </Dialog>
 
       <Dialog open={open === 'delete'} onOpenChange={(o) => { if (!o) setOpen(null); }}>
-        <DialogContent className="border-border/40 bg-sf sm:max-w-[420px]">
+        <DialogContent className="bg-sf sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold tracking-tight">{t.game.deleteTitle(game.title)}</DialogTitle>
             <DialogDescription className="text-tx2">{t.game.deleteBody}</DialogDescription>

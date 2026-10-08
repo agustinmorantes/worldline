@@ -18,8 +18,7 @@ import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion 
 import { queryClient } from '@/app/query-client';
 import { reportError } from '@/shared/errors/report';
 import { useT } from '@/shared/i18n';
-import { Button } from '@/shared/ui/button';
-import { Skeleton } from '@/shared/ui/skeleton';
+import { btn } from '@/shared/ui/classes';
 import { cn } from '@/shared/ui/utils';
 
 interface GameSearch {
@@ -85,7 +84,7 @@ export function GameDetail(): ReactElement {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <div className="font-bold text-err">{t.errors.loadFailed}</div>
-        <Button onClick={() => { void refetch(); }}>{t.errors.retry}</Button>
+        <button type="button" className={btn} onClick={() => { void refetch(); }}>{t.errors.retry}</button>
       </div>
     );
   }
@@ -312,4 +311,8 @@ function GameDetailSkeleton(): ReactElement {
       </div>
     </div>
   );
+}
+
+function Skeleton({ className }: { className: string }): ReactElement {
+  return <div className={cn('rounded-md bg-el', className)} />;
 }
