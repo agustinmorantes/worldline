@@ -5,7 +5,7 @@ import tseslint from "typescript-eslint";
 
 export default defineConfig([
   {
-    ignores: ["node_modules/**", "dist/**", "build/**", "src-tauri/**", ".idea/**" ],
+    ignores: ["node_modules/**", "dist/**", "build/**", "src-tauri/**", ".idea/**", "src/ipc/bindings/**", "playwright-report/**", "test-results/**"],
   },
   {
     files: ["**/*.ts", "**/*.tsx"],

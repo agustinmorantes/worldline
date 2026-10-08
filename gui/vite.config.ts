@@ -13,6 +13,8 @@ export default defineConfig(() => ({
     tanstackRouter({
       target: 'react',
       autoCodeSplitting: true,
+      routesDirectory: './src/app/routes',
+      generatedRouteTree: './src/app/routeTree.gen.ts',
     }),
     react(),
     tailwindcss()
@@ -22,6 +24,7 @@ export default defineConfig(() => ({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

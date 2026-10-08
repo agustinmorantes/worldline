@@ -26,6 +26,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["./src", "./eslint.config.ts", "./lint-staged.config.ts", "./playwright.config.ts"],
+  "include": ["./src", "./tests/screens", "./eslint.config.ts", "./lint-staged.config.ts", "./playwright.config.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

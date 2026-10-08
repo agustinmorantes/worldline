@@ -20,11 +20,18 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 worldline-core = { path = "../../worldline-core" }
-tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
-tauri-plugin-opener = "2"
+tauri = { version = "2.12", features = ["tray-icon", "protocol-asset", "image-png"] }
+tauri-plugin-opener = "2.7"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = "1"
 anyhow = "1.0.100"
 tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
+tauri-plugin-log = "2"
+
+[features]
+# Test build for WebdriverIO: `WORLDLINE_E2E_DATA_DIR` overrides the data directory and
+# native dialogs are stubbed (pickers return `WORLDLINE_E2E_DIALOG_PATH`, confirms accept).
+e2e = []

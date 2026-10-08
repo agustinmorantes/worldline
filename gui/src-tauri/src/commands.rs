@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{generate_handler, Emitter, State};
+use worldline_core::error::Failure;
 use worldline_core::install_scanner::InstallScannerItem;
 use worldline_core::models::*;
 use worldline_core::WorldlineCore;
@@ -190,12 +191,12 @@ async fn update_sync_settings(
 #[tauri::command]
 async fn refresh_sync(
     core: State<'_, Arc<WorldlineCore>>,
-) -> Result<worldline_core::sync::SyncReport, String> {
+) -> Result<worldline_core::sync::SyncReport, Failure> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.refresh_sync())
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| Failure::from(&anyhow::Error::from(e)))?
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -354,6 +355,12 @@ fn set_tray_labels(labels: crate::tray::TrayLabels, app: tauri::AppHandle) -> Re
     crate::tray::set_labels(&app, labels).map_err(|e| e.to_string())
 }
 
+/// The GUI preferences file, kept with the rest of the app data.
+#[tauri::command]
+fn get_prefs_path(data_dir: State<crate::DataDir>) -> String {
+    data_dir.0.join("prefs.json").display().to_string()
+}
+
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(generate_handler![
         get_games,
@@ -393,6 +400,13 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         export_game_history,
         import_game_history,
         get_startup_notice,
+        get_prefs_path,
+        crate::dialogs::pick_folder,
+        crate::dialogs::pick_file,
+        crate::dialogs::pick_save_path,
+        crate::dialogs::confirm,
         set_tray_labels,
+        #[cfg(feature = "e2e")]
+        crate::tray::e2e_tray_labels,
     ])
 }

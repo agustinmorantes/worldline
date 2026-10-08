@@ -1,0 +1,112 @@
+/* Design tokens (dark only). Semantic variables, so a light theme can come later.
+   A background tone is a base hue, chroma and lightness shift applied to the same tokens;
+   it is chosen with `data-tone` on <html>. Per-game accents override the `--acc*` variables
+   (see `accent.ts`); the defaults here are the brand hue (290). */
+
+:root {
+  --tone-h: 265;
+  --tone-c: 1;
+  --tone-dl: 0%;
+}
+
+:root[data-tone='black'] {
+  --tone-c: 0;
+  --tone-dl: -11%;
+}
+
+:root[data-tone='warm'] {
+  --tone-h: 55;
+  --tone-c: 1.2;
+}
+
+:root {
+  --bg: oklch(calc(15.5% + var(--tone-dl)) calc(0.012 * var(--tone-c)) var(--tone-h));
+  --side: oklch(calc(12.5% + var(--tone-dl)) calc(0.01 * var(--tone-c)) var(--tone-h));
+  --tint: oklch(5% calc(0.01 * var(--tone-c)) var(--tone-h) / 0.48);
+  --sf: oklch(calc(19.5% + var(--tone-dl)) calc(0.014 * var(--tone-c)) var(--tone-h));
+  --el: oklch(calc(24% + var(--tone-dl)) calc(0.015 * var(--tone-c)) var(--tone-h));
+  --ln: oklch(calc(31% + var(--tone-dl)) calc(0.016 * var(--tone-c)) var(--tone-h));
+  --tx: oklch(96.5% calc(0.005 * var(--tone-c)) var(--tone-h));
+  --tx2: oklch(80% calc(0.012 * var(--tone-c)) var(--tone-h));
+  --tx3: oklch(66% calc(0.016 * var(--tone-c)) var(--tone-h));
+  --live: oklch(82% 0.17 150);
+  --warn: oklch(84% 0.14 75);
+  --deck: oklch(80% 0.11 205);
+  --err: oklch(68% 0.19 25);
+
+  --acc: oklch(80% 0.13 290);
+  --acc-ink: oklch(21% 0.06 290);
+  --acc-soft: oklch(80% 0.13 290 / 0.12);
+  --acc-line: oklch(80% 0.13 290 / 0.38);
+  --acc-glow: oklch(52% 0.15 290 / 0.32);
+  --acc-fill: oklch(56% 0.15 290);
+  --acc-icon: linear-gradient(145deg, oklch(80% 0.13 290), oklch(56% 0.16 320));
+  --acc-icon-ink: oklch(20% 0.05 290);
+
+  --glow-opacity: 1;
+  --ez: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --spring: cubic-bezier(0.34, 1.5, 0.5, 1);
+}
+
+/* Reduced motion: state changes are instant and the accent glow is off. */
+:root[data-motion='reduced'] {
+  --glow-opacity: 0;
+}
+
+:root[data-motion='reduced'] *,
+:root[data-motion='reduced'] *::before,
+:root[data-motion='reduced'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-motion='system'] {
+    --glow-opacity: 0;
+  }
+
+  :root[data-motion='system'] *,
+  :root[data-motion='system'] *::before,
+  :root[data-motion='system'] *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-side: var(--side);
+  --color-tint: var(--tint);
+  --color-sf: var(--sf);
+  --color-el: var(--el);
+  --color-ln: var(--ln);
+  --color-tx: var(--tx);
+  --color-tx2: var(--tx2);
+  --color-tx3: var(--tx3);
+  --color-live: var(--live);
+  --color-warn: var(--warn);
+  --color-deck: var(--deck);
+  --color-err: var(--err);
+  --color-acc: var(--acc);
+  --color-acc-ink: var(--acc-ink);
+  --color-acc-soft: var(--acc-soft);
+  --color-acc-line: var(--acc-line);
+  --color-acc-fill: var(--acc-fill);
+
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --ease-ez: var(--ez);
+  --ease-spring: var(--spring);
+}
+
+/* Radius scale: kept at the sizes the screens were built with (Tailwind's defaults run 2px smaller). */
+@theme {
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+}

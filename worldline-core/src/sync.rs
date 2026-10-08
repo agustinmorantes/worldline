@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DeviceMetadata {
     pub device_uuid: Uuid,
     pub name: String,
@@ -25,6 +26,7 @@ pub struct DeviceMetadata {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum DeviceKind {
     Desktop,
     Laptop,
@@ -85,12 +87,14 @@ impl DeviceState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SyncSettings {
     pub remote_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Divergence {
     InSync,
     FastForward,
@@ -101,6 +105,7 @@ pub enum Divergence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RemoteGameSummary {
     pub uuid: Uuid,
     pub title: String,
@@ -113,6 +118,7 @@ pub struct RemoteGameSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GameSyncStatus {
     pub game_uuid: Uuid,
     /// Relation of the local active slot to the other devices.
@@ -124,6 +130,7 @@ pub struct GameSyncStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SyncReport {
     pub synced_at: DateTime<Utc>,
     pub games: Vec<GameSyncStatus>,

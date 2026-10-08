@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Queryable, Selectable, Identifiable, Serialize, Clone, PartialEq, Debug)]
 #[diesel(table_name = crate::schema::games)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Game {
     pub id: i32,
     pub uuid: String,
@@ -27,6 +28,7 @@ pub struct Game {
 
 /// What a caller may set when creating or editing a game.
 #[derive(Deserialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GameForm {
     pub id: Option<i32>,
     pub title: String,
@@ -36,6 +38,7 @@ pub struct GameForm {
 #[diesel(belongs_to(Game))]
 #[diesel(table_name = crate::schema::slots)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Slot {
     pub id: i32,
     pub uuid: String,
@@ -52,6 +55,7 @@ pub struct Slot {
 #[diesel(belongs_to(Game))]
 #[diesel(table_name = crate::schema::tracked_dirs)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct TrackedDir {
     pub id: i32,
     pub uuid: String,
@@ -68,6 +72,7 @@ pub struct TrackedDir {
 #[diesel(belongs_to(Slot))]
 #[diesel(table_name = crate::schema::versions)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Version {
     pub id: i32,
     pub uuid: String,
@@ -86,6 +91,7 @@ pub struct Version {
 
 /// Every slot's size and last activity, for picking a playthrough.
 #[derive(Serialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SlotSummary {
     pub slot_id: i32,
     /// Retired versions included.
@@ -94,6 +100,7 @@ pub struct SlotSummary {
 }
 
 #[derive(Serialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct FullGame {
     #[serde(flatten)]
     pub game: Game,
@@ -125,6 +132,7 @@ pub struct FullVersion {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MonitoringSettings {
     pub version_cooldown_minutes: u32,
     pub snapshot_debounce_seconds: f32,

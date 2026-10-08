@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{
+    image::Image,
     menu::{MenuBuilder, MenuItem, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WindowEvent,
@@ -10,6 +11,7 @@ use tauri_plugin_notification::NotificationExt;
 
 /// The tray's text, in the language the GUI shows (ADR 0007).
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "e2e", derive(serde::Serialize))]
 pub struct TrayLabels {
     pub open: String,
     pub exit: String,
@@ -48,10 +50,7 @@ pub fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
         .items(&[&open_item, &exit_item])
         .build()?;
 
-    let icon = app
-        .default_window_icon()
-        .ok_or_else(|| anyhow::anyhow!("no default window icon"))?
-        .clone();
+    let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
 
     let tray = TrayIconBuilder::new()
         .icon(icon)
@@ -129,6 +128,23 @@ pub fn set_labels(app: &AppHandle, labels: TrayLabels) -> tauri::Result<()> {
     state.tray.set_tooltip(Some(&labels.tooltip))?;
     *state.labels.lock().unwrap_or_else(|e| e.into_inner()) = labels;
     Ok(())
+}
+
+/// The tray's text as the menu and the state hold it, so the E2E tests can check it.
+#[cfg(feature = "e2e")]
+#[tauri::command]
+pub fn e2e_tray_labels(app: AppHandle) -> Result<TrayLabels, String> {
+    let state = app.state::<TrayState>();
+    let labels = state
+        .labels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    Ok(TrayLabels {
+        open: state.open_item.text().map_err(|e| e.to_string())?,
+        exit: state.exit_item.text().map_err(|e| e.to_string())?,
+        ..labels
+    })
 }
 
 fn show_window(app: &AppHandle) {

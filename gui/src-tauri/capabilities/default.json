@@ -12,7 +12,8 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "opener:default",
-    "dialog:default",
+    "store:default",
+    "log:default",
     "notification:default"
   ]
 }

@@ -10,6 +10,7 @@ const BUNDLED_MANIFEST: &[u8] = include_bytes!("../assets/manifest.yaml");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum GameSource {
     Steam,
     Epic,
@@ -18,6 +19,7 @@ pub enum GameSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct InstallScannerItem {
     pub title: String,
     pub dirs: Vec<String>,

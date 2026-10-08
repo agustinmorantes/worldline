@@ -6,6 +6,7 @@ pub(crate) mod running;
 pub mod scheduler;
 mod watcher;
 
+use crate::error::Failure;
 use crate::history::CheckpointOutcome;
 use crate::models::FullGame;
 use crate::sync::SyncReport;
@@ -32,9 +33,9 @@ pub enum Notification {
     Error(String),
     SyncStarted,
     SyncCompleted(SyncReport),
-    SyncFailed(String),
+    SyncFailed(Failure),
     HistoryPruned,
-    PruningFailed(String),
+    PruningFailed(Failure),
     // A process runs from the game's install dir, and when its last one exits.
     GameStarted { game_id: i32 },
     GameStopped { game_id: i32 },

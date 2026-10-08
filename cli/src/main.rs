@@ -313,9 +313,9 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
                 println!("Synced.");
                 print_sync_report(&report);
             }
-            Notification::SyncFailed(error) => eprintln!("Sync error: {error}"),
+            Notification::SyncFailed(error) => eprintln!("Sync error: {}", error.message),
             Notification::HistoryPruned => println!("Old versions were pruned."),
-            Notification::PruningFailed(error) => eprintln!("Pruning error: {error}"),
+            Notification::PruningFailed(error) => eprintln!("Pruning error: {}", error.message),
             Notification::GameStarted { game_id } => println!("Game {game_id} is running"),
             Notification::GameStopped { game_id } => println!("Game {game_id} stopped"),
         }

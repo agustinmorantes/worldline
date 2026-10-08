@@ -1,12 +1,17 @@
 use crate::commands::add_handlers;
 use anyhow::Context;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{App, Emitter, Manager};
 use worldline_core::detection;
 use worldline_core::{OpenOptions, WorldlineCore};
 
 pub mod commands;
+mod dialogs;
 mod tray;
+
+/// Where the app keeps its data: the index, history, icons and GUI preferences.
+pub struct DataDir(pub PathBuf);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +19,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(tauri_plugin_log::log::LevelFilter::Info)
+                .build(),
+        )
         .setup(init);
 
     let builder = add_handlers(builder);
@@ -36,6 +47,9 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .path()
         .app_local_data_dir()
         .context("failed to get app data directory")?;
+    #[cfg(feature = "e2e")]
+    let data_dir = std::env::var_os("WORLDLINE_E2E_DATA_DIR").map_or(data_dir, PathBuf::from);
+    app.manage(DataDir(data_dir.clone()));
     let (core, notifications) = WorldlineCore::open_shared(
         &data_dir,
         OpenOptions {

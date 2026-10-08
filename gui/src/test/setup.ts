@@ -8,34 +8,26 @@ afterEach(() => {
   cleanup();
 });
 
-// Mock Tauri APIs
-vi.mock('@tauri-apps/api', () => ({
+// Tauri APIs: components reach the backend through `@/ipc/commands`, which
+// tests mock per file; anything left unmocked fails loudly.
+vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
+  convertFileSrc: (path: string) => `asset://${path}`,
 }));
 
-vi.mock('@tauri-apps/plugin-dialog', () => ({
-  message: vi.fn(),
-  ask: vi.fn(),
-  confirm: vi.fn(),
-  save: vi.fn(),
-  open: vi.fn(),
+vi.mock('@tauri-apps/plugin-log', () => ({
+  error: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('@tauri-apps/plugin-opener', () => ({
-  openUrl: vi.fn(),
-}));
-
-vi.mock('@tauri-apps/api/path', () => ({
-  appLocalDataDir: vi.fn().mockResolvedValue('/mock/data/dir/'),
-}));
-
-vi.mock('framer-motion', () => ({
-  motion: new Proxy({} as Record<string, unknown>, {
+vi.mock('motion/react', () => ({
+  motion: new Proxy({}, {
     get: (_target, tag: string) =>
       ({ children, layoutId: _layoutId, ...props }: React.HTMLAttributes<HTMLElement> & { layoutId?: string }) =>
         React.createElement(tag, props, children),
   }),
   AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
+  MotionConfig: ({ children }: { children: React.ReactNode }) => children,
+  useReducedMotion: () => false,
   useAnimationControls: () => ({
     set: vi.fn(),
     start: vi.fn().mockResolvedValue(undefined),

@@ -24,6 +24,7 @@ struct ExportManifest {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BundleTrackedDir {
     pub uuid: Uuid,
     pub label: Option<String>,
@@ -31,6 +32,7 @@ pub struct BundleTrackedDir {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HistoryBundleSummary {
     pub game_uuid: Uuid,
     pub title: String,
@@ -43,6 +45,7 @@ pub struct HistoryBundleSummary {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HistoryTransferReport {
     pub game_uuid: Uuid,
     pub title: String,

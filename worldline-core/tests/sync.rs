@@ -47,6 +47,23 @@ fn remove_version_dir(remote: &Path, version_uuid: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn published_progress_is_in_sync_without_other_devices_to_compare() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let game_a = a.add_game("Alone");
+    let uuid = uuid_of(&game_a);
+    assert_eq!(relation(&a, uuid).0, Divergence::InSync);
+
+    // Ahead of a device that hasn't caught up yet, but published.
+    let b = Device::synced(remote.path());
+    b.core.adopt_remote_game(uuid).unwrap();
+    a.write("save.dat", "2");
+    a.checkpoint(game_a.game.id);
+    assert_eq!(relation(&a, uuid).0, Divergence::InSync);
+}
+
+#[test]
 fn adoption_fast_forward_and_divergence() {
     let remote = tempfile::tempdir().unwrap();
     let a = Device::synced(remote.path());
@@ -1008,9 +1025,18 @@ fn an_unreachable_remote_is_reported_and_capture_still_works() {
     let device = Device::new();
     device.write("save.dat", "1");
     let (core, rx) = open_running(device.data.path(), Some(&missing));
-    wait_for(&rx, "the failure report", |n| {
-        matches!(n, Notification::SyncFailed(_))
-    });
+    let unreachable = Some(ErrorKind::SyncFolderUnreachable);
+    wait_for(
+        &rx,
+        "the failure report",
+        |n| matches!(n, Notification::SyncFailed(failure) if failure.kind == unreachable),
+    );
+    // Pruning bails on the same folder; front ends tell it apart by its kind.
+    wait_for(
+        &rx,
+        "the pruning failure",
+        |n| matches!(n, Notification::PruningFailed(failure) if failure.kind == unreachable),
+    );
     fs::create_dir_all(device.save_dir()).unwrap();
     let game = core
         .save_game(
