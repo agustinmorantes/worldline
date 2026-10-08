@@ -61,7 +61,7 @@ export const es: Messages = {
     timelineView: 'Vista de la línea temporal',
     sessionsView: 'Sesiones',
     graphView: 'Gráfico',
-    played: (duration) => `~${duration}`,
+    played: (duration) => (duration.startsWith('<') ? duration : `~${duration}`),
     playedSub: (sessions) =>
       `jugado · ${plural('es', sessions, { one: '# sesión', other: '# sesiones' })}`,
     nothingYet: 'nada todavía',
@@ -173,7 +173,7 @@ export const es: Messages = {
     today: 'Hoy',
     yesterday: 'Ayer',
     duration: (hours, minutes) =>
-      hours === 0 && minutes === 0 ? 'un momento' : hours === 0 ? `${minutes.toString()} min` : `${hours.toString()} h ${minutes.toString().padStart(2, '0')} min`,
+      hours === 0 && minutes === 0 ? '<1 min' : hours === 0 ? `${minutes.toString()} min` : `${hours.toString()} h ${minutes.toString().padStart(2, '0')} min`,
     listLabel: 'Línea temporal. Las flechas recorren los puntos de control.',
     autosave: 'Autoguardado',
     cleanedUp: 'Limpiado',

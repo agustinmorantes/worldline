@@ -63,7 +63,7 @@ export const en = {
     timelineView: 'Timeline view',
     sessionsView: 'Sessions',
     graphView: 'Graph',
-    played: (duration: string): string => `~${duration}`,
+    played: (duration: string): string => (duration.startsWith('<') ? duration : `~${duration}`),
     playedSub: (sessions: number): string =>
       `played · ${plural('en', sessions, { one: '# session', other: '# sessions' })}`,
     nothingYet: 'nothing yet',
@@ -175,7 +175,7 @@ export const en = {
     today: 'Today',
     yesterday: 'Yesterday',
     duration: (hours: number, minutes: number): string =>
-      hours === 0 && minutes === 0 ? 'a moment' : hours === 0 ? `${minutes.toString()}m` : `${hours.toString()}h ${minutes.toString().padStart(2, '0')}m`,
+      hours === 0 && minutes === 0 ? '<1m' : hours === 0 ? `${minutes.toString()}m` : `${hours.toString()}h ${minutes.toString().padStart(2, '0')}m`,
     listLabel: 'Timeline. Arrow keys move between checkpoints.',
     autosave: 'Autosave',
     cleanedUp: 'Cleaned up',
