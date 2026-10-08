@@ -1,8 +1,8 @@
 -- Index over the history store (ADR 0001, ADR 0004). Everything except the
--- device-local columns (active pointers, icon_path) and scan_roots can be
--- rebuilt from the repository files. Only UUIDs are unique: title, slot-name
--- and path uniqueness is enforced on local edits, so synced data never fails
--- an insert.
+-- device-local columns (active pointers) and scan_roots can be rebuilt from
+-- the repository files; icon_path is the local store's copy of the game icon
+-- (ADR 0005). Only UUIDs are unique: title, slot-name and path uniqueness is
+-- enforced on local edits, so synced data never fails an insert.
 CREATE TABLE games (
     id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     uuid TEXT NOT NULL UNIQUE,
@@ -11,6 +11,8 @@ CREATE TABLE games (
     folder_slug TEXT NOT NULL,
     active_slot_id INTEGER REFERENCES slots(id) ON DELETE SET NULL,
     icon_path TEXT,
+    accent_hue INTEGER NOT NULL,
+    accent_hue_source TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );

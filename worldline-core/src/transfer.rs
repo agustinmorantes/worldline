@@ -3,7 +3,8 @@
 //! parent ordering, chunk closure, verification and publication.
 
 use crate::chunks;
-use crate::store::{GameRecord, RetirementMarker, Store, VersionMeta, format_hash};
+use crate::icon;
+use crate::store::{GameMeta, GameRecord, RetirementMarker, Store, VersionMeta, format_hash};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -86,8 +87,26 @@ impl<'a> Transfer<'a> {
                         .with_context(|| format!("version {} is incomplete", version.uuid))?;
                 }
             }
+            if let Some(wanted) = &game.meta.icon_sha256
+                && self.src_icon(&game.meta)?.is_none()
+            {
+                bail!("the icon {wanted} of '{}' is missing", game.meta.title);
+            }
+        }
+        // The icon travels before the metadata naming it, when that metadata
+        // will win; afterwards whatever metadata won gets its icon if `src`
+        // has it (an icon that hasn't arrived yet is healed on a later run).
+        let wins = self
+            .dst
+            .game_meta(slug)?
+            .is_none_or(|existing| game.meta.updated_at > existing.updated_at);
+        if wins {
+            self.copy_icon(&game.meta)?;
         }
         self.dst.write_game(&game.meta)?;
+        if let Some(stored) = self.dst.game_meta(slug)? {
+            self.copy_icon(&stored)?;
+        }
         for dir in &game.tracked_dirs {
             self.dst.write_tracked_dir(slug, dir)?;
         }
@@ -168,6 +187,36 @@ impl<'a> Transfer<'a> {
             }
         }
         Ok(present)
+    }
+
+    /// `src`'s icon of the game when it is the one `meta` names.
+    fn src_icon(&self, meta: &GameMeta) -> Result<Option<Vec<u8>>> {
+        let Some(wanted) = &meta.icon_sha256 else {
+            return Ok(None);
+        };
+        Ok(self
+            .src
+            .read_icon(&meta.folder_slug)?
+            .filter(|png| icon::sha256(png) == *wanted))
+    }
+
+    /// Gives `dst` the icon `meta` names, when `src` has it. Tombstoned games
+    /// need none.
+    fn copy_icon(&self, meta: &GameMeta) -> Result<()> {
+        if meta.deleted_at.is_some() {
+            return Ok(());
+        }
+        let Some(wanted) = &meta.icon_sha256 else {
+            return Ok(());
+        };
+        let present = self.dst.read_icon(&meta.folder_slug)?;
+        if present.is_some_and(|png| icon::sha256(&png) == *wanted) {
+            return Ok(());
+        }
+        match self.src_icon(meta)? {
+            Some(png) => self.dst.write_icon(&meta.folder_slug, &png),
+            None => Ok(()),
+        }
     }
 
     fn copy_chunks(&mut self, version: &VersionMeta) -> Result<()> {
@@ -258,6 +307,9 @@ mod tests {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            icon_sha256: None,
+            accent_hue: None,
+            accent_hue_source: Default::default(),
         };
         let slot_uuid = Uuid::new_v4();
         let slot = SlotMeta {

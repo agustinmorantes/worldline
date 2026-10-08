@@ -4,7 +4,7 @@
 
 use crate::models::*;
 use crate::schema::{games, scan_roots, slots, tracked_dirs, versions};
-use crate::store::{GameRecord, normalize_display_name};
+use crate::store::{GameRecord, Store, normalize_display_name};
 use anyhow::{Context, Result};
 use diesel::SqliteConnection;
 use diesel::prelude::*;
@@ -38,11 +38,16 @@ impl Index {
             .context("failed to get a database connection")
     }
 
-    /// Projects one game from its files. Device-local columns (active
-    /// pointers, icon) are kept; a tombstoned game is removed.
-    pub fn upsert_game(&self, record: &GameRecord, retired: &HashSet<Uuid>) -> Result<()> {
+    /// Projects one game from its files in `store`. Device-local columns
+    /// (active pointers) are kept; a tombstoned game is removed.
+    pub fn upsert_game(
+        &self,
+        record: &GameRecord,
+        retired: &HashSet<Uuid>,
+        store: &Store,
+    ) -> Result<()> {
         let conn = &mut self.conn()?;
-        conn.transaction(|conn| upsert_game(conn, record, retired))
+        conn.transaction(|conn| upsert_game(conn, record, retired, store))
     }
 
     pub fn remove_game(&self, uuid: Uuid) -> Result<()> {
@@ -52,7 +57,12 @@ impl Index {
     }
 
     /// Rebuilds the projection of every game from the catalog.
-    pub fn reindex(&self, catalog: &[GameRecord], retired: &HashSet<Uuid>) -> Result<()> {
+    pub fn reindex(
+        &self,
+        catalog: &[GameRecord],
+        retired: &HashSet<Uuid>,
+        store: &Store,
+    ) -> Result<()> {
         let conn = &mut self.conn()?;
         conn.transaction(|conn| {
             let live: Vec<String> = catalog
@@ -62,7 +72,7 @@ impl Index {
                 .collect();
             diesel::delete(games::table.filter(games::uuid.ne_all(&live))).execute(conn)?;
             for record in catalog {
-                upsert_game(conn, record, retired)?;
+                upsert_game(conn, record, retired, store)?;
             }
             Ok(())
         })
@@ -232,13 +242,6 @@ impl Index {
             .collect()
     }
 
-    pub fn set_icon(&self, game_id: i32, icon_path: Option<&str>) -> Result<()> {
-        diesel::update(games::table.find(game_id))
-            .set(games::icon_path.eq(icon_path))
-            .execute(&mut self.conn()?)?;
-        Ok(())
-    }
-
     pub fn retired_version_uuids(&self) -> Result<Vec<String>> {
         Ok(versions::table
             .filter(versions::retired.eq(true))
@@ -324,18 +327,34 @@ fn upsert_game(
     conn: &mut SqliteConnection,
     record: &GameRecord,
     retired: &HashSet<Uuid>,
+    store: &Store,
 ) -> Result<()> {
     let meta = &record.meta;
     if meta.deleted_at.is_some() {
         diesel::delete(games::table.filter(games::uuid.eq(meta.uuid.to_string()))).execute(conn)?;
         return Ok(());
     }
+    // An icon that hasn't arrived yet is shown once it has.
+    let icon_path = meta
+        .icon_sha256
+        .as_ref()
+        .map(|_| store.icon_path(&meta.folder_slug))
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned());
+    let accent_hue = i32::from(
+        meta.accent_hue
+            .unwrap_or_else(|| crate::icon::fallback_hue(meta.uuid)),
+    );
+    let accent_hue_source = meta.accent_hue_source.as_str();
     let game_id: i32 = diesel::insert_into(games::table)
         .values((
             games::uuid.eq(meta.uuid.to_string()),
             games::title.eq(&meta.title),
             games::title_normalized.eq(normalize_display_name(&meta.title)),
             games::folder_slug.eq(&meta.folder_slug),
+            games::icon_path.eq(&icon_path),
+            games::accent_hue.eq(accent_hue),
+            games::accent_hue_source.eq(accent_hue_source),
             games::created_at.eq(meta.created_at.naive_utc()),
             games::updated_at.eq(meta.updated_at.naive_utc()),
         ))
@@ -345,6 +364,9 @@ fn upsert_game(
             games::title.eq(&meta.title),
             games::title_normalized.eq(normalize_display_name(&meta.title)),
             games::folder_slug.eq(&meta.folder_slug),
+            games::icon_path.eq(&icon_path),
+            games::accent_hue.eq(accent_hue),
+            games::accent_hue_source.eq(accent_hue_source),
             games::updated_at.eq(meta.updated_at.naive_utc()),
         ))
         .returning(games::id)

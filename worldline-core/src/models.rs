@@ -15,7 +15,12 @@ pub struct Game {
     pub title_normalized: String,
     pub folder_slug: String,
     pub active_slot_id: Option<i32>,
+    /// The local copy of the game's icon, once it has arrived.
     pub icon_path: Option<String>,
+    /// The accent hue to show (0–359): the stored one, or the UUID fallback.
+    pub accent_hue: i32,
+    /// `auto` (from the icon) or `user`.
+    pub accent_hue_source: String,
 }
 
 /// What a caller may set when creating or editing a game.
