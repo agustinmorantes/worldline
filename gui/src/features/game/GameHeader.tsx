@@ -96,8 +96,7 @@ function ViewToggle({ view, onView }: { view: GameView; onView: (view: GameView)
       <button type="button" aria-pressed={view === 'sessions'} aria-label={t.game.sessionsView} title={t.game.sessionsView} className={button} onClick={() => { onView('sessions'); }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M4 6h9M4 12h16M4 18h6" /></svg>
       </button>
-      {/* The graph arrives in P3. */}
-      <button type="button" disabled aria-pressed={view === 'graph'} aria-label={t.game.graphView} title={t.game.graphView} className={button} onClick={() => { onView('graph'); }}>
+      <button type="button" aria-pressed={view === 'graph'} aria-label={t.game.graphView} title={t.game.graphView} className={button} onClick={() => { onView('graph'); }}>
         <svg width="17" height="17" viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" aria-hidden="true" style={{ rotate: '-90deg' }}>
           <path d="M10 32 L26 32 M26 32 C 36 32 40 18 52 18 M26 32 C 36 32 40 46 52 46" />
           <circle cx="52" cy="18" r="3.4" fill="currentColor" stroke="none" />

@@ -1,14 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { type ReactElement, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { useGame, useRetiredVersions, useSyncReport, useSyncSettings } from '@/features/library/queries';
 import { useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { GameHeader, type GameView } from '@/features/game/GameHeader';
 import { checkpointDevice, pendingRemoteVersion, syncChip } from '@/features/game/game-view';
 import { CheckpointPanel } from '@/features/sessions/CheckpointPanel';
-import { formatDuration, SessionList } from '@/features/sessions/SessionList';
+import { SessionList } from '@/features/sessions/SessionList';
+import { EmptyGame, formatDuration, GhostRow, TimelineFrame } from '@/features/sessions/Timeline';
+import { GraphView } from '@/features/graph/GraphView';
+import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
 import { useDevice, useMonitoringSettings } from '@/features/sessions/queries';
-import { layoutSessions, playedMs, sessionGapMs } from '@/features/sessions/sessions';
+import { layoutSessions, navOrder, playedMs, sessionGapMs } from '@/features/sessions/sessions';
 import type { Version } from '@/ipc/bindings/Version';
 import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
@@ -68,6 +72,10 @@ export function GameDetail(): ReactElement {
   const layout = useMemo(
     () => layoutSessions({ versions, activeId, gapMs, pendingId }),
     [versions, activeId, gapMs, pendingId],
+  );
+  const graph = useMemo(
+    () => (search.view === 'graph' ? layoutGraph({ versions, mine: layout.lineage, gapMs }) : null),
+    [search.view, versions, layout, gapMs],
   );
 
   if (isLoading) return <GameDetailSkeleton />;
@@ -176,6 +184,9 @@ export function GameDetail(): ReactElement {
   }
 
   const drawer = search.v !== undefined;
+  const selectedId = selected?.id ?? null;
+  const onSelect = (v: number): void => { select(v === activeId ? undefined : v); };
+  const order = graph === null ? navOrder(layout, openForks) : graphNavOrder(graph, versions);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -195,22 +206,59 @@ export function GameDetail(): ReactElement {
         onCreateSlot={() => { void slotChange(() => createSlot(game.id, t.game.playthroughName(game.slots.length + 1)), t.game.failed.newSlot); }}
       />
       <div className="flex min-h-0 flex-1 gap-4 px-8">
-        <SessionList
-          game={game}
-          layout={layout}
-          versions={versions}
-          gapMs={gapMs}
-          activeId={activeId}
-          selectedId={selected?.id ?? null}
-          onSelect={(v) => { select(v === activeId ? undefined : v); }}
-          openForks={openForks}
-          onToggleFork={toggleFork}
-          deviceOf={deviceOf}
-          ghost={pendingId === null ? null : { onContinue: () => { void continueHere(); }, busy }}
-          rewinding={rewinding}
-          landedId={landedId}
-          now={now}
-        />
+        {versions.length === 0 ? (
+          <EmptyGame title={game.title} />
+        ) : (
+          <TimelineFrame order={order} selectedId={selectedId} activeId={activeId} onSelect={onSelect} rewinding={rewinding}>
+            <AnimatePresence initial={false}>
+              {layout.ghost !== null && pendingId !== null && (
+                <GhostRow
+                  key="ghost"
+                  versions={layout.ghost}
+                  device={deviceOf(layout.ghost[0])}
+                  onContinue={() => { void continueHere(); }}
+                  busy={busy}
+                  now={now}
+                />
+              )}
+            </AnimatePresence>
+            {/* The old view stays for its exit, out of the flow, so its dots hand over to the new ones and fly. */}
+            <AnimatePresence mode="popLayout" initial={false}>
+              {graph === null ? (
+                <motion.div key="sessions" exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+                  <SessionList
+                    game={game}
+                    layout={layout}
+                    versions={versions}
+                    gapMs={gapMs}
+                    activeId={activeId}
+                    selectedId={selectedId}
+                    onSelect={onSelect}
+                    openForks={openForks}
+                    onToggleFork={toggleFork}
+                    deviceOf={deviceOf}
+                    landedId={landedId}
+                    now={now}
+                  />
+                </motion.div>
+              ) : (
+                <motion.div key="graph" exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+                  <GraphView
+                    game={game}
+                    graph={graph}
+                    versions={versions}
+                    activeId={activeId}
+                    selectedId={selectedId}
+                    onSelect={onSelect}
+                    deviceOf={deviceOf}
+                    landedId={landedId}
+                    now={now}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </TimelineFrame>
+        )}
         {selected !== null && (
           <aside
             aria-label={t.checkpoint.panel}

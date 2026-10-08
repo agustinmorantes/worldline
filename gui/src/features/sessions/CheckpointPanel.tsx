@@ -10,7 +10,7 @@ import { formatRelative, formatTime, useLocale, useT } from '@/shared/i18n';
 import { ease } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { HoldButton } from './HoldButton';
-import { formatDuration } from './SessionList';
+import { formatDuration } from './Timeline';
 import { timeOf } from './sessions';
 
 export function CheckpointPanel({ game, version, active, onLine, device, lessPlayMs, aheadDevice, busy, onName, onRewind, onClose, now }: {

@@ -71,7 +71,8 @@ export function trackPosition(version: Version, session: Version[]): number {
   return (timeOf(version) - first) / Math.max(1, timeOf(session[session.length - 1]) - first);
 }
 
-const startOfDay =(date: Date): number => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+/** Local midnight of `date`, as a timestamp. */
+export const startOfDay = (date: Date): number => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 
 /** Calendar days from `date` to `now`, in local time. */
 function daysAgo(date: Date, now: Date): number {
