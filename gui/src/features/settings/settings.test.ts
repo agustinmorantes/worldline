@@ -84,6 +84,13 @@ describe('formatting', () => {
     expect(formatBytes(1_234_000_000, 'es')).toBe('1,2 GB');
   });
 
+  it('writes plain bytes as B, zero included', () => {
+    expect(formatBytes(0, 'en')).toBe('0 B');
+    expect(formatBytes(5, 'en')).toBe('5 B');
+    expect(formatBytes(999, 'en')).toBe('999 B');
+    expect(formatBytes(999, 'es')).toBe('999 B');
+  });
+
   it('names the OS', () => {
     expect(osName('windows')).toBe('Windows');
     expect(osName('freebsd')).toBe('freebsd');

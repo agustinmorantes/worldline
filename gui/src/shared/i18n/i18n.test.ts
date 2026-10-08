@@ -65,6 +65,13 @@ describe('dates', () => {
     expect(formatRelative(new Date('2026-10-07T09:00:00Z'), 'es', now)).toBe('hace 3 horas');
   });
 
+  it('reads future and sub-minute times as just now', () => {
+    expect(formatRelative(new Date('2026-10-07T12:00:08Z'), 'en', now)).toBe('just now');
+    expect(formatRelative(new Date('2026-10-07T11:59:01Z'), 'en', now)).toBe('just now');
+    expect(formatRelative(new Date('2026-10-07T11:58:59Z'), 'en', now)).toBe('1 minute ago');
+    expect(formatRelative(new Date('2026-10-07T12:00:08Z'), 'es', now)).toBe('hace un momento');
+  });
+
   it('maps locales to date-fns locales', () => {
     expect(dateFnsLocale('en').code).toBe('en-US');
     expect(dateFnsLocale('es').code).toBe('es');

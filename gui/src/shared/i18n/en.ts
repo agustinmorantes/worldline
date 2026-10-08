@@ -5,6 +5,8 @@ import { plural } from './plural';
 export const en = {
   common: {
     checkpoints: (count: number): string => plural('en', count, { one: '# checkpoint', other: '# checkpoints' }),
+    /** A relative time under a minute, mid-sentence: "Synced just now". */
+    justNow: 'just now',
   },
   errors: {
     loadFailed: 'Couldn’t load this. Try again in a moment.',
@@ -224,6 +226,7 @@ export const en = {
     forgetHint: 'Other timelines you haven’t named or played since',
     off: 'Off',
     wouldFree: (size: string): string => `Would free about ${size}`,
+    nothingToClean: 'Nothing to clean up',
     freed: (size: string): string => `Freed ${size} · named checkpoints kept`,
     cleanUpNow: 'Clean up now',
     cloud: 'Cloud',

@@ -1,12 +1,15 @@
 // What history is kept: the retention tiers on a ruler, a live estimate of what a cleanup
 // would free, and the cleanup itself.
+import { AnimatePresence, motion } from 'motion/react';
 import { type ReactElement, useState } from 'react';
 import type { RetentionSettings } from '@/ipc/bindings/RetentionSettings';
 import { runPruning, updatePruningSettings } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { reportError } from '@/shared/errors/report';
 import { type Messages, useLocale, useT } from '@/shared/i18n';
+import { duration, ease, useMotionReduced } from '@/shared/motion/motion';
 import { btnQuiet } from '@/shared/ui/classes';
+import { cn } from '@/shared/ui/utils';
 import { Card, Stepper, Toggle } from './controls';
 import { saveNow, usePruningPreview, useRetention } from './queries';
 import { FORGET_DAYS, formatBytes, freedBytes, ruler, step, stepForget, stepTier, TIER_STEPS, type TierKey, type Tiers } from './settings';
@@ -38,6 +41,7 @@ export function KeepSection(): ReactElement {
   /** What the last "Clean up now" freed, until the settings change. */
   const [freed, setFreed] = useState<number | null>(null);
   const [cleaning, setCleaning] = useState(false);
+  const reduced = useMotionReduced();
 
   const change = (next: RetentionSettings): void => {
     setFreed(null);
@@ -63,9 +67,12 @@ export function KeepSection(): ReactElement {
   if (settings === undefined) return <Card title={t.settings.keep}>{null}</Card>;
 
   const forget = settings.branch_expiry_days;
-  const result = freed !== null
-    ? t.settings.freed(formatBytes(freed, locale))
-    : preview.data !== undefined ? t.settings.wouldFree(formatBytes(freedBytes(preview.data), locale)) : '';
+  const estimate = preview.data !== undefined ? freedBytes(preview.data) : null;
+  // Zero reads as "nothing to clean up", never "about 0 B", and there's nothing for the button to do.
+  const bytes = freed ?? estimate;
+  const result = bytes === null ? ''
+    : bytes === 0 ? t.settings.nothingToClean
+    : freed !== null ? t.settings.freed(formatBytes(freed, locale)) : t.settings.wouldFree(formatBytes(bytes, locale));
 
   return (
     <Card title={t.settings.keep}>
@@ -101,10 +108,24 @@ export function KeepSection(): ReactElement {
         />
       </div>
       <div className="mt-5 flex items-center gap-3.5">
-        <button type="button" className={btnQuiet} disabled={cleaning} onClick={() => { void cleanUp(); }}>
+        <button type="button" className={cn(btnQuiet, 'transition-[background-color,color,transform,opacity]')} disabled={cleaning || estimate === 0} onClick={() => { void cleanUp(); }}>
           {t.settings.cleanUpNow}
         </button>
-        <span aria-live="polite" className="text-[13px] text-tx2">{result}</span>
+        {/* The old line fades out as the new one fades in, in the same spot. */}
+        <span aria-live="polite" className="grid text-[13px] text-tx2">
+          <AnimatePresence initial={false}>
+            <motion.span
+              key={result}
+              className="col-start-1 row-start-1"
+              initial={reduced ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={reduced ? undefined : { opacity: 0 }}
+              transition={{ duration: reduced ? 0 : duration.base, ease }}
+            >
+              {result}
+            </motion.span>
+          </AnimatePresence>
+        </span>
       </div>
     </Card>
   );

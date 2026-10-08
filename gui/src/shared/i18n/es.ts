@@ -4,6 +4,7 @@ import { plural } from './plural';
 export const es: Messages = {
   common: {
     checkpoints: (count) => plural('es', count, { one: '# punto de control', other: '# puntos de control' }),
+    justNow: 'hace un momento',
   },
   errors: {
     loadFailed: 'No se pudo cargar. Inténtalo de nuevo en un momento.',
@@ -223,6 +224,7 @@ export const es: Messages = {
     forgetHint: 'Otras líneas temporales que no nombraste ni jugaste desde entonces',
     off: 'Nunca',
     wouldFree: (size) => `Liberaría unos ${size}`,
+    nothingToClean: 'No hay nada que limpiar',
     freed: (size) => `Se liberaron ${size} · los puntos de control con nombre se conservan`,
     cleanUpNow: 'Limpiar ahora',
     cloud: 'Nube',
