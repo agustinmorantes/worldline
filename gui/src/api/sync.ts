@@ -14,7 +14,7 @@ export async function getDevice(): Promise<DeviceMetadata> {
 }
 
 export async function updateDeviceName(name: string): Promise<DeviceMetadata> {
-  return DeviceMetadataSchema.parse(await invoke('update_device_name', { name }));
+  return DeviceMetadataSchema.parse(await invoke('update_device', { name, kind: null }));
 }
 
 export async function getSyncSettings(): Promise<SyncSettings> {

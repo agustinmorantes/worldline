@@ -6,6 +6,7 @@ use crate::models::*;
 use crate::schema::{games, scan_roots, slots, tracked_dirs, versions};
 use crate::store::{GameRecord, normalize_display_name};
 use anyhow::{Context, Result};
+use chrono::NaiveDateTime;
 use diesel::SqliteConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
@@ -82,6 +83,7 @@ impl Index {
             .order_by((slots::created_at, slots::id))
             .select(Slot::as_select())
             .load(conn)?;
+        let summaries = slot_summaries(conn, &all_slots)?;
         let active_slot_ids: Vec<i32> = all.iter().filter_map(|g| g.active_slot_id).collect();
         let active_versions: Vec<Version> = versions::table
             .filter(versions::slot_id.eq_any(&active_slot_ids))
@@ -105,7 +107,7 @@ impl Index {
                     .active_slot_id
                     .and_then(|id| versions_by_slot.remove(&id))
                     .unwrap_or_default();
-                full_game(game, dirs, slots, versions)
+                full_game(game, dirs, slots, versions, &summaries)
             })
             .collect())
     }
@@ -129,7 +131,8 @@ impl Index {
             Some(slot_id) => slot_versions(conn, slot_id)?,
             None => Vec::new(),
         };
-        Ok(full_game(game, dirs, slots, versions))
+        let summaries = slot_summaries(conn, &slots)?;
+        Ok(full_game(game, dirs, slots, versions, &summaries))
     }
 
     pub fn get_slot(&self, id: i32) -> Result<FullSlot> {
@@ -292,12 +295,42 @@ fn slot_versions(conn: &mut SqliteConnection, slot_id: i32) -> Result<Vec<Versio
         .load(conn)?)
 }
 
+/// Version count and newest `created_at` per slot, in one grouped query.
+fn slot_summaries(
+    conn: &mut SqliteConnection,
+    slots: &[Slot],
+) -> Result<HashMap<i32, (i64, Option<NaiveDateTime>)>> {
+    use diesel::dsl::{count_star, max};
+    let ids: Vec<i32> = slots.iter().map(|slot| slot.id).collect();
+    let rows: Vec<(i32, i64, Option<NaiveDateTime>)> = versions::table
+        .filter(versions::slot_id.eq_any(&ids))
+        .group_by(versions::slot_id)
+        .select((versions::slot_id, count_star(), max(versions::created_at)))
+        .load(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|(slot_id, count, last)| (slot_id, (count, last)))
+        .collect())
+}
+
 fn full_game(
     game: Game,
     tracked_dirs: Vec<TrackedDir>,
     slots: Vec<Slot>,
     versions: Vec<Version>,
+    summaries: &HashMap<i32, (i64, Option<NaiveDateTime>)>,
 ) -> FullGame {
+    let slot_summaries = slots
+        .iter()
+        .map(|slot| {
+            let (count, last) = summaries.get(&slot.id).copied().unwrap_or((0, None));
+            SlotSummary {
+                slot_id: slot.id,
+                version_count: i32::try_from(count).unwrap_or(i32::MAX),
+                last_created_at: last,
+            }
+        })
+        .collect();
     let active_slot = slots
         .iter()
         .find(|s| Some(s.id) == game.active_slot_id)
@@ -314,6 +347,7 @@ fn full_game(
         game,
         tracked_dirs,
         slots,
+        slot_summaries,
         active_slot,
         versions,
         last_version,
@@ -441,6 +475,7 @@ fn upsert_game(
                     }
                 };
                 let is_retired = retired.contains(&version.uuid);
+                let origin_device = version.origin_device.map(|uuid| uuid.to_string());
                 let id: i32 = diesel::insert_into(versions::table)
                     .values((
                         versions::uuid.eq(version.uuid.to_string()),
@@ -452,6 +487,7 @@ fn upsert_game(
                         versions::tag.eq(&version.tag),
                         versions::retired.eq(is_retired),
                         versions::created_at.eq(version.created_at.naive_utc()),
+                        versions::origin_device.eq(&origin_device),
                     ))
                     .on_conflict(versions::uuid)
                     .do_update()
@@ -459,6 +495,7 @@ fn upsert_game(
                         versions::parent_id.eq(parent_id),
                         versions::tag.eq(&version.tag),
                         versions::retired.eq(is_retired),
+                        versions::origin_device.eq(&origin_device),
                     ))
                     .returning(versions::id)
                     .get_result(conn)?;

@@ -62,6 +62,7 @@ diesel::table! {
         tag -> Nullable<Text>,
         retired -> Bool,
         created_at -> Timestamp,
+        origin_device -> Nullable<Text>,
     }
 }
 

@@ -73,6 +73,17 @@ pub struct Version {
     /// Pruned: the graph node remains but its content is not restorable.
     pub retired: bool,
     pub created_at: NaiveDateTime,
+    /// UUID of the device that created it, when known.
+    pub origin_device: Option<String>,
+}
+
+/// Every slot's size and last activity, for picking a playthrough.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+pub struct SlotSummary {
+    pub slot_id: i32,
+    /// Retired versions included.
+    pub version_count: i32,
+    pub last_created_at: Option<NaiveDateTime>,
 }
 
 #[derive(Serialize, Clone, PartialEq, Debug)]
@@ -82,6 +93,8 @@ pub struct FullGame {
     /// Live (non-retired) tracked directories.
     pub tracked_dirs: Vec<TrackedDir>,
     pub slots: Vec<Slot>,
+    /// One per slot, in the order of `slots`.
+    pub slot_summaries: Vec<SlotSummary>,
     pub active_slot: Option<Slot>,
     /// Versions of the active slot, newest first.
     pub versions: Vec<Version>,

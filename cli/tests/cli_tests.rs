@@ -256,10 +256,16 @@ fn end_to_end_across_two_data_dirs() {
             .assert()
             .success();
     }
+    cli(a.path())
+        .args(["devices", "set", "--name", "Deck", "--kind", "handheld"])
+        .assert()
+        .success()
+        .stdout(contains("This device: Deck (handheld)"));
     cli(a.path()).arg("sync").assert().success();
     let status = stdout(b.path(), &["sync", "status"]);
     assert!(
-        status.contains("Journey") && status.contains("Not tracked here"),
+        status.contains("Journey")
+            && status.contains("Not tracked here; 2 version(s), last played on Deck"),
         "{status}"
     );
     let uuid = status.lines().find(|l| l.contains("Journey")).unwrap();
@@ -274,7 +280,8 @@ fn end_to_end_across_two_data_dirs() {
         .args(["devices", "list"])
         .assert()
         .success()
-        .stdout(contains("last seen"));
+        .stdout(contains("Deck ("))
+        .stdout(contains("), handheld — last seen"));
 
     cli(a.path())
         .args([

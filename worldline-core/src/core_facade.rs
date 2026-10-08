@@ -8,7 +8,7 @@ use crate::models::*;
 use crate::restore;
 use crate::store::{self, GameRecord, Store, VersionReason, read_json, write_json};
 use crate::sync::{
-    self, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
+    self, DeviceKind, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
 };
 use crate::sync_loop::{SyncLoop, Trigger};
 use crate::transfer::{Completeness, Heal, Transfer};
@@ -699,13 +699,15 @@ impl WorldlineCore {
             .clone()
     }
 
-    pub fn update_device_name(&self, name: &str) -> Result<DeviceMetadata> {
+    /// Sets this device's name and kind together; both are published with it.
+    pub fn update_device(&self, name: &str, kind: Option<DeviceKind>) -> Result<DeviceMetadata> {
         let name = name.trim();
         if name.is_empty() {
             bail!("Device name cannot be empty");
         }
         let mut device = self.device.write().unwrap_or_else(|e| e.into_inner());
         device.name = name.to_string();
+        device.kind = kind;
         sync::save_device(&self.data_dir, &device)?;
         Ok(device.clone())
     }
@@ -1546,6 +1548,18 @@ impl WorldlineCore {
                     installed: installed_titles
                         .contains_key(&store::normalize_display_name(&g.meta.title)),
                     adopted: local.contains(&g.meta.uuid.to_string()),
+                    source_device: g
+                        .versions()
+                        .max_by_key(|v| v.created_at)
+                        .and_then(|v| v.origin_device)
+                        .and_then(|origin| {
+                            remote
+                                .devices
+                                .iter()
+                                .find(|d| d.device_uuid == origin)
+                                .map(|d| d.name.clone())
+                        }),
+                    version_count: g.versions().count(),
                 })
                 .collect(),
             devices: remote.devices.clone(),
