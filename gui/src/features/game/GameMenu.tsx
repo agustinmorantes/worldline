@@ -222,6 +222,7 @@ export function GameMenu({ game, inCloud }: {
               disabled={false}
               danger
               icon={<Trash2 size={15} strokeWidth={2.4} aria-hidden="true" />}
+              className="mt-0 h-[38px] flex-1 rounded-xl text-sm"
               onComplete={() => { void leave(() => deleteGame(game.id), (games) => games.filter((g) => g.uuid !== game.uuid), t.game.failed.delete); }}
             />
           </DialogFooter>

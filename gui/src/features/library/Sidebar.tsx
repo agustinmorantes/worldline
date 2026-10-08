@@ -194,7 +194,7 @@ function StatusLine({ status }: { status: GameStatus }): ReactElement {
       >
         {recording && <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-live [animation:blink_1.4s_ease-in-out_infinite]" />}
         {fromDevice && <DeviceGlyph kind="handheld" />}
-        {text}
+        <span className="truncate">{text}</span>
       </motion.span>
     </AnimatePresence>
   );

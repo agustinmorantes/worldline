@@ -105,12 +105,16 @@ test.describe('cloud folder unavailable', () => {
     const cloud = page.getByRole('region', { name: 'Cloud' });
     await expect(cloud.getByRole('status')).toContainText('Cloud folder not available');
     await expect(cloud.getByRole('status')).toContainText('Check that your cloud app is running');
+    // Counted once, not with a retrying assertion: toasts vanish on their own within its timeout.
+    await page.waitForTimeout(500);
+    expect(await page.locator('[data-sonner-toast]').count()).toBe(0);
 
     await card.click();
     await expect(card).toContainText('Cloud folder not available');
     await cloud.getByRole('button', { name: 'Sync now' }).click();
     await expect(cloud.getByRole('status')).toBeVisible();
-    await expect(page.getByText('Couldn’t sync.')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(await page.locator('[data-sonner-toast]').count()).toBe(0);
   });
 });
 
