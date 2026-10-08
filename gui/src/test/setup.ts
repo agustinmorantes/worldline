@@ -20,13 +20,14 @@ vi.mock('@tauri-apps/plugin-log', () => ({
 }));
 
 vi.mock('motion/react', () => ({
-  motion: new Proxy({} as Record<string, unknown>, {
+  motion: new Proxy({}, {
     get: (_target, tag: string) =>
       ({ children, layoutId: _layoutId, ...props }: React.HTMLAttributes<HTMLElement> & { layoutId?: string }) =>
         React.createElement(tag, props, children),
   }),
   AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
   MotionConfig: ({ children }: { children: React.ReactNode }) => children,
+  useReducedMotion: () => false,
   useAnimationControls: () => ({
     set: vi.fn(),
     start: vi.fn().mockResolvedValue(undefined),

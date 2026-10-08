@@ -48,7 +48,8 @@ type TourStep = Extract<OnboardingStep, "tour-add-game" | "tour-import-games">;
 const SLIDE_ORDER: SlideStep[] = ["slide-1", "slide-2", "slide-3", "slide-4"];
 const TOUR_TARGETS: Record<TourStep, string> = {
   "tour-add-game": "tour-add-game",
-  "tour-import-games": "tour-import-games",
+  // Adding and importing both start from the sidebar's Add games row now.
+  "tour-import-games": "tour-add-game",
 };
 
 const slideMotion = {

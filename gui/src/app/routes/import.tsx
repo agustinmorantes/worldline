@@ -1,4 +1,4 @@
-import { createFileRoute, useRouter } from '@tanstack/react-router';
+import { createFileRoute, Link, useRouter } from '@tanstack/react-router';
 import { ReactElement, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { saveGame, setGameIcon } from '@/ipc/commands';
@@ -14,6 +14,7 @@ import { CheckCircle2, Info, Search, Sparkles } from 'lucide-react';
 import { CheckedState } from '@radix-ui/react-checkbox';
 import { useScannedGames } from '@/features/add-games/queries';
 import { ScrollArea } from '@/shared/ui/scroll-area';
+import { AddGameModal } from '@/features/add-games/AddGameModal';
 
 export const Route = createFileRoute('/import')({
   component: ImportGames,
@@ -23,6 +24,7 @@ function ImportGames(): ReactElement {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [hasRequestedScan, setHasRequestedScan] = useState(false);
 
   const { data: scanned, isLoading, error, refetch, isFetching } = useScannedGames(hasRequestedScan);
@@ -114,6 +116,12 @@ function ImportGames(): ReactElement {
       <header className="p-8 pb-4">
         <div className="flex items-center justify-between mb-2">
           <h1 className="text-3xl font-black tracking-tight text-foreground">Import Games</h1>
+          {/* Until the merged Add games view: the other ways to add a game. */}
+          <div className="ml-auto mr-3 flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => { setIsAddModalOpen(true); }}>Add manually</Button>
+            <Button variant="outline" size="sm" asChild><Link to="/remote">Cloud games</Link></Button>
+          </div>
+          <AddGameModal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); }} />
           <Badge variant="secondary" className="bg-primary/10 text-primary border-primary/20 font-bold uppercase tracking-widest text-[10px]">
             {scanBadgeText}
           </Badge>

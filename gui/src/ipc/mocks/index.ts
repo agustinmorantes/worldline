@@ -53,7 +53,9 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'get_sync_settings':
       return state.syncSettings;
     case 'refresh_sync':
-      throw new Error('Sync is not configured');
+      if (state.syncReport === 'pending') return new Promise(() => undefined);
+      if (state.syncReport === undefined) throw new Error('Sync is not configured');
+      return state.syncReport;
     case 'get_retired_versions':
     case 'get_scan_roots':
     case 'scan_installed':

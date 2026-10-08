@@ -4,6 +4,7 @@ import {on} from "@/ipc/events";
 import {queryClient} from "@/app/query-client";
 import {reportError} from "@/shared/errors/report";
 import {getT} from "@/shared/i18n";
+import {setSyncRunning} from "@/features/library/sync-activity";
 
 export function listenNotifications(): void {
   void on("version-created", ([gameId, versionNumber]) => {
@@ -24,7 +25,12 @@ export function listenNotifications(): void {
     reportError(getT().errors.detectionFailed, payload);
   })
 
+  void on('sync-started', () => {
+    setSyncRunning(true);
+  });
+
   void on('sync-complete', report => {
+    setSyncRunning(false);
     queryClient.setQueryData(['sync-report'], report);
     void queryClient.invalidateQueries({ queryKey: ['games'] });
     void queryClient.invalidateQueries({ queryKey: ['game'] });
@@ -33,6 +39,7 @@ export function listenNotifications(): void {
 
   // Background syncs retry every few minutes; an offline folder is not worth a toast each time.
   void on('sync-error', payload => {
+    setSyncRunning(false);
     console.warn('Sync failed:', payload);
   });
 

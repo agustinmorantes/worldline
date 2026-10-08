@@ -44,7 +44,7 @@ export function parsePrefs(raw: unknown): Prefs {
     tone: oneOf(TONES, stored.tone, DEFAULT_PREFS.tone),
     motion: oneOf(MOTION_PREFS, stored.motion, DEFAULT_PREFS.motion),
     onboardingSeen: typeof stored.onboardingSeen === 'boolean' ? stored.onboardingSeen : DEFAULT_PREFS.onboardingSeen,
-    hints: hints as Record<string, boolean>,
+    hints: hints,
   };
 }
 

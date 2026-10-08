@@ -1,4 +1,5 @@
-import type { MotionConfigProps, Transition } from 'motion/react';
+import { useReducedMotion, type MotionConfigProps, type Transition } from 'motion/react';
+import { usePrefs } from '@/shared/prefs/prefs';
 import type { MotionPref } from '@/shared/prefs/schema';
 
 /** Default ease-out (`--ez`). */
@@ -17,4 +18,11 @@ export function reducedMotionConfig(pref: MotionPref): NonNullable<MotionConfigP
     case 'full': return 'never';
     case 'reduced': return 'always';
   }
+}
+
+/** True when state changes should be instant: the Motion preference, or the OS setting under System. */
+export function useMotionReduced(): boolean {
+  const pref = usePrefs().motion;
+  const system = useReducedMotion() === true;
+  return pref === 'reduced' || (pref === 'system' && system);
 }

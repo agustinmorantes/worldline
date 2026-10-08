@@ -15,6 +15,15 @@
 @import "../shared/tokens/tokens.css";
 @import "./legacy-theme.css";
 
+@keyframes travel {
+  from { left: 0; }
+  to   { left: calc(100% - 6px); }
+}
+
+@keyframes blink {
+  50% { opacity: .3; }
+}
+
 @keyframes pulseRing {
   0%,100% { transform: scale(1); opacity: .18; }
   50%      { transform: scale(1.55); opacity: .32; }

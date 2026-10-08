@@ -2,9 +2,12 @@
 // screen tests. Pick one with `localStorage['worldline-mock-fixture']`.
 import { makeGame, makeSlot, makeTrackedDir, makeVersion, naive } from '../builders';
 import type { DeviceMetadata } from '../bindings/DeviceMetadata';
+import type { Divergence } from '../bindings/Divergence';
 import type { FullGame } from '../bindings/FullGame';
+import type { GameSyncStatus } from '../bindings/GameSyncStatus';
 import type { MonitoringSettings } from '../bindings/MonitoringSettings';
 import type { RetentionSettings } from '../bindings/RetentionSettings';
+import type { SyncReport } from '../bindings/SyncReport';
 import type { SyncSettings } from '../bindings/SyncSettings';
 
 export interface Fixture {
@@ -13,6 +16,8 @@ export interface Fixture {
   syncSettings: SyncSettings;
   monitoringSettings: MonitoringSettings;
   retentionSettings: RetentionSettings;
+  /** What `refresh_sync` answers; `'pending'` never settles. Unset: sync fails. */
+  syncReport?: SyncReport | 'pending';
 }
 
 const minutesAgo = (minutes: number): string => naive(new Date(Date.now() - minutes * 60_000));
@@ -78,9 +83,51 @@ function base(games: FullGame[]): Fixture {
   };
 }
 
+function savedGame(id: number, title: string, minutes: number): FullGame {
+  const main = makeSlot({ id: 100 + id, game_id: id, name: 'Main', active_version_id: 100 + id });
+  const version = makeVersion({ id: 100 + id, slot_id: 100 + id, version_number: 1, created_at: minutesAgo(minutes) });
+  return makeGame({
+    id,
+    title,
+    active_slot_id: main.id,
+    active_slot: main,
+    slots: [main],
+    versions: [version],
+    last_version: version,
+  });
+}
+
+/** Several games with sync on: one has news from the handheld, one cloud game isn't here. */
+function library(): Fixture {
+  const games = [eldenRing(), hollowKnight(), savedGame(3, 'Hades', 60 * 5), savedGame(4, 'Celeste', 60 * 24 * 9), savedGame(5, 'Stardew Valley', 60 * 24 * 30)];
+  const status = (game: FullGame, relation: Divergence, device: string | null = null): GameSyncStatus => ({
+    game_uuid: game.uuid,
+    relation,
+    remote_device: device,
+    remote_version_uuid: null,
+    remote_version_id: null,
+    auto_applied: false,
+  });
+  const state = base(games);
+  return {
+    ...state,
+    syncSettings: { remote_path: 'D:/Cloud/Worldline' },
+    syncReport: {
+      synced_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+      games: [status(games[0], 'in_sync'), status(games[1], 'fast_forward', 'Steam Deck'), status(games[2], 'in_sync'), status(games[3], 'in_sync')],
+      remote_games: [{ uuid: 'remote-1', title: 'Hollow Knight: Silksong', installed: false, adopted: false, source_device: 'Steam Deck', version_count: 4 }],
+      devices: [],
+      remote_versions: {},
+      problems: [],
+    },
+  };
+}
+
 export const FIXTURES = {
   default: () => base([eldenRing(), hollowKnight()]),
   empty: () => base([]),
+  library,
+  syncing: () => ({ ...library(), syncReport: 'pending' as const }),
 } satisfies Record<string, () => Fixture>;
 
 export type FixtureName = keyof typeof FIXTURES;

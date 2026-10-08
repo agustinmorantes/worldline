@@ -1,8 +1,7 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router';
 import { ReactElement, useMemo, useState } from 'react';
-import { motion } from 'motion/react';
 import { useGame, useRetiredVersions, useSyncReport } from '@/features/library/queries';
-import { GameIcon } from '@/features/library/GameIcon';
+import { DockedGameIcon } from '@/features/library/DockedGameIcon';
 import { Skeleton } from '@/shared/ui/skeleton';
 import { Button } from '@/shared/ui/button';
 import { Input } from '@/shared/ui/input';
@@ -279,14 +278,7 @@ export function GameDetail(): ReactElement {
   return (
     <div className="flex flex-col h-full bg-background overflow-hidden">
       <header className="p-8 pb-4 flex items-center gap-6">
-        <motion.div
-          key={game.id}
-          initial={{ scale: 0.9, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
-        >
-          <GameIcon title={game.title} size={64} iconPath={game.icon_path ?? undefined} />
-        </motion.div>
+        <DockedGameIcon game={game} />
         <div className="flex-1 flex flex-col gap-1">
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-black tracking-tight text-foreground">{game.title}</h1>

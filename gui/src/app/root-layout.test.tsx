@@ -15,6 +15,14 @@ vi.mock('@/app/shell/TitleBar', () => ({
   TitleBar: () => <div data-testid="titlebar" />,
 }));
 
+vi.mock('@/app/shell/Shell', () => ({
+  Shell: ({ children }: { children: React.ReactNode }) => <main>{children}</main>,
+}));
+
+vi.mock('@/app/shell/Toasts', () => ({
+  Toasts: () => null,
+}));
+
 import { getPrefs, setPref } from '@/shared/prefs/prefs';
 import { RootLayout } from '@/app/routes/__root';
 

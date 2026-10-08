@@ -1,158 +1,230 @@
-import { ReactElement, useState, useEffect, useMemo } from "react"
-import { cn } from "@/shared/ui/utils"
-import { useGames } from "@/features/library/queries"
-import { GameIcon } from "./GameIcon"
-import { Link } from "@tanstack/react-router"
-import { Plus, Download, Settings, Library, HelpCircle, Cloud } from "lucide-react"
-import { Skeleton } from "@/shared/ui/skeleton"
-import { AddGameModal } from '@/features/add-games/AddGameModal'
-import type { FullGame } from "@/ipc/bindings/FullGame"
-import { utcDate } from "@/ipc/time"
-import { ScrollArea } from "@/shared/ui/scroll-area"
+import { type MouseEvent, type ReactElement, type ReactNode, useMemo } from 'react';
+import { Link } from '@tanstack/react-router';
+import { motion } from 'motion/react';
+import { Plus, SlidersHorizontal } from 'lucide-react';
+import type { FullGame } from '@/ipc/bindings/FullGame';
+import { formatRelative, type Messages, useLocale, useT } from '@/shared/i18n';
+import { ease, useMotionReduced } from '@/shared/motion/motion';
+import { accentVars } from '@/shared/tokens/accent';
+import { cn } from '@/shared/ui/utils';
+import { GameIcon } from './GameIcon';
+import { type GameStatus, type GameSyncView, gameStatus, sortLibrary } from './library';
+import { useGames, useSyncReport, useSyncSettings } from './queries';
+import { anchorKey, type NavTarget, useShellNav } from './shell-nav';
+import { SyncCard } from './SyncCard';
+import { useNow } from './useNow';
 
-export function Sidebar({ className }: { className?: string }): ReactElement {
-  const { data: games, isLoading, error } = useGames()
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false)
-  const skeletonCount = parseInt(localStorage.getItem('games-count') ?? '3', 10)
 
-  useEffect(() => {
-    if (games !== undefined) {
-      localStorage.setItem('games-count', games.length.toString());
-    }
-  }, [games])
+export function Sidebar(): ReactElement {
+  const t = useT();
+  const { data: games, isLoading, error } = useGames();
+  const { data: settings } = useSyncSettings();
+  const { data: report } = useSyncReport();
+  const reduced = useMotionReduced();
+  const sorted = useMemo(() => (games ? sortLibrary(games) : []), [games]);
+  const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
+  const notHere = report?.remote_games.filter((g) => !g.adopted).length ?? 0;
 
-  const sortedGames = useMemo(() => {
-    if (!games) return games;
-    return [...games].sort((a, b) => {
-      const aTime = a.versions.length > 0
-        ? Math.max(...a.versions.map(v => utcDate(v.created_at).getTime()))
-        : null;
-      const bTime = b.versions.length > 0
-        ? Math.max(...b.versions.map(v => utcDate(v.created_at).getTime()))
-        : null;
-      if (aTime === null && bTime === null) return a.title.localeCompare(b.title);
-      if (aTime === null) return 1;
-      if (bTime === null) return -1;
-      return bTime - aTime;
-    });
-  }, [games])
+  const syncView = (game: FullGame): GameSyncView => ({
+    on: syncOn,
+    reported: report !== undefined,
+    status: report?.games.find((s) => s.game_uuid === game.uuid),
+  });
 
   return (
-    <aside className={cn("w-[222px] bg-sidebar border-r border-border/40 flex flex-col h-full overflow-x-hidden", className)}>
-      <ScrollArea className="flex-1 min-h-0" viewportClassName="px-3 py-2">
-      <nav>
-        <div className="space-y-4">
-          <div>
-            <div className="px-3 mb-2 flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/50 flex items-center gap-1.5">
-                <Library size={10} /> Library
-              </span>
-            </div>
-            
-            <div className="space-y-0.5">
-              {isLoading ? (
-                Array.from({ length: skeletonCount }).map((_, i) => (
-                  <div key={`sidebar-skeleton-${i.toString()}`} className="flex items-center gap-3 px-3 py-2">
-                    <Skeleton className="w-7 h-7 rounded-md" />
-                    <div className="space-y-1.5">
-                      <Skeleton className="h-3 w-24" />
-                      <Skeleton className="h-2 w-12" />
-                    </div>
-                  </div>
-                ))
-              ) : error ? (
-                <div className="px-3 py-2 text-xs text-destructive bg-destructive/10 rounded-md">
-                  Error loading games
-                </div>
-              ) : (
-                sortedGames?.map(game => (
-                  <SidebarGameItem key={game.id} game={game} />
-                ))
-              )}
-              
-              <button 
-                id="tour-add-game"
-                type="button"
-                onClick={() => { setIsAddModalOpen(true); }}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-md border border-dashed border-border/60 hover:border-primary/40 hover:bg-primary/5 text-muted-foreground hover:text-primary transition-all group mt-2"
+    <aside
+      aria-label={t.shell.library}
+      className={`relative z-[4] flex w-[240px] shrink-0 flex-col rounded-br-[12px] bg-tint max-[1099px]:w-[72px]`}
+    >
+      <div className={`px-6 pb-2 pt-5 text-[11px] font-bold uppercase tracking-[0.12em] text-tx3 max-[1099px]:invisible`}>
+        {t.shell.library}
+      </div>
+      <nav aria-label={t.shell.library} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 [scrollbar-width:none]">
+        {isLoading ? (
+          <div className="flex flex-col gap-1">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="flex h-[52px] items-center gap-3 px-2.5">
+                <span className="size-9 shrink-0 animate-pulse rounded-[11px] bg-el" />
+                <span className={`h-3 w-24 animate-pulse rounded bg-el max-[1099px]:hidden`} />
+              </div>
+            ))}
+          </div>
+        ) : error ? (
+          <p className={`px-3 py-2 text-xs text-err max-[1099px]:sr-only`}>{t.errors.loadFailed}</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {sorted.map((game) => (
+              <motion.li
+                key={game.id}
+                layout="position"
+                initial={reduced ? false : { opacity: 0, x: -12 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.56, ease }}
               >
-                <div className="w-7 h-7 rounded-md flex items-center justify-center bg-muted/40 group-hover:bg-primary/10 transition-colors">
-                  <Plus size={14} />
-                </div>
-                <span className="text-xs font-medium tracking-tight">Add Game</span>
-              </button>
-            </div>
-          </div>
-        </div>
+                <GameRow game={game} status={gameStatus(game, syncView(game))} />
+              </motion.li>
+            ))}
+          </ul>
+        )}
+        <NavRow
+          id="tour-add-game"
+          target={{ view: 'add' }}
+          to="/import"
+          label={t.shell.addGames}
+          icon={<Plus size={16} strokeWidth={2.4} />}
+          className="mt-2.5 outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
+          badge={notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
+        />
       </nav>
-      </ScrollArea>
-
-      <AddGameModal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); }} />
-
-      <div className="p-3 border-t border-border/40 space-y-1">
-        <SidebarNavItem to="/remote" icon={<Cloud size={14} />}>
-          Remote Games
-        </SidebarNavItem>
-        <SidebarNavItem id="tour-import-games" to="/import" icon={<Download size={14} />}>
-          Import Games
-        </SidebarNavItem>
-        <SidebarNavItem to="/settings" icon={<Settings size={14} />}>
-          Settings
-        </SidebarNavItem>
-        <button
-          type="button"
-          onClick={() => { window.dispatchEvent(new CustomEvent("open-onboarding")); }}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all text-xs font-medium tracking-tight"
-        >
-          <div className="text-muted-foreground/60">
-            <HelpCircle size={14} />
-          </div>
-          Help &amp; Tour
-        </button>
+      <div className="flex flex-col gap-2 px-3 pb-3">
+        <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} />
+        <SyncCard />
       </div>
     </aside>
-  )
+  );
 }
 
-function SidebarGameItem({ game }: { game: FullGame }): ReactElement {
+/** The sliding highlight on the selected entry, with the accent bar at the sidebar's edge. */
+function SelectionPill({ hidden }: { hidden: boolean }): ReactElement {
+  return (
+    <motion.span
+      layoutId="sidebar-selection"
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 rounded-[14px] bg-white/[0.06] before:absolute before:-left-3 before:top-1/2 before:h-6 before:w-1 before:-translate-y-1/2 before:rounded-r before:bg-acc before:transition-colors before:duration-600"
+      initial={false}
+      animate={{ opacity: hidden ? 0 : 1 }}
+      transition={{ layout: { type: 'spring', stiffness: 420, damping: 30 }, opacity: { duration: 0.15 } }}
+    />
+  );
+}
+
+function useNavClick(target: NavTarget): (event: MouseEvent) => void {
+  const { go } = useShellNav();
+  return (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+    event.preventDefault();
+    go(target);
+  };
+}
+
+function GameRow({ game, status }: { game: FullGame; status: GameStatus }): ReactElement {
+  const { current, pending, flying } = useShellNav();
+  const target: NavTarget = { view: 'game', gameId: game.id };
+  const onClick = useNavClick(target);
+  const selected = current?.view === 'game' && current.gameId === game.id;
+  // The open game's icon lives in the header; the row keeps an empty socket for it.
+  const away = selected || flying.home === game.id;
+
   return (
     <Link
       to="/game/$gameId"
       params={{ gameId: game.id.toString() }}
-      className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all group [&.active]:bg-primary/10 [&.active]:text-foreground [&.active]:border-primary/20 border border-transparent"
+      onClick={onClick}
+      aria-current={selected ? 'page' : undefined}
+      title={game.title}
+      className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04] max-[1099px]:justify-center max-[1099px]:px-0`}
     >
-      <GameIcon title={game.title} size={28} iconPath={game.icon_path ?? undefined} />
-      <div className="flex flex-col min-w-0">
-        <span className="text-xs font-semibold truncate tracking-tight">{game.title}</span>
-        <span className="text-[10px] text-muted-foreground/70 font-medium">
-          {`${game.slots.length.toString()} ${game.slots.length === 1 ? 'slot' : 'slots'}`}
-        </span>
-      </div>
+      {selected && <SelectionPill hidden={pending !== null} />}
+      <span className="relative size-9 shrink-0" data-nav-anchor={anchorKey(target)}>
+        {away ? (
+          <span
+            aria-hidden="true"
+            className="absolute inset-0 rounded-[11px] border-[1.5px] border-dashed transition-colors duration-300"
+            style={{ borderColor: accentVars(game.accent_hue)['--acc-line'] }}
+          />
+        ) : (
+          <GameIcon
+            title={game.title}
+            hue={game.accent_hue}
+            iconPath={game.icon_path ?? undefined}
+            className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
+          />
+        )}
+      </span>
+      <span className={`relative flex min-w-0 flex-col gap-[3px] max-[1099px]:sr-only`}>
+        <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
+        <StatusLine status={status} />
+      </span>
     </Link>
-  )
+  );
 }
 
-function SidebarNavItem({
-  id,
-  to,
-  icon,
-  children,
-}: {
-  id?: string
-  to: string
-  icon: React.ReactNode
-  children: React.ReactNode
+function statusText(status: GameStatus, t: Messages, when: (date: Date) => string): string {
+  switch (status.kind) {
+    case 'new-from': return t.gameStatus.newFrom(status.device);
+    case 'played-too': return t.gameStatus.playedToo(status.device);
+    case 'not-in-cloud': return t.gameStatus.notInCloud;
+    case 'no-saves': return t.gameStatus.noSaves;
+    case 'last-played': return when(status.at);
+  }
+}
+
+function StatusLine({ status }: { status: GameStatus }): ReactElement {
+  const t = useT();
+  const locale = useLocale();
+  const now = useNow(60_000);
+  const fromDevice = status.kind === 'new-from' || status.kind === 'played-too';
+  const text = statusText(status, t, (date) => {
+    const relative = formatRelative(date, locale, now);
+    return relative.charAt(0).toLocaleUpperCase(locale) + relative.slice(1);
+  });
+  return (
+    <span className={cn('flex items-center gap-1.5 truncate text-xs font-medium transition-colors duration-300', fromDevice ? 'text-deck' : 'text-tx3')}>
+      {fromDevice && <HandheldGlyph />}
+      {text}
+    </span>
+  );
+}
+
+function HandheldGlyph(): ReactElement {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
+      <rect x="2" y="6" width="20" height="12" rx="4" />
+      <path d="M6 12h4M8 10v4" />
+      <circle cx="16" cy="11" r="1" />
+      <circle cx="18" cy="13" r="1" />
+    </svg>
+  );
+}
+
+function NavRow({ id, target, to, label, icon, className, badge }: {
+  id?: string;
+  target: NavTarget;
+  to: '/import' | '/settings';
+  label: string;
+  icon: ReactNode;
+  className?: string;
+  badge?: { count: number; label: string };
 }): ReactElement {
+  const { current, pending } = useShellNav();
+  const onClick = useNavClick(target);
+  const selected = current !== null && anchorKey(current) === anchorKey(target);
+
   return (
     <Link
       id={id}
       to={to}
-      className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all text-xs font-medium tracking-tight [&.active]:bg-accent [&.active]:text-foreground"
+      onClick={onClick}
+      aria-current={selected ? 'page' : undefined}
+      title={label}
+      className={cn(
+        `group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-semibold transition-colors duration-200 hover:bg-white/[0.05] hover:text-tx max-[1099px]:justify-center max-[1099px]:px-0`,
+        className,
+        selected ? 'text-tx outline-transparent' : 'text-tx2',
+      )}
     >
-      <div className="text-muted-foreground/60 group-hover:text-foreground transition-colors">
-        {icon}
-      </div>
-      {children}
+      {selected && <SelectionPill hidden={pending !== null} />}
+      <span className="relative flex" data-nav-anchor={anchorKey(target)}>{icon}</span>
+      <span className={`relative flex-1 max-[1099px]:sr-only`}>{label}</span>
+      {badge !== undefined && (
+        <span
+          title={badge.label}
+          className={`relative flex h-5 min-w-5 items-center justify-center rounded-full bg-tx2 px-1.5 text-xs font-bold text-bg max-[1099px]:absolute max-[1099px]:right-1 max-[1099px]:top-1 max-[1099px]:h-4 max-[1099px]:min-w-4 max-[1099px]:px-1 max-[1099px]:text-[10px]`}
+        >
+          <span aria-hidden="true">{badge.count}</span>
+          <span className="sr-only">{badge.label}</span>
+        </span>
+      )}
     </Link>
-  )
+  );
 }

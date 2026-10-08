@@ -1,99 +1,101 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Sidebar } from './Sidebar';
+import { type ShellNav, ShellNavContext } from './shell-nav';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { makeGame } from '@/ipc/builders';
 
 vi.mock('@/features/library/queries', () => ({
   useGames: vi.fn(),
+  useSyncSettings: vi.fn(),
+  useSyncReport: vi.fn(),
 }));
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) =>
-    <a {...props}>{children}</a>,
-  useRouter: vi.fn(() => ({ navigate: vi.fn() })),
+  Link: ({ children, to: _to, params: _params, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { to?: string; params?: unknown }) =>
+    <a href="#" {...props}>{children}</a>,
 }));
 
-vi.mock('@/features/add-games/AddGameModal', () => ({
-  AddGameModal: () => null,
-}));
+import { useGames, useSyncReport, useSyncSettings } from '@/features/library/queries';
 
-import { useGames } from '@/features/library/queries';
-
-function mockQuery(data: FullGame[] | undefined, opts: { isLoading?: boolean; error?: Error | null } = {}) {
+function mockGames(data: FullGame[] | undefined, opts: { isLoading?: boolean; error?: Error | null } = {}) {
   vi.mocked(useGames).mockReturnValue({
     data,
     isLoading: opts.isLoading ?? false,
     error: opts.error ?? null,
-    isError: opts.error !== null && opts.error !== undefined,
-    isSuccess: data !== undefined,
-    isPending: opts.isLoading ?? false,
-    isFetching: false,
-    isRefetching: false,
-    refetch: vi.fn(),
-    status: opts.isLoading === true ? 'pending' : 'success',
-    fetchStatus: 'idle',
   } as unknown as ReturnType<typeof useGames>);
 }
 
+function mockSync(remotePath: string | null, unadopted = 0) {
+  vi.mocked(useSyncSettings).mockReturnValue({
+    data: { remote_path: remotePath },
+  } as unknown as ReturnType<typeof useSyncSettings>);
+  vi.mocked(useSyncReport).mockReturnValue({
+    data: remotePath === null ? undefined : {
+      synced_at: new Date().toISOString(),
+      games: [],
+      remote_games: Array.from({ length: unadopted }, (_, i) => ({ adopted: false, uuid: `r${i.toString()}` })),
+    },
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useSyncReport>);
+}
+
+function renderSidebar(nav: Partial<ShellNav> = {}): void {
+  const value: ShellNav = { current: null, pending: null, go: vi.fn(), flying: { home: null, out: null }, ...nav };
+  render(<ShellNavContext value={value}><Sidebar /></ShellNavContext>);
+}
+
 beforeEach(() => {
-  localStorage.clear();
   vi.clearAllMocks();
+  mockSync(null);
 });
 
 describe('Sidebar', () => {
-  it('renders the library header', () => {
-    mockQuery(undefined, { isLoading: true });
-    render(<Sidebar />);
-    expect(screen.getByText('Library')).toBeInTheDocument();
+  it('renders the library label and skeleton rows while loading', () => {
+    mockGames(undefined, { isLoading: true });
+    renderSidebar();
+    expect(screen.getByRole('complementary', { name: 'Library' })).toBeInTheDocument();
+    expect(document.querySelectorAll('.animate-pulse').length).toBeGreaterThanOrEqual(3);
   });
 
-  it('renders skeleton rows while loading, defaulting to 3', () => {
-    mockQuery(undefined, { isLoading: true });
-    render(<Sidebar />);
-    const skeletonRows = document.querySelectorAll('.flex.items-center.gap-3.px-3.py-2');
-    expect(skeletonRows.length).toBeGreaterThanOrEqual(3);
+  it('renders an error message when the query fails', () => {
+    mockGames(undefined, { error: new Error('network') });
+    renderSidebar();
+    expect(screen.getByText(/couldn’t load this/i)).toBeInTheDocument();
   });
 
-  it('reads skeleton count from localStorage', () => {
-    localStorage.setItem('games-count', '5');
-    mockQuery(undefined, { isLoading: true });
-    render(<Sidebar />);
-    const skeletonRows = document.querySelectorAll('.flex.items-center.gap-3.px-3.py-2');
-    expect(skeletonRows.length).toBeGreaterThanOrEqual(5);
+  it('renders game titles and marks the open game', () => {
+    mockGames([makeGame({ id: 1, title: 'Elden Ring' }), makeGame({ id: 2, title: 'Dark Souls' })]);
+    renderSidebar({ current: { view: 'game', gameId: 2 } });
+    expect(screen.getByRole('link', { name: /elden ring/i })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('link', { name: /dark souls/i })).toHaveAttribute('aria-current', 'page');
   });
 
-  it('renders an error message when query fails', () => {
-    mockQuery(undefined, { error: new Error('network') });
-    render(<Sidebar />);
-    expect(screen.getByText(/error loading games/i)).toBeInTheDocument();
+  it('navigates through the shell on click', () => {
+    mockGames([makeGame({ id: 7, title: 'Hades' })]);
+    const go = vi.fn();
+    renderSidebar({ go });
+    fireEvent.click(screen.getByRole('link', { name: /hades/i }));
+    expect(go).toHaveBeenCalledWith({ view: 'game', gameId: 7 });
   });
 
-  it('renders game titles when loaded', () => {
-    const games = [makeGame({ id: 1, title: 'Elden Ring' }), makeGame({ id: 2, title: 'Dark Souls' })];
-    mockQuery(games);
-    render(<Sidebar />);
-    expect(screen.getByText('Elden Ring')).toBeInTheDocument();
-    expect(screen.getByText('Dark Souls')).toBeInTheDocument();
+  it('shows Add games and Settings, and offers to turn on cloud when sync is off', () => {
+    mockGames([]);
+    const go = vi.fn();
+    renderSidebar({ go });
+    expect(screen.getByRole('link', { name: /add games/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /settings/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /turn on cloud/i }));
+    expect(go).toHaveBeenCalledWith({ view: 'settings' });
   });
 
-  it('shows Import Games and Settings nav items', () => {
-    mockQuery([]);
-    render(<Sidebar />);
-    expect(screen.getByText('Import Games')).toBeInTheDocument();
-    expect(screen.getByText('Settings')).toBeInTheDocument();
-  });
-
-  it('shows Help & Tour and dispatches the onboarding event', () => {
-    mockQuery([]);
-    const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
-    render(<Sidebar />);
-
-    fireEvent.click(screen.getByRole('button', { name: /help & tour/i }));
-
-    expect(screen.getByRole('button', { name: /help & tour/i })).toBeInTheDocument();
-    expect(dispatchSpy).toHaveBeenCalledTimes(1);
-    expect(dispatchSpy.mock.calls[0]?.[0]).toBeInstanceOf(CustomEvent);
-    expect(dispatchSpy.mock.calls[0]?.[0].type).toBe('open-onboarding');
+  it('badges Add games with cloud games not on this PC', () => {
+    mockGames([]);
+    mockSync('/remote', 2);
+    renderSidebar();
+    expect(screen.getByText('2 games in your cloud aren’t on this PC yet')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument();
   });
 });
