@@ -1614,6 +1614,21 @@ impl WorldlineCore {
                 &tips.iter().map(|(_, tip)| *tip).collect::<Vec<_>>(),
                 &parents,
             );
+            // Nothing newer elsewhere, and this device published where it is: the cloud
+            // has it, even with no other device to compare against.
+            let published = remote
+                .states
+                .iter()
+                .find(|state| state.device_uuid == me)
+                .and_then(|state| state.slot_tip(uuid, pointer.slot));
+            let relation = match relation {
+                sync::Divergence::LocalOnly | sync::Divergence::LocalAhead
+                    if published.is_some() && published == pointer.version =>
+                {
+                    sync::Divergence::InSync
+                }
+                relation => relation,
+            };
             let device = target
                 .and_then(|t| tips.iter().find(|(_, tip)| *tip == t))
                 .map(|(device, _)| remote.device_name(*device));

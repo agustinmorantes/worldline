@@ -60,7 +60,8 @@ fn untracking_leaves_the_history_on_the_remote_and_adopting_brings_it_back() {
     // B keeps the game and A's last version, though A no longer points at it.
     let report = b.core.refresh_sync().unwrap();
     let status = report.games.iter().find(|s| s.game_uuid == uuid).unwrap();
-    assert_eq!(status.relation, Divergence::LocalOnly);
+    // A's dropped pointer is no tip to follow; only B's own published one remains.
+    assert_eq!(status.relation, Divergence::InSync);
     let versions = b.game(on_b.game.id).versions;
     assert_eq!(versions.len(), 3);
     let latest = versions.iter().find(|v| v.version_number == 3).unwrap();
