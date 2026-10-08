@@ -27,7 +27,7 @@ export function CloudSection({ report }: { report: SyncReport }): ReactElement {
         <Cloud size={16} strokeWidth={2} aria-hidden="true" />
         {t.addGames.inCloud}
       </h2>
-      <ul className="mt-3 grid min-h-[92px] max-w-[664px] grid-cols-2 gap-4">
+      <ul className="mt-3 grid min-h-[92px] grid-cols-2 gap-4">
         <AnimatePresence initial={false} mode="popLayout">
           {waiting.map((game) => (
             <motion.li

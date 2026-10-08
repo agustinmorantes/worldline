@@ -75,7 +75,7 @@ export function ManualSection({ library }: { library: FullGame[] }): ReactElemen
   return (
     <section aria-labelledby="add-else">
       <h2 id="add-else" className={eyebrow}>{t.addGames.somethingElse}</h2>
-      <div className="mt-3 flex flex-wrap gap-4">
+      <div className="mt-3 grid grid-cols-2 gap-4">
         <BigButton icon={<FolderOpen size={22} strokeWidth={1.8} />} title={t.addGames.pickSaveFolder} sub={t.addGames.pickSaveFolderSub} disabled={busy} onClick={() => { void pickSaveFolder(); }} />
         <BigButton icon={<Package size={22} strokeWidth={1.8} />} title={t.addGames.openBundle} sub={t.addGames.openBundleSub} disabled={busy} onClick={() => { void openBundle(); }} />
       </div>
@@ -208,7 +208,7 @@ function BigButton({ icon, title, sub, disabled, onClick }: {
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="flex h-[72px] w-[324px] items-center gap-3.5 rounded-[18px] bg-sf px-[18px] text-left text-tx2 transition-[background-color,transform] duration-200 ease-spring hover:bg-el active:scale-[0.97] disabled:opacity-60"
+      className="flex h-[72px] w-full items-center gap-3.5 rounded-[18px] bg-sf px-[18px] text-left text-tx2 transition-[background-color,transform] duration-200 ease-spring hover:bg-el active:scale-[0.97] disabled:opacity-60"
     >
       <span aria-hidden="true">{icon}</span>
       <span className="flex flex-col gap-[3px]">

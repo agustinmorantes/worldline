@@ -35,17 +35,17 @@ export function ScanSection({ library, cloudTitles, autoScan = false }: {
       <h2 id="add-scan" className={eyebrow}>{t.addGames.onThisPc}</h2>
       <div className="mt-3">
         {!started ? (
-          <div className="flex h-[176px] max-w-[664px] flex-col items-center justify-center gap-3 rounded-[18px] border-[1.5px] border-dashed border-ln">
+          <div className="flex h-[176px] flex-col items-center justify-center gap-3 rounded-[18px] border-[1.5px] border-dashed border-ln">
             <button type="button" className={btn} onClick={() => { setAsked(true); }}>{t.addGames.lookForGames}</button>
             <span className="text-[13px] text-tx3">{t.addGames.scanSources}</span>
           </div>
         ) : scan.isFetching ? (
-          <div role="status" className="relative flex h-[176px] max-w-[664px] items-center justify-center overflow-hidden rounded-[18px] border-[1.5px] border-dashed border-acc-line">
+          <div role="status" className="relative flex h-[176px] items-center justify-center overflow-hidden rounded-[18px] border-[1.5px] border-dashed border-acc-line">
             <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[30%] bg-[linear-gradient(90deg,transparent,var(--acc-soft),transparent)] [animation:sweep_1.1s_var(--ez)_infinite]" />
             <span className="relative text-sm font-semibold text-tx2">{t.addGames.scanning}</span>
           </div>
         ) : scan.error !== null ? (
-          <div className="flex h-[176px] max-w-[664px] flex-col items-center justify-center gap-3 rounded-[18px] bg-sf">
+          <div className="flex h-[176px] flex-col items-center justify-center gap-3 rounded-[18px] bg-sf">
             <span className="text-sm text-tx2">{t.addGames.failed.scan}</span>
             <button type="button" className={btnQuiet} onClick={() => { void scan.refetch(); }}>{t.errors.retry}</button>
           </div>
@@ -133,7 +133,7 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
 
   if (items.length === 0) {
     return (
-      <div className="flex h-[176px] max-w-[664px] flex-col items-center justify-center gap-3 rounded-[18px] bg-sf">
+      <div className="flex h-[176px] flex-col items-center justify-center gap-3 rounded-[18px] bg-sf">
         <span className="text-sm text-tx2">{t.addGames.nothingFound}</span>
         <button type="button" className={btnQuiet} onClick={onLookAgain}>{t.addGames.lookAgain}</button>
       </div>
@@ -166,7 +166,7 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
           ))}
         </div>
       </div>
-      <ul className={cn('relative flex gap-4', list ? 'flex-col gap-2' : 'flex-wrap')}>
+      <ul className={cn('relative grid gap-4', list ? 'grid-cols-1 gap-2' : 'grid-cols-[repeat(auto-fill,minmax(210px,1fr))]')}>
         <AnimatePresence mode="popLayout">
         {visible.map((item) => {
           const i = items.indexOf(item);
@@ -177,7 +177,7 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
               key={item.title}
               layout
               layoutId={`scan-item-${item.title}`}
-              className={list ? 'w-full' : 'w-[210px]'}
+              className="min-w-0"
               initial={reduced || revealedRef.current ? false : { opacity: 0, y: 10, scale: 0.97 }}
               animate={{ opacity: done ? 0.35 : 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95, transition: { duration: reduced ? 0 : 0.2 } }}
