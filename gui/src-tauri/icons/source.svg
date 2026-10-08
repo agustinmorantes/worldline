@@ -1,8 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="180" fill="#4a6cf7"/>
-  <g transform="translate(232, 232) scale(23.33)" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/>
-    <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/>
-    <path d="M7 3v4a1 1 0 0 0 1 1h7"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs>
+<linearGradient id="tile" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#312755"/><stop offset="1" stop-color="#030715"/></linearGradient>
+<radialGradient id="aura" cx="242" cy="214" r="180" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#a082ff" stop-opacity=".55"/><stop offset="1" stop-color="#a082ff" stop-opacity="0"/></radialGradient>
+<linearGradient id="face" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#2b283c"/><stop offset="1" stop-color="#0f0d1a"/></linearGradient>
+<linearGradient id="side" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#07060f"/><stop offset="1" stop-color="#020104"/></linearGradient>
+<linearGradient id="hi" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".14"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<linearGradient id="tube" x1="146" y1="0" x2="334" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ac91ff"/><stop offset="1" stop-color="#fd88d9"/></linearGradient>
+<radialGradient id="node"><stop offset="0" stop-color="#f4f2ff"/><stop offset=".55" stop-color="#fd88d9"/><stop offset="1" stop-color="#ac91ff"/></radialGradient>
+<filter id="glow" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="shadow" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#000" flood-opacity=".5"/></filter>
+<clipPath id="tileClip"><rect width="512" height="512" rx="116"/></clipPath>
+<clipPath id="faceClip"><rect x="117" y="86" width="250" height="330" rx="18"/></clipPath>
+</defs>
+<g clip-path="url(#tileClip)">
+<rect width="512" height="512" fill="url(#tile)"/>
+<g opacity=".9" fill="none" stroke="#ac91ff" stroke-opacity=".22" stroke-width="2">
+<path d="M256 330 L-200 512 M256 330 L-30 512 M256 330 L110 512 M256 330 L256 512 M256 330 L402 512 M256 330 L542 512 M256 330 L712 512"/>
+<path d="M0 352 H512 M0 380 H512 M0 420 H512 M0 476 H512"/>
+</g>
+<circle cx="242" cy="250" r="230" fill="url(#aura)"/>
+</g>
+<rect x="1" y="1" width="510" height="510" rx="115" fill="none" stroke="#fff" stroke-opacity=".1" stroke-width="2"/>
+<rect x="129" y="100" width="250" height="330" rx="18" fill="url(#side)" filter="url(#shadow)"/>
+<rect x="117" y="86" width="250" height="330" rx="18" fill="url(#face)"/>
+<g clip-path="url(#faceClip)"><circle cx="242" cy="214" r="150" fill="url(#aura)"/><rect x="117" y="86" width="250" height="170" fill="url(#hi)"/></g>
+<rect x="117" y="86" width="250" height="330" rx="18" fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="2"/>
+<circle cx="139" cy="106" r="5.5" fill="#04040a" stroke="#fff" stroke-opacity=".16" stroke-width="1.5"/>
+<circle cx="345" cy="106" r="5.5" fill="#04040a" stroke="#fff" stroke-opacity=".16" stroke-width="1.5"/>
+<path d="M117 326 H367" stroke="#000" stroke-opacity=".5" stroke-width="3"/>
+<path d="M117 329.5 H367" stroke="#fff" stroke-opacity=".1" stroke-width="1.5"/>
+<rect x="137" y="340" width="210" height="60" rx="10" fill="#000" fill-opacity=".22" stroke="#fff" stroke-opacity=".07" stroke-width="1.5"/>
+<path d="M117 344 H127 M117 354 H127 M117 364 H127 M117 374 H127 M117 384 H127 M117 394 H127 M357 344 H367 M357 354 H367 M357 364 H367 M357 374 H367 M357 384 H367 M357 394 H367" stroke="#000" stroke-opacity=".45" stroke-width="3"/>
+<path d="M146 214 L226 214" fill="none" stroke="#fff" stroke-opacity=".1" stroke-width="20" stroke-linecap="round"/><path d="M146 214 L226 214" fill="none" stroke="url(#tube)" stroke-width="8" stroke-linecap="round" filter="url(#glow)"/>
+<path d="M226 214 C 270 214 290 160 334 160" fill="none" stroke="#fff" stroke-opacity=".1" stroke-width="20" stroke-linecap="round"/><path d="M226 214 C 270 214 290 160 334 160" fill="none" stroke="url(#tube)" stroke-width="8" stroke-linecap="round" filter="url(#glow)"/>
+<path d="M226 214 C 270 214 290 268 334 268" fill="none" stroke="#fff" stroke-opacity=".1" stroke-width="20" stroke-linecap="round"/><path d="M226 214 C 270 214 290 268 334 268" fill="none" stroke="url(#tube)" stroke-width="8" stroke-linecap="round" filter="url(#glow)"/>
+<circle cx="146" cy="214" r="6" fill="#fd88d9" filter="url(#glow)"/>
+<circle cx="334" cy="160" r="12" fill="#161423" stroke="#fff" stroke-opacity=".35" stroke-width="2.5"/><circle cx="334" cy="160" r="5" fill="#fd88d9" filter="url(#glow)"/>
+<circle cx="334" cy="268" r="12" fill="#161423" stroke="#fff" stroke-opacity=".35" stroke-width="2.5"/><circle cx="334" cy="268" r="5" fill="#fd88d9" filter="url(#glow)"/>
+<circle cx="226" cy="214" r="18" fill="url(#node)" filter="url(#glow)"/>
+<circle cx="226" cy="214" r="7" fill="#f4f2ff"/>
 </svg>

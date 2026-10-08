@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{
+    image::Image,
     menu::{MenuBuilder, MenuItem, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WindowEvent,
@@ -49,10 +50,7 @@ pub fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
         .items(&[&open_item, &exit_item])
         .build()?;
 
-    let icon = app
-        .default_window_icon()
-        .ok_or_else(|| anyhow::anyhow!("no default window icon"))?
-        .clone();
+    let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
 
     let tray = TrayIconBuilder::new()
         .icon(icon)
