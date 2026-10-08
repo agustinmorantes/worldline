@@ -980,8 +980,9 @@ fn the_loop_announces_every_sync_and_push_before_its_report() {
             _ => None,
         })
         .collect();
-    // Start-up sync, at least one push, the final push: each announced first.
-    assert!(events.len() >= 6, "{events:?}");
+    // At least the start-up sync and the final push (the checkpoint's push
+    // can coalesce with the start-up sync): each announced first.
+    assert!(events.len() >= 4, "{events:?}");
     for pair in events.chunks(2) {
         assert_eq!(pair, ["started", "completed"], "{events:?}");
     }
