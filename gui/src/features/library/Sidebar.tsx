@@ -7,6 +7,7 @@ import { formatRelative, type Messages, useLocale, useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { accentVars } from '@/shared/tokens/accent';
 import { cn } from '@/shared/ui/utils';
+import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { GameIcon } from './GameIcon';
 import { type GameStatus, type GameSyncView, gameStatus, sortLibrary } from './library';
 import { useGames, useSyncReport, useSyncSettings } from './queries';
@@ -170,20 +171,9 @@ function StatusLine({ status }: { status: GameStatus }): ReactElement {
   });
   return (
     <span className={cn('flex items-center gap-1.5 truncate text-xs font-medium transition-colors duration-300', fromDevice ? 'text-deck' : 'text-tx3')}>
-      {fromDevice && <HandheldGlyph />}
+      {fromDevice && <DeviceGlyph kind="handheld" />}
       {text}
     </span>
-  );
-}
-
-function HandheldGlyph(): ReactElement {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
-      <rect x="2" y="6" width="20" height="12" rx="4" />
-      <path d="M6 12h4M8 10v4" />
-      <circle cx="16" cy="11" r="1" />
-      <circle cx="18" cy="13" r="1" />
-    </svg>
   );
 }
 

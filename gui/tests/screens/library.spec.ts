@@ -8,7 +8,7 @@ test('lists the games and opens one', async ({ page }) => {
 
   await library.getByText('Elden Ring').click();
   await expect(page.getByRole('heading', { name: 'Elden Ring' })).toBeVisible();
-  await expect(page.getByText('Before Malenia')).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Selected checkpoint' }).getByText('Before Malenia')).toBeVisible();
 });
 
 test.describe('first run', () => {

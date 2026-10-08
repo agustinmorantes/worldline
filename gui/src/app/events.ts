@@ -13,6 +13,8 @@ export function listenNotifications(): void {
     void queryClient.invalidateQueries({ queryKey: ['game', gameId] });
     void queryClient.invalidateQueries({ queryKey: ['versions', gameId] });
 
+    // The game's own view shows the new dot instead, and a hidden window shows nothing.
+    if (document.hidden || window.location.pathname === `/game/${gameId.toString()}`) return;
     void getGame(gameId)
       .then(game => {
         toast("Version created", {

@@ -123,11 +123,95 @@ function library(): Fixture {
   };
 }
 
+
+const DECK: DeviceMetadata = {
+  device_uuid: '00000000-0000-4000-8000-00000000d002',
+  name: 'Steam Deck',
+  platform: 'linux',
+  first_seen: '2024-01-01T00:00:00Z',
+  last_seen: '2024-01-01T00:00:00Z',
+  kind: 'handheld',
+};
+
+type Checkpoint = [id: number, parent: number | null, minutesAgo: number, tag?: string | null, deck?: boolean];
+
+/** Three days of Hades: a session on the handheld, a timeline you left, and tonight's play. */
+const HADES: Checkpoint[] = [
+  [1, null, 60 * 72 + 60, null, true],
+  [2, 1, 60 * 72 + 25, 'Asphodel', true],
+  [3, 2, 60 * 26],
+  [4, 3, 60 * 26 - 25],
+  [5, 4, 60 * 26 - 50, 'Before Hydra'],
+  [6, 4, 60 * 24],
+  [7, 6, 60 * 24 - 30],
+  [8, 5, 40],
+  [9, 8, 25, 'Elysium'],
+  [10, 9, 8],
+];
+
+function hades(extra: Checkpoint[] = []): FullGame {
+  const main = makeSlot({ id: 1, game_id: 1, name: 'Main', active_version_id: 10 });
+  const versions = [...HADES, ...extra].map(([id, parent, minutes, tag = null, deck = false]) => makeVersion({
+    id,
+    slot_id: 1,
+    parent_id: parent,
+    version_number: id,
+    tag,
+    created_at: minutesAgo(minutes),
+    origin_device: deck ? DECK.device_uuid : null,
+  }));
+  return makeGame({
+    id: 1,
+    title: 'Hades',
+    active_slot_id: 1,
+    active_slot: main,
+    slots: [main],
+    slot_summaries: [{ slot_id: 1, version_count: versions.length, last_created_at: versions[versions.length - 1].created_at }],
+    versions,
+    last_version: versions[versions.length - 1],
+    tracked_dirs: [makeTrackedDir({ id: 1, game_id: 1, path: 'C:/Users/Player/Saved Games/Hades' })],
+  });
+}
+
+function celeste(): FullGame {
+  const main = makeSlot({ id: 2, game_id: 2, name: 'Main', active_version_id: null });
+  return makeGame({ id: 2, title: 'Celeste', active_slot_id: 2, active_slot: main, slots: [main], versions: [], last_version: null });
+}
+
+/** The Sessions view: Hades with history, Celeste with none, the handheld synced in. */
+function sessions(relation: Divergence = 'in_sync', extra: Checkpoint[] = []): Fixture {
+  const games = [hades(extra), celeste()];
+  const deckVersions = games[0].versions.filter((v) => v.origin_device === DECK.device_uuid);
+  const pending = relation === 'fast_forward' ? deckVersions[deckVersions.length - 1] : null;
+  return {
+    ...base(games),
+    syncSettings: { remote_path: 'D:/Cloud/Worldline' },
+    syncReport: {
+      synced_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+      games: [{
+        game_uuid: games[0].uuid,
+        relation,
+        remote_device: relation === 'in_sync' ? null : DECK.name,
+        remote_version_uuid: pending?.uuid ?? null,
+        remote_version_id: pending?.id ?? null,
+        auto_applied: false,
+      }],
+      remote_games: [],
+      devices: [DECK],
+      remote_versions: Object.fromEntries(deckVersions.map((v) => [v.uuid, DECK.name])),
+      problems: [],
+    },
+  };
+}
+
 export const FIXTURES = {
   default: () => base([eldenRing(), hollowKnight()]),
   empty: () => base([]),
   library,
   syncing: () => ({ ...library(), syncReport: 'pending' as const }),
+  sessions: () => sessions(),
+  ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
+  diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),
 } satisfies Record<string, () => Fixture>;
 
 export type FixtureName = keyof typeof FIXTURES;

@@ -1,485 +1,263 @@
-import { createFileRoute, useRouter } from '@tanstack/react-router';
-import { ReactElement, useMemo, useState } from 'react';
-import { useGame, useRetiredVersions, useSyncReport } from '@/features/library/queries';
-import { DockedGameIcon } from '@/features/library/DockedGameIcon';
-import { Skeleton } from '@/shared/ui/skeleton';
-import { Button } from '@/shared/ui/button';
-import { Input } from '@/shared/ui/input';
-import { BranchingTimeline } from '@/features/game/BranchingTimeline';
-import { EmptyTimelineState } from '@/features/game/EmptyTimelineState';
-import { SlotSelector } from '@/features/game/SlotSelector';
-import { RestoreModal } from '@/features/game/RestoreModal';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog';
-import { Trash2, Plus, LayoutGrid, ListTree, MapPin, Pencil, Image, EllipsisVertical, History } from 'lucide-react';
+import { createFileRoute } from '@tanstack/react-router';
+import { type ReactElement, useMemo, useState } from 'react';
+import { useGame, useRetiredVersions, useSyncReport, useSyncSettings } from '@/features/library/queries';
+import { useSyncRunning } from '@/features/library/sync-activity';
+import { useNow } from '@/features/library/useNow';
+import { GameHeader, type GameView } from '@/features/game/GameHeader';
+import { checkpointDevice, pendingRemoteVersion, syncChip } from '@/features/game/game-view';
+import { CheckpointPanel } from '@/features/sessions/CheckpointPanel';
+import { formatDuration, SessionList } from '@/features/sessions/SessionList';
+import { useDevice, useMonitoringSettings } from '@/features/sessions/queries';
+import { layoutSessions, playedMs, sessionGapMs } from '@/features/sessions/sessions';
 import type { Version } from '@/ipc/bindings/Version';
-import type { Slot } from '@/ipc/bindings/Slot';
-import { toast } from 'sonner';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuSeparator
-} from '@/shared/ui/dropdown-menu';
-import {
-  applyRemoteVersion,
-  confirm,
-  createSlot,
-  deleteGame,
-  deleteSlot,
-  exportGameHistory,
-  pickFile,
-  pickFolder,
-  pickSavePath,
-  renameSlot,
-  restoreVersion,
-  saveGame,
-  setGameIcon,
-  switchSlot,
-  tagVersion,
-} from '@/ipc/commands';
-import { reportError } from '@/shared/errors/report';
+import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
-import { ScrollArea } from '@/shared/ui/scroll-area';
-import { formatDistanceToNow } from 'date-fns';
+import { reportError } from '@/shared/errors/report';
+import { useT } from '@/shared/i18n';
+import { Button } from '@/shared/ui/button';
+import { Skeleton } from '@/shared/ui/skeleton';
+import { cn } from '@/shared/ui/utils';
+
+interface GameSearch {
+  /** The selected checkpoint; your current one when absent. */
+  v?: number;
+  view?: GameView;
+}
 
 export const Route = createFileRoute('/game/$gameId')({
+  validateSearch: (search: Record<string, unknown>): GameSearch => ({
+    v: typeof search.v === 'number' ? search.v : undefined,
+    view: search.view === 'graph' ? 'graph' : undefined,
+  }),
   component: GameDetail,
 });
 
-export function GameDetail(): ReactElement {
-  const router = useRouter();
-  const { gameId } = Route.useParams();
-  const id = parseInt(gameId);
-  const { data: fullGame, isLoading, error, refetch } = useGame(id);
-  const { data: syncReport, isFetching: syncing, error: syncError, refetch: refreshSync } = useSyncReport();
-  const { data: retiredVersionIds = [] } = useRetiredVersions();
-  const retiredVersions = useMemo(() => new Set(retiredVersionIds), [retiredVersionIds]);
+/** How long the rewind streaks play before the list settles. */
+const REWIND_MS = 640;
 
-  const [restoreTarget, setRestoreTarget] = useState<Version | null>(null);
-  const [editTitleOpen, setEditTitleOpen] = useState(false);
-  const [editTitleValue, setEditTitleValue] = useState('');
-  // Slot operations and restores both rewrite the live save directory, so one
-  // must not be startable while the other is running.
-  const [restoring, setRestoring] = useState(false);
-  const [exporting, setExporting] = useState(false);
+export function GameDetail(): ReactElement {
+  const t = useT();
+  const { gameId } = Route.useParams();
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const id = parseInt(gameId);
+  const { data: game, isLoading, error, refetch } = useGame(id);
+  const { data: settings } = useSyncSettings();
+  const report = useSyncReport();
+  const running = useSyncRunning();
+  const { data: retiredIds = [] } = useRetiredVersions();
+  const { data: monitoring } = useMonitoringSettings();
+  const { data: here } = useDevice();
+  const now = useNow(60_000);
+
+  // Rewinds, switches and slot changes all rewrite the live save folder: one at a time.
+  const [busy, setBusy] = useState(false);
+  const [rewinding, setRewinding] = useState(false);
+  const [landedId, setLandedId] = useState<number | null>(null);
+  const [openForks, setOpenForks] = useState<ReadonlySet<number>>(() => new Set());
+
+  const retired = useMemo(() => new Set(retiredIds), [retiredIds]);
+  const versions = useMemo(
+    () => (game?.versions ?? []).filter((v) => v.slot_id === game?.active_slot?.id),
+    [game],
+  );
+  const activeId = game?.active_slot?.active_version_id ?? null;
+  const status = report.data?.games.find((s) => s.game_uuid === game?.uuid);
+  const pendingId = pendingRemoteVersion(status, retired);
+  const gapMs = sessionGapMs(monitoring?.version_cooldown_minutes ?? 0);
+  const layout = useMemo(
+    () => layoutSessions({ versions, activeId, gapMs, pendingId }),
+    [versions, activeId, gapMs, pendingId],
+  );
 
   if (isLoading) return <GameDetailSkeleton />;
 
-  if (error || !fullGame) {
+  if (error !== null || game === undefined) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <div className="text-destructive font-bold">Failed to load game</div>
-        <Button onClick={() => { void refetch(); }}>Retry</Button>
+      <div className="flex h-full flex-col items-center justify-center gap-4">
+        <div className="font-bold text-err">{t.errors.loadFailed}</div>
+        <Button onClick={() => { void refetch(); }}>{t.errors.retry}</Button>
       </div>
     );
   }
 
-  const game = fullGame;
-  const { versions, tracked_dirs, slots } = fullGame;
-  // The timeline shows one slot's history. `get_game` already scopes `versions`
-  // to the active slot, and this keeps that guarantee where the timeline can
-  // see it rather than trusting a backend detail three layers away.
-  const activeSlotVersions = versions.filter((v) => v.slot_id === game.active_slot?.id);
-  // A game has no active version of its own — the pointer lives on the slot.
-  const activeVersionId = game.active_slot?.active_version_id ?? undefined;
-  const gameSync = syncReport?.games.find(status => status.game_uuid === game.uuid);
-  const pendingRemoteVersionId = gameSync?.relation === 'fast_forward'
-    && (typeof gameSync.remote_version_uuid !== 'string' || !retiredVersions.has(gameSync.remote_version_uuid))
-    ? gameSync.remote_version_id
-    : undefined;
-  const syncLabel = syncing
-    ? 'Syncing…'
-    : syncError !== null
-      ? 'Offline'
-      : syncReport !== undefined
-        ? `Synced ${formatDistanceToNow(new Date(syncReport.synced_at), { addSuffix: true })}`
-        : 'Sync off';
+  const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
+  const chipState = syncChip({ on: syncOn, running: running || report.isFetching, reported: report.data !== undefined, status });
+  const deviceOf = (version: Version): ReturnType<typeof checkpointDevice> => checkpointDevice(version, here, report.data);
+  const remoteKind = report.data?.devices.find((d) => d.name === status?.remote_device)?.kind ?? 'desktop';
+  const head = layout.lineage.length > 0 ? layout.lineage[layout.lineage.length - 1] : null;
+  const selected = versions.find((v) => v.id === search.v) ?? head;
+  const onLine = selected !== null && layout.lineage.some((v) => v.id === selected.id);
+  const sessions = layout.days.reduce((n, day) => n + day.rows.length, 0);
+  const lessPlay = selected === null || !onLine ? 0 : playedMs(layout.lineage.slice(layout.lineage.findIndex((v) => v.id === selected.id) + 1), versions, gapMs);
 
-  async function handleDelete(): Promise<void> {
-    const confirmed = await confirm(
-      'Delete Game',
-      `Are you sure you want to delete ${game.title}? This will not remove physical save files.`,
-    );
-    if (!confirmed) return;
-    try {
-      await deleteGame(game.id);
-      void queryClient.invalidateQueries({ queryKey: ['games'] });
-      void router.navigate({ to: '/' });
-      toast.success('Game deleted');
-    } catch (err) {
-      reportError('Failed to delete game', err);
-    }
-  }
+  const refresh = (): Promise<unknown> => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['game', id] }),
+    queryClient.invalidateQueries({ queryKey: ['games'] }),
+  ]);
+  const select = (v: number | undefined): void => {
+    void navigate({ search: (prev) => ({ ...prev, v }), replace: true });
+  };
 
-  async function handleConfirmRestore(): Promise<void> {
-    if (restoreTarget === null) return;
-    const v = restoreTarget;
-    setRestoreTarget(null);
+  async function rewind(version: Version): Promise<void> {
+    setBusy(true);
+    setRewinding(true);
+    const streaks = new Promise((resolve) => setTimeout(resolve, REWIND_MS));
     try {
-      setRestoring(true);
-      await restoreVersion(v.id);
-      void queryClient.invalidateQueries({ queryKey: ['game', id] });
-      void queryClient.invalidateQueries({ queryKey: ['games'] });
-      toast.success(`Restored v${v.version_number.toString()}`);
+      await restoreVersion(version.id);
+      await Promise.all([refresh(), streaks]);
+      setLandedId(version.id);
+      select(undefined);
     } catch (err) {
-      reportError('Failed to restore version', err);
+      reportError(t.game.failed.rewind, err);
     } finally {
-      setRestoring(false);
+      setRewinding(false);
+      setBusy(false);
     }
   }
 
-  async function handleApplyRemote(versionId: number): Promise<void> {
+  async function name(version: Version, tag: string): Promise<void> {
     try {
-      setRestoring(true);
-      await applyRemoteVersion(versionId);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['game', id] }),
-        queryClient.invalidateQueries({ queryKey: ['games'] }),
-        refreshSync(),
-      ]);
-      toast.success('Remote progress applied');
+      await tagVersion(version.id, tag);
+      await queryClient.invalidateQueries({ queryKey: ['game', id] });
     } catch (err) {
-      reportError('Failed to apply remote progress', err);
+      reportError(t.game.failed.name, err);
+    }
+  }
+
+  async function continueHere(): Promise<void> {
+    if (pendingId === null) return;
+    setBusy(true);
+    try {
+      await applyRemoteVersion(pendingId);
+      await Promise.all([refresh(), report.refetch()]);
+      setLandedId(pendingId);
+      select(undefined);
+    } catch (err) {
+      reportError(t.game.failed.apply, err);
     } finally {
-      setRestoring(false);
+      setBusy(false);
     }
   }
 
-  async function handleTag(v: Version, tag: string): Promise<void> {
-    if (tag === (v.tag ?? '')) return;
+  async function slotChange(change: () => Promise<unknown>, failed: string): Promise<void> {
+    setBusy(true);
     try {
-      await tagVersion(v.id, tag);
-      void queryClient.invalidateQueries({ queryKey: ['game', id] });
-      toast.success('Version updated');
+      await change();
+      await refresh();
+      setOpenForks(new Set());
+      select(undefined);
     } catch (err) {
-      reportError('Failed to update version tag', err);
-    }
-  }
-
-  async function handleChangeIcon(): Promise<void> {
-    const selected = await pickFile('Select Game Icon', [{ name: 'Images & Executables', extensions: ['png', 'jpg', 'jpeg', 'ico', 'bmp', 'webp', 'exe'] }]);
-    if (selected === null) return;
-    try {
-      await setGameIcon(game.id, selected);
-      void queryClient.invalidateQueries({ queryKey: ['game', id] });
-      void queryClient.invalidateQueries({ queryKey: ['games'] });
-      toast.success('Icon updated');
-    } catch (err) {
-      reportError('Failed to set icon', err);
-    }
-  }
-
-  async function handleExportHistory(): Promise<void> {
-    try {
-      const destination = await pickSavePath('Choose a new history bundle directory name', `${game.title} history`);
-      if (destination === null) return;
-      setExporting(true);
-      const report = await exportGameHistory(game.id, destination);
-      toast.success(`Exported ${report.version_count.toString()} version(s) for ${report.title}`);
-    } catch (err) {
-      reportError('History export failed', err);
+      reportError(failed, err);
     } finally {
-      setExporting(false);
+      setBusy(false);
     }
   }
 
-  function handleOpenEditTitle(): void {
-    setEditTitleValue(game.title);
-    setEditTitleOpen(true);
-  }
-
-  async function handleSaveTitle(): Promise<void> {
-    const newTitle = editTitleValue.trim();
-    if (newTitle === '' || newTitle === game.title) {
-      setEditTitleOpen(false);
+  function onSyncChip(): void {
+    if (chipState.kind === 'played-too') {
+      // Unfold the other device's timeline where it left yours.
+      const theirs = layout.days.flatMap((d) => d.rows.flatMap((r) => r.forks))
+        .filter((f) => f.line.some((v) => !deviceOf(v).here))
+        .map((f) => f.root.id);
+      setOpenForks(new Set([...openForks, ...theirs]));
       return;
     }
-    try {
-      await saveGame({ id: game.id, title: newTitle }, tracked_dirs.map((d) => d.path));
-      void queryClient.invalidateQueries({ queryKey: ['game', id] });
-      void queryClient.invalidateQueries({ queryKey: ['games'] });
-      setEditTitleOpen(false);
-      toast.success('Title updated');
-    } catch (err) {
-      reportError('Failed to update title', err);
-    }
+    if (chipState.kind === 'new-from') return;
+    void report.refetch().then((result) => {
+      if (result.isError) reportError(t.sync.failed, result.error);
+    });
   }
 
-  async function handleAddDirectory(): Promise<void> {
-    const selected = await pickFolder('Select Save Directory');
-    if (selected === null) return;
-    try {
-      await saveGame({ id: game.id, title: game.title }, [...tracked_dirs.map((d) => d.path), selected]);
-      void queryClient.invalidateQueries({ queryKey: ['game', id] });
-      toast.success('Directory added');
-    } catch (err) {
-      reportError('Failed to add directory', err);
-    }
+  function toggleFork(rootId: number): void {
+    const next = new Set(openForks);
+    if (!next.delete(rootId)) next.add(rootId);
+    setOpenForks(next);
   }
 
-  async function handleCreateSlot(name: string): Promise<void> {
-    try {
-      await createSlot(game.id, name);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['game', id] }),
-        queryClient.invalidateQueries({ queryKey: ['games'] }),
-      ]);
-      toast.success(`Created slot ${name}`);
-    } catch (err) {
-      reportError('Failed to create slot', err);
-      throw err;
-    }
-  }
-
-  async function handleSwitchSlot(slot: Slot): Promise<void> {
-    try {
-      await switchSlot(game.id, slot.id);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['game', id] }),
-        queryClient.invalidateQueries({ queryKey: ['games'] }),
-      ]);
-      toast.success(`Switched to ${slot.name}`);
-    } catch (err) {
-      reportError('Failed to switch slot', err);
-      throw err;
-    }
-  }
-
-  async function handleRenameSlot(slot: Slot, name: string): Promise<void> {
-    try {
-      await renameSlot(slot.id, name);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['game', id] }),
-        queryClient.invalidateQueries({ queryKey: ['games'] }),
-      ]);
-      toast.success(`Renamed slot to ${name}`);
-    } catch (err) {
-      reportError('Failed to rename slot', err);
-      throw err;
-    }
-  }
-
-  async function handleDeleteSlot(slot: Slot, replacementSlotId?: number): Promise<void> {
-    try {
-      await deleteSlot(slot.id, replacementSlotId);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['game', id] }),
-        queryClient.invalidateQueries({ queryKey: ['games'] }),
-      ]);
-      toast.success(`Deleted slot ${slot.name}`);
-    } catch (err) {
-      reportError('Failed to delete slot', err);
-      throw err;
-    }
-  }
+  const drawer = search.v !== undefined;
 
   return (
-    <div className="flex flex-col h-full bg-background overflow-hidden">
-      <header className="p-8 pb-4 flex items-center gap-6">
-        <DockedGameIcon game={game} />
-        <div className="flex-1 flex flex-col gap-1">
-          <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-black tracking-tight text-foreground">{game.title}</h1>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 rounded-full border-border/50 text-muted-foreground hover:text-foreground">
-                  <EllipsisVertical size={15} />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem onClick={() => { void handleChangeIcon(); }}>
-                  <Image size={14} className="mr-2" /> Change Icon
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleOpenEditTitle}>
-                  <Pencil size={14} className="mr-2" /> Edit Title
-                </DropdownMenuItem>
-                <DropdownMenuItem disabled={exporting} onClick={() => { void handleExportHistory(); }}>
-                  <History size={14} className="mr-2" /> {exporting ? 'Exporting History…' : 'Export History'}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onClick={() => { void handleDelete(); }}>
-                  <Trash2 size={14} className="mr-2" /> Delete Game
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <StatChip label={`${versions.length.toString()} total saves`} />
-            <StatChip label={`${slots.length.toString()} ${slots.length === 1 ? 'slot' : 'slots'}`} />
-            <StatChip label={syncLabel} />
-          </div>
-        </div>
-      </header>
-
-      <Tabs defaultValue="timeline" className="flex-1 flex flex-col overflow-hidden">
-        <div className="px-8 border-b border-border/40">
-          <TabsList className="bg-transparent h-12 p-0 gap-8">
-            <TabsTrigger
-              value="timeline"
-              className="bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-primary rounded-none h-12 px-0 text-sm font-semibold tracking-tight"
-            >
-              <ListTree size={16} className="mr-2" /> Save Timeline
-            </TabsTrigger>
-            <TabsTrigger
-              value="dirs"
-              className="bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-primary rounded-none h-12 px-0 text-sm font-semibold tracking-tight"
-            >
-              <MapPin size={16} className="mr-2" /> Tracked Dirs
-            </TabsTrigger>
-          </TabsList>
-        </div>
-
-        <ScrollArea className="flex-1 min-h-0">
-        <div>
-          <TabsContent value="timeline" className="m-0 p-8 pt-6">
-            {typeof pendingRemoteVersionId === 'number' ? (
-              <section className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-primary/30 bg-primary/10 p-4">
-                <div>
-                  <p className="text-sm font-bold">{gameSync?.remote_device ?? 'Another device'} has newer progress</p>
-                  <p className="text-xs text-muted-foreground">Apply it when the game is closed.</p>
-                </div>
-                <Button disabled={restoring} onClick={() => { void handleApplyRemote(pendingRemoteVersionId); }}>
-                  Apply
-                </Button>
-              </section>
-            ) : null}
-            <div className="flex items-center justify-between mb-8">
-              <SlotSelector
-                slots={slots}
-                activeSlotId={game.active_slot?.id}
-                disabled={restoring}
-                onSwitch={handleSwitchSlot}
-                onCreate={handleCreateSlot}
-                onRename={handleRenameSlot}
-                onDelete={handleDeleteSlot}
-              />
-              <div className="flex items-center gap-1 p-1 bg-el rounded-lg">
-                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md bg-sf shadow-sm text-primary">
-                  <ListTree size={14} />
-                </Button>
-                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md text-muted-foreground/40">
-                  <LayoutGrid size={14} />
-                </Button>
-              </div>
-            </div>
-
-            {activeSlotVersions.length === 0 ? (
-              <EmptyTimelineState
-                gameTitle={game.title}
-                trackedDirCount={tracked_dirs.length}
-              />
-            ) : (
-              <BranchingTimeline
-                versions={activeSlotVersions}
-                activeVersionId={activeVersionId}
-                onRestore={(v) => { setRestoreTarget(v); }}
-                onTag={(v, tag) => { void handleTag(v, tag); }}
-                remoteVersions={syncReport?.remote_versions}
-                retiredVersions={retiredVersions}
-              />
-            )}
-          </TabsContent>
-
-          <TabsContent value="dirs" className="m-0 p-8 pt-6">
-            <div className="max-w-3xl space-y-4">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-lg font-bold tracking-tight">Tracked Directories</h2>
-                  <p className="text-sm text-muted-foreground">The folders currently being monitored for save game changes.</p>
-                </div>
-                <Button size="sm" className="gap-2" onClick={() => { void handleAddDirectory(); }}>
-                  <Plus size={16} /> Add Directory
-                </Button>
-              </div>
-
-              <div className="grid gap-3">
-                {tracked_dirs.map((dir) => (
-                  <div key={dir.id.toString()} className="flex items-center gap-4 p-4 rounded-xl bg-sf border border-border/40 group hover:border-primary/20 transition-all">
-                    <div className="w-10 h-10 rounded-lg bg-el flex items-center justify-center text-muted-foreground shrink-0">
-                      <MapPin size={20} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-mono truncate text-tx2">{dir.path}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </TabsContent>
-        </div>
-        </ScrollArea>
-      </Tabs>
-
-      <RestoreModal
-        version={restoreTarget}
-        onConfirm={() => { void handleConfirmRestore(); }}
-        onCancel={() => { setRestoreTarget(null); }}
+    <div className="flex h-full flex-col overflow-hidden">
+      <GameHeader
+        game={game}
+        sync={chipState}
+        syncDevice={remoteKind}
+        onSyncChip={onSyncChip}
+        played={versions.length === 0 ? null : formatDuration(playedMs(layout.lineage, versions, gapMs), t)}
+        sessions={sessions}
+        view={search.view ?? 'sessions'}
+        onView={(view) => { void navigate({ search: (prev) => ({ ...prev, view: view === 'graph' ? view : undefined }) }); }}
+        busy={busy}
+        onSwitchSlot={(slotId) => {
+          if (slotId !== game.active_slot?.id) void slotChange(() => switchSlot(game.id, slotId), t.game.failed.switchSlot);
+        }}
+        onCreateSlot={() => { void slotChange(() => createSlot(game.id, t.game.playthroughName(game.slots.length + 1)), t.game.failed.newSlot); }}
       />
-
-      <Dialog open={editTitleOpen} onOpenChange={setEditTitleOpen}>
-        <DialogContent className="sm:max-w-[400px] bg-sf border-border/40">
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold tracking-tight">Edit Game Title</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={editTitleValue}
-            onChange={(e) => { setEditTitleValue(e.target.value); }}
-            className="bg-el border-border/40"
-            onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveTitle(); }}
-            autoFocus
-          />
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="ghost" onClick={() => { setEditTitleOpen(false); }}>Cancel</Button>
-            <Button onClick={() => { void handleSaveTitle(); }} className="font-bold">Save</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function StatChip({ label }: { label: string }): ReactElement {
-  return (
-    <div className="px-2.5 py-1 rounded-md bg-el border border-border/40 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80 flex items-center gap-1.5">
-      <div className="w-1 h-1 rounded-full bg-primary/40" />
-      {label}
+      <div className="flex min-h-0 flex-1 gap-4 px-8">
+        <SessionList
+          game={game}
+          layout={layout}
+          versions={versions}
+          gapMs={gapMs}
+          activeId={activeId}
+          selectedId={selected?.id ?? null}
+          onSelect={(v) => { select(v === activeId ? undefined : v); }}
+          openForks={openForks}
+          onToggleFork={toggleFork}
+          deviceOf={deviceOf}
+          ghost={pendingId === null ? null : { onContinue: () => { void continueHere(); }, busy }}
+          rewinding={rewinding}
+          landedId={landedId}
+          now={now}
+        />
+        {selected !== null && (
+          <aside
+            aria-label={t.checkpoint.panel}
+            className={cn(
+              'w-[336px] shrink-0 overflow-y-auto pb-8',
+              'max-[999px]:fixed max-[999px]:bottom-4 max-[999px]:right-4 max-[999px]:z-20 max-[999px]:max-h-[calc(100%-2rem)] max-[999px]:pb-0',
+              !drawer && 'max-[999px]:hidden',
+            )}
+          >
+            <CheckpointPanel
+              game={game}
+              version={selected}
+              active={head}
+              onLine={onLine}
+              device={deviceOf(selected)}
+              lessPlayMs={lessPlay}
+              aheadDevice={pendingId === null ? null : (status?.remote_device ?? t.sessions.anotherDevice)}
+              busy={busy}
+              onName={(tag) => { void name(selected, tag); }}
+              onRewind={() => { void rewind(selected); }}
+              onClose={() => { select(undefined); }}
+              now={now}
+            />
+          </aside>
+        )}
+      </div>
     </div>
   );
 }
 
 function GameDetailSkeleton(): ReactElement {
   return (
-    <div className="flex flex-col h-full bg-background animate-pulse">
-      <header className="p-8 pb-4 flex items-center gap-6">
-        <Skeleton className="w-16 h-16 rounded-lg" />
-        <div className="flex-1 space-y-2">
-          <Skeleton className="h-8 w-64" />
-          <div className="flex gap-2">
-            <Skeleton className="h-5 w-24" />
-            <Skeleton className="h-5 w-24" />
-          </div>
+    <div className="flex h-full animate-pulse flex-col">
+      <header className="flex items-center gap-5 px-8 pb-6 pt-6">
+        <Skeleton className="size-[72px] rounded-[22px]" />
+        <div className="flex-1 space-y-3">
+          <Skeleton className="h-9 w-64" />
+          <Skeleton className="h-[30px] w-80 rounded-full" />
         </div>
       </header>
-      <div className="px-8 border-b border-border/40">
-        <div className="h-12 flex gap-8">
-          <Skeleton className="h-full w-32" />
-          <Skeleton className="h-full w-32" />
-        </div>
-      </div>
-      <div className="p-8 space-y-6">
-        <div className="flex justify-between">
-          <Skeleton className="h-8 w-48" />
-          <Skeleton className="h-8 w-24" />
-        </div>
-        <div className="space-y-4">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={`skeleton-${i.toString()}`} className="h-16 w-full rounded-xl" />
+      <div className="flex flex-1 gap-4 px-8">
+        <div className="flex-1 space-y-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={`skeleton-${i.toString()}`} className="h-14 w-full rounded-[14px]" />
           ))}
         </div>
+        <Skeleton className="h-64 w-[336px] rounded-[20px] max-[999px]:hidden" />
       </div>
     </div>
   );

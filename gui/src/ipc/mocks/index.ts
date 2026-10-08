@@ -2,6 +2,7 @@
 // (`bun run dev:mock`, Playwright screen tests). Never bundled into the app.
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { InvokeArgs } from '@tauri-apps/api/core';
+import { makeSlot } from '../builders';
 import { FIXTURES, type Fixture, type FixtureName } from './fixtures';
 
 const FIXTURE_KEY = 'worldline-mock-fixture';
@@ -41,9 +42,44 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
 
   switch (cmd) {
     case 'get_games':
-      return state.games;
+      return structuredClone(state.games);
     case 'get_game':
-      return game(args.id);
+      return structuredClone(game(args.id));
+    case 'restore_version':
+    case 'apply_remote_version': {
+      const versionId = cmd === 'restore_version' ? args.id : args.versionId;
+      const slot = state.games.find((g) => g.versions.some((v) => v.id === versionId))?.active_slot ?? null;
+      if (slot === null) throw new Error(`Version ${String(versionId)} not found`);
+      slot.active_version_id = versionId as number;
+      return null;
+    }
+    case 'tag_version': {
+      const version = state.games.flatMap((g) => g.versions).find((v) => v.id === args.id);
+      if (version === undefined) throw new Error(`Version ${String(args.id)} not found`);
+      version.tag = args.tag === '' ? null : (args.tag as string);
+      return version;
+    }
+    case 'switch_slot': {
+      const target = game(args.gameId);
+      const slot = target.slots.find((s) => s.id === args.slotId);
+      if (slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
+      target.active_slot = slot;
+      target.active_slot_id = slot.id;
+      return target;
+    }
+    case 'create_slot': {
+      const target = game(args.gameId);
+      const id = Math.max(0, ...state.games.flatMap((g) => g.slots.map((s) => s.id))) + 1;
+      const slot = makeSlot({ id, game_id: target.id, name: args.name as string, active_version_id: null });
+      target.slots.push(slot);
+      target.slot_summaries.push({ slot_id: id, version_count: 0, last_created_at: null });
+      target.active_slot = slot;
+      target.active_slot_id = id;
+      return target;
+    }
+    case 'untrack_game':
+      state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
     case 'get_prefs_path':
       return 'mock://prefs.json';
     case 'get_startup_notice':
