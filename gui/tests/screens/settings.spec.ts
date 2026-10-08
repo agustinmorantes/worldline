@@ -148,7 +148,7 @@ test.describe('appearance', () => {
     await expect(page.locator('html')).toHaveAttribute('data-motion', 'reduced');
 
     await appearance.getByRole('radio', { name: 'Español' }).click();
-    await expect(page.getByRole('heading', { name: 'Ajustes' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Configuración' })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'es');
     await expect(page.getByRole('region', { name: 'Apariencia' }).getByRole('radio', { name: 'Español' })).toHaveAttribute('aria-checked', 'true');
   });

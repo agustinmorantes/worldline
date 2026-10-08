@@ -288,6 +288,7 @@ export const en = {
     skip: 'Skip tour',
     steps: 'steps',
     doIt: 'do it',
+    spaceKey: 'Space',
     lessons: { 1: 'Checkpoints', 2: 'Rewind', 3: 'Timelines' },
     lessonOf: (n: number, name: string): string => `Step ${n.toString()} of 3 · ${name}`,
     titles: { 1: 'Just play.', 2: 'Made a bad call?', 3: 'Take the other path.' },

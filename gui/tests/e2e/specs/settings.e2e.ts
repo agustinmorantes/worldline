@@ -56,8 +56,8 @@ describe('Settings', () => {
 
   it('switches the language of the window and the tray', async () => {
     await section('Appearance').$('[role="radio"]=Español').click();
-    await expect($('h1=Ajustes')).toBeDisplayed();
-    await expect($('aside').$('a*=Ajustes')).toBeDisplayed();
+    await expect($('h1=Configuración')).toBeDisplayed();
+    await expect($('aside').$('a*=Configuración')).toBeDisplayed();
     await browser.waitUntil(async () => (await invoke<TrayLabels>('e2e_tray_labels')).open === 'Abrir');
     expect((await invoke<TrayLabels>('e2e_tray_labels')).exit).toBe('Salir');
 

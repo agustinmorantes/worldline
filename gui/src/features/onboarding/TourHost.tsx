@@ -304,7 +304,7 @@ function TourCard({ start, fromHelp, onClose }: {
                   <Kbd>←</Kbd>
                   <Kbd>→</Kbd>
                   <span className="ml-1 mr-3">{t.tour.steps}</span>
-                  <Kbd>Space</Kbd>
+                  <Kbd>{t.tour.spaceKey}</Kbd>
                   <span className="ml-1">{t.tour.doIt}</span>
                 </div>
                 <Scene demo={demo} />
