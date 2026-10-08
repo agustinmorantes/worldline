@@ -110,6 +110,31 @@ console.log('Generated source.svg and source-1024.png');
 execSync(`bun tauri icon "${iconsDir}source-1024.png"`, { stdio: 'inherit', cwd: guiDir });
 
 // Small sizes use the small design, which stays readable where the main one turns to mud.
-writeFileSync(`${iconsDir}32x32.png`, render(smallSvg(32, 5), 32));
-writeFileSync(`${iconsDir}tray.png`, render(smallSvg(64, 4), 64));
+// Stroke widths per size come from the design (on its 64 grid).
+const SW = { 16: 6, 24: 5.4, 32: 5, 48: 4.4, 64: 4 };
+const small = (px) => render(smallSvg(px, SW[px]), px);
+writeFileSync(`${iconsDir}32x32.png`, small(32));
+
+// The Windows icon: the small design up to 64, the main one at 256. PNG entries, so the ICO
+// is a header, a directory and the images back to back.
+const entries = [16, 24, 32, 48, 64].map((px) => [px, small(px)]).concat([[256, render(main, 256)]]);
+const head = Buffer.alloc(6 + 16 * entries.length);
+head.writeUInt16LE(1, 2);
+head.writeUInt16LE(entries.length, 4);
+let offset = head.length;
+entries.forEach(([px, png], i) => {
+  const o = 6 + 16 * i;
+  head[o] = px % 256;
+  head[o + 1] = px % 256;
+  head.writeUInt16LE(1, o + 4);
+  head.writeUInt16LE(32, o + 6);
+  head.writeUInt32LE(png.length, o + 8);
+  head.writeUInt32LE(offset, o + 12);
+  offset += png.length;
+});
+writeFileSync(`${iconsDir}icon.ico`, Buffer.concat([head, ...entries.map(([, png]) => png)]));
+
+// The tray shows it at 16 to 32 px: drawn at 32 with the 16 px stroke, so a 2x downscale
+// lands on the design's 16 px weight and 200% scaling stays crisp.
+writeFileSync(`${iconsDir}tray.png`, render(smallSvg(32, SW[16]), 32));
 console.log('Done: icons generated in src-tauri/icons/');
