@@ -354,7 +354,7 @@ pub fn classify(
 /// Whether a process runs from inside `install_path`. `None` means unknown,
 /// which callers treat as running (fail closed).
 pub fn game_is_running(install_path: Option<&str>) -> Option<bool> {
-    let install_path = Path::new(install_path?);
+    let install_path = install_path?;
     let system =
         sysinfo::System::new_with_specifics(sysinfo::RefreshKind::nothing().with_processes(
             sysinfo::ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
@@ -367,16 +367,11 @@ pub fn game_is_running(install_path: Option<&str>) -> Option<bool> {
     if executables.is_empty() {
         return None;
     }
-    Some(executables.iter().any(|exe| {
-        let (exe, dir) = (exe.to_string_lossy(), install_path.to_string_lossy());
-        if cfg!(windows) {
-            let exe = exe.replace('/', "\\").to_lowercase();
-            let dir = dir.replace('/', "\\").to_lowercase();
-            exe.starts_with(&format!("{}\\", dir.trim_end_matches('\\')))
-        } else {
-            Path::new(exe.as_ref()).starts_with(install_path)
-        }
-    }))
+    Some(
+        executables
+            .iter()
+            .any(|exe| crate::detection::running::runs_from(exe, install_path)),
+    )
 }
 
 #[cfg(test)]

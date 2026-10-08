@@ -40,7 +40,7 @@ impl Index {
     }
 
     /// Projects one game from its files in `store`. Device-local columns
-    /// (active pointers) are kept; a tombstoned game is removed.
+    /// (active pointers, install dir) are kept; a tombstoned game is removed.
     pub fn upsert_game(
         &self,
         record: &GameRecord,
@@ -216,6 +216,20 @@ impl Index {
         diesel::update(slots::table.find(slot_id))
             .set(slots::active_version_id.eq(version_id))
             .execute(conn)?;
+        Ok(())
+    }
+
+    /// Every game's id, normalized title and device-local install dir.
+    pub fn install_dirs(&self) -> Result<Vec<(i32, String, Option<String>)>> {
+        Ok(games::table
+            .select((games::id, games::title_normalized, games::install_dir))
+            .load(&mut self.conn()?)?)
+    }
+
+    pub fn set_install_dir(&self, game_id: i32, dir: Option<&str>) -> Result<()> {
+        diesel::update(games::table.find(game_id))
+            .set(games::install_dir.eq(dir))
+            .execute(&mut self.conn()?)?;
         Ok(())
     }
 

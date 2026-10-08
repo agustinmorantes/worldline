@@ -1,4 +1,5 @@
 use crate::bundle::{HistoryBundleSummary, HistoryTransferReport};
+use crate::detection::running::RunningMonitor;
 use crate::detection::{CaptureTarget, Notification, NotificationReceiver, Suppression, Watcher};
 use crate::history::{CheckpointOutcome, History, game_uuid};
 use crate::index::{DbPool, Index};
@@ -119,11 +120,14 @@ pub struct WorldlineCore {
     inner: Arc<Inner>,
     watcher: Mutex<Option<Watcher>>,
     sync_loop: Mutex<Option<SyncLoop>>,
+    running: Mutex<Option<RunningMonitor>>,
     pub data_dir: PathBuf,
     device: RwLock<DeviceMetadata>,
     sync_lock: Mutex<()>,
     /// Installed titles seen by the last full sync, for later reports.
     last_installs: Mutex<HashMap<String, Option<String>>>,
+    /// Install dirs by normalized title, from the last install scan.
+    scanned_installs: Mutex<HashMap<String, Option<String>>>,
     last_prune: Mutex<Option<DateTime<Utc>>>,
     moved_old_data: Option<PathBuf>,
 }
@@ -188,10 +192,12 @@ impl WorldlineCore {
             inner,
             watcher: Mutex::new(None),
             sync_loop: Mutex::new(None),
+            running: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
             device: RwLock::new(device),
             sync_lock: Mutex::new(()),
             last_installs: Mutex::new(HashMap::new()),
+            scanned_installs: Mutex::new(HashMap::new()),
             last_prune: Mutex::new(None),
             moved_old_data,
         };
@@ -205,6 +211,17 @@ impl WorldlineCore {
                 target,
                 settings,
                 core.inner.suppression.clone(),
+                tx.clone(),
+            ));
+            let index = core.history().index.clone();
+            *core.running.lock().unwrap_or_else(|e| e.into_inner()) = Some(RunningMonitor::start(
+                Box::new(move || {
+                    Ok(index
+                        .install_dirs()?
+                        .into_iter()
+                        .filter_map(|(id, _, dir)| Some((id, dir?)))
+                        .collect())
+                }),
                 tx.clone(),
             ));
         }
@@ -254,6 +271,23 @@ impl WorldlineCore {
         if let Some(sync_loop) = sync_loop {
             sync_loop.stop();
         }
+        let running = self
+            .running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        drop(running);
+    }
+
+    /// The games running on this device as of the last check; empty unless
+    /// opened with `watch`. Starts and stops are also notified.
+    pub fn running_games(&self) -> Vec<i32> {
+        self.running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(RunningMonitor::running)
+            .unwrap_or_default()
     }
 
     // ---- games, slots, versions ------------------------------------------------
@@ -294,7 +328,9 @@ impl WorldlineCore {
                 .update_game(id, &form.title, dirs.as_deref())?,
         };
         self.reload_watcher();
-        Ok(game.game)
+        // A game added from the scan, or renamed to an installed title, gets its install dir.
+        self.refresh_install_dirs()?;
+        Ok(self.get_game(game.game.id)?.game)
     }
 
     /// Deletes a game everywhere: the tombstone reaches every device.
@@ -698,10 +734,27 @@ impl WorldlineCore {
         self.history().index.remove_scan_root(path)
     }
 
+    /// Installed games with saves to track. Also refreshes the install dirs
+    /// of the games already tracked here.
     pub fn scan_installed(&self) -> Result<Vec<InstallScannerItem>> {
         let cache_dir = self.data_dir.join("cache");
-        let mut items =
-            crate::install_scanner::scan_installed(&cache_dir, &self.get_scan_roots()?)?;
+        let candidates =
+            crate::install_scanner::scan_installed_candidates(&cache_dir, &self.get_scan_roots()?)?;
+        self.remember_installs(
+            candidates
+                .iter()
+                .map(|item| {
+                    (
+                        store::normalize_display_name(&item.title),
+                        item.install_path.clone(),
+                    )
+                })
+                .collect(),
+        )?;
+        let mut items: Vec<InstallScannerItem> = candidates
+            .into_iter()
+            .filter(|item| !item.dirs.is_empty())
+            .collect();
         let icon_cache_dir = cache_dir.join("icon_cache");
         let _ = std::fs::create_dir_all(&icon_cache_dir);
         for item in &mut items {
@@ -741,6 +794,40 @@ impl WorldlineCore {
             item.icon_path = Some(cache_png.to_string_lossy().into_owned());
         }
         Ok(items)
+    }
+
+    /// Keeps `installs` (normalized title → install dir) as the last scan's
+    /// result and refreshes install dirs from it.
+    fn remember_installs(&self, installs: HashMap<String, Option<String>>) -> Result<()> {
+        *self
+            .scanned_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = installs;
+        self.refresh_install_dirs()
+    }
+
+    /// Install dirs are device-local and come from the install scan, matched
+    /// by title, so games added by hand have none until a scan finds them.
+    /// A game the last scan found gets the dir it found, so a moved game
+    /// follows. A stored dir that no longer exists is cleared (uninstalled);
+    /// one that still exists is kept even when the scan missed the game.
+    fn refresh_install_dirs(&self) -> Result<()> {
+        let scanned = self
+            .scanned_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let index = &self.history().index;
+        for (id, title, stored) in index.install_dirs()? {
+            let wanted = match scanned.get(&title).cloned().flatten() {
+                Some(dir) => Some(dir),
+                None => stored.clone().filter(|dir| Path::new(dir).is_dir()),
+            };
+            if wanted != stored {
+                index.set_install_dir(id, wanted.as_deref())?;
+            }
+        }
+        Ok(())
     }
 
     // ---- devices and sync ------------------------------------------------------------
@@ -1214,6 +1301,14 @@ impl WorldlineCore {
         problems.extend(self.push_locked(&remote)?);
         self.reload_watcher();
         let remote = self.require_remote()?;
+        // Adopted games get their install dir; uninstalled ones lose it.
+        let refreshed = match installs.get() {
+            Some(scanned) => self.remember_installs(scanned.clone()),
+            None => self.refresh_install_dirs(),
+        };
+        if let Err(error) = refreshed {
+            problems.push(format!("Install folders: {error:#}"));
+        }
         let installed = installs.get().cloned().unwrap_or_default();
         *self.last_installs.lock().unwrap_or_else(|e| e.into_inner()) = installed.clone();
         self.sync_report(&remote, &auto_applied, &installed, problems)
@@ -1257,6 +1352,7 @@ impl WorldlineCore {
             eprintln!("Sync: {problem}");
         }
         self.reload_watcher();
+        self.refresh_install_dirs()?;
         let id = self
             .history()
             .index

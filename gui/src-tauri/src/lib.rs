@@ -93,6 +93,12 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 detection::Notification::PruningFailed(error) => {
                     notif_app.emit("pruning-error", error).ok();
                 }
+                detection::Notification::GameStarted { game_id } => {
+                    notif_app.emit("game-started", game_id).ok();
+                }
+                detection::Notification::GameStopped { game_id } => {
+                    notif_app.emit("game-stopped", game_id).ok();
+                }
             }
         }
     });

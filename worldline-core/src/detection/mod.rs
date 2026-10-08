@@ -1,6 +1,8 @@
 //! Automatic capture. The notify watcher only reports "game changed"; the
 //! scheduler decides when to capture; captures go through `CaptureTarget`.
+//! `running` reports which games are running.
 
+pub(crate) mod running;
 pub mod scheduler;
 mod watcher;
 
@@ -34,6 +36,9 @@ pub enum Notification {
     SyncFailed(Failure),
     HistoryPruned,
     PruningFailed(Failure),
+    // A process runs from the game's install dir, and when its last one exits.
+    GameStarted { game_id: i32 },
+    GameStopped { game_id: i32 },
 }
 
 /// A nesting suppression counter: while any guard is alive, nothing is

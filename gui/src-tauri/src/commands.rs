@@ -18,6 +18,12 @@ fn get_game(id: i32, core: State<Arc<WorldlineCore>>) -> Result<FullGame, String
     core.get_game(id).map_err(|e| e.to_string())
 }
 
+/// Ids of the games running now; `game-started` and `game-stopped` report changes.
+#[tauri::command]
+fn get_running_games(core: State<Arc<WorldlineCore>>) -> Vec<i32> {
+    core.running_games()
+}
+
 #[tauri::command]
 fn save_game(
     game: GameForm,
@@ -359,6 +365,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
     builder.invoke_handler(generate_handler![
         get_games,
         get_game,
+        get_running_games,
         save_game,
         delete_game,
         untrack_game,

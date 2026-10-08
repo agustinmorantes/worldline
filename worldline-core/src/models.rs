@@ -18,6 +18,8 @@ pub struct Game {
     pub active_slot_id: Option<i32>,
     /// The local copy of the game's icon, once it has arrived.
     pub icon_path: Option<String>,
+    /// Where the game is installed on this device, once a scan found it.
+    pub install_dir: Option<String>,
     /// The accent hue to show (0–359): the stored one, or the UUID fallback.
     pub accent_hue: i32,
     /// `auto` (from the icon) or `user`.
