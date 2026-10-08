@@ -12,4 +12,8 @@ export const es: Messages = {
     pruningFailed: 'Falló la limpieza automática del historial.',
     copyDetails: 'Copiar detalles',
   },
+  notices: {
+    oldDataMoved: (path) =>
+      `Los datos de una versión preliminar se movieron a ${path} y la aplicación empezó de cero.`,
+  },
 };

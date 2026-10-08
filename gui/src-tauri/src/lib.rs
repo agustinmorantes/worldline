@@ -78,6 +78,9 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 detection::Notification::Error(err) => {
                     notif_app.emit("detection-error", err).ok();
                 }
+                detection::Notification::SyncStarted => {
+                    notif_app.emit("sync-started", ()).ok();
+                }
                 detection::Notification::SyncCompleted(report) => {
                     notif_app.emit("sync-complete", report).ok();
                 }

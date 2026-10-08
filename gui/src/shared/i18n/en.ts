@@ -13,6 +13,10 @@ export const en = {
     pruningFailed: 'Automatic history cleanup failed.',
     copyDetails: 'Copy details',
   },
+  notices: {
+    oldDataMoved: (path: string): string =>
+      `Data from a pre-release version was moved to ${path} and the app started fresh.`,
+  },
 };
 
 export type Messages = typeof en;

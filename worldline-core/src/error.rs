@@ -1,0 +1,31 @@
+//! The coarse error kinds a front end can tell apart (ADR 0007). Every other
+//! failure is just an error: front ends show their own message for the call.
+
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// The sync folder is missing or can't be read (an unplugged drive, an offline share).
+    SyncFolderUnreachable,
+    /// The operation needs the game closed.
+    GameRunning,
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::SyncFolderUnreachable => "Sync folder is unavailable",
+            Self::GameRunning => "The game is running",
+        })
+    }
+}
+
+impl std::error::Error for ErrorKind {}
+
+/// The kind attached anywhere in `error`'s chain, as a context or a cause.
+pub fn error_kind(error: &anyhow::Error) -> Option<ErrorKind> {
+    error
+        .downcast_ref::<ErrorKind>()
+        .or_else(|| error.chain().find_map(|cause| cause.downcast_ref()))
+        .copied()
+}

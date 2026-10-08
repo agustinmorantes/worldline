@@ -2,6 +2,7 @@
 // `dialogs.rs`. The only place in the GUI that calls `invoke`. Argument names
 // are camelCase; Tauri maps them to the Rust parameter names.
 import { invoke } from '@tauri-apps/api/core';
+import type { DeviceKind } from './bindings/DeviceKind';
 import type { DeviceMetadata } from './bindings/DeviceMetadata';
 import type { FullGame } from './bindings/FullGame';
 import type { Game } from './bindings/Game';
@@ -24,7 +25,13 @@ export const getGame = (id: number): Promise<FullGame> => invoke('get_game', { i
 /** Creates or updates a game; `dirs` replaces its tracked directories when given. */
 export const saveGame = (game: GameForm, dirs: string[] | null): Promise<Game> =>
   invoke('save_game', { game, dirs });
+/** Deletes the game everywhere: a tombstone in the remote (ADR 0006). */
 export const deleteGame = (id: number): Promise<void> => invoke('delete_game', { id });
+/** Stops tracking the game on this device; its history stays in the remote (ADR 0006). */
+export const untrackGame = (id: number): Promise<void> => invoke('untrack_game', { id });
+/** `null` goes back to the hue from the icon. */
+export const setGameAccent = (gameId: number, hue: number | null): Promise<Game> =>
+  invoke('set_game_accent', { gameId, hue });
 export const setGameIcon = (gameId: number, sourcePath: string): Promise<string> =>
   invoke('set_game_icon', { gameId, sourcePath });
 
@@ -60,20 +67,35 @@ export const updateMonitoringSettings = (
 export const getPruningSettings = (): Promise<RetentionSettings> => invoke('get_pruning_settings');
 export const updatePruningSettings = (settings: RetentionSettings): Promise<RetentionSettings> =>
   invoke('update_pruning_settings', { settings });
-export const previewPruning = (): Promise<PruningPreview> => invoke('preview_pruning');
+/** Previews `settings` before they are saved, or the saved settings when omitted. */
+export const previewPruning = (settings?: RetentionSettings): Promise<PruningPreview> =>
+  invoke('preview_pruning', { settings: settings ?? null });
 export const runPruning = (): Promise<PruningRunReport> => invoke('run_pruning');
 export const getRetiredVersions = (): Promise<string[]> => invoke('get_retired_versions');
 
-/** Set once when pre-release data was moved aside on startup. */
+/** Where pre-release data was moved aside on startup, if it was. */
 export const getStartupNotice = (): Promise<string | null> => invoke('get_startup_notice');
+
+/** The tray's text, in the GUI's language (ADR 0007). */
+export interface TrayLabels {
+  open: string;
+  exit: string;
+  tooltip: string;
+  hidden_hint_title: string | null;
+  hidden_hint_body: string;
+}
+
+export const setTrayLabels = (labels: TrayLabels): Promise<void> =>
+  invoke('set_tray_labels', { labels });
 /** Absolute path of the GUI preferences file. */
 export const getPrefsPath = (): Promise<string> => invoke('get_prefs_path');
 
 // Sync
 
 export const getDevice = (): Promise<DeviceMetadata> => invoke('get_device');
-export const updateDeviceName = (name: string): Promise<DeviceMetadata> =>
-  invoke('update_device_name', { name });
+/** `kind: null` reads as Desktop. */
+export const updateDevice = (name: string, kind: DeviceKind | null): Promise<DeviceMetadata> =>
+  invoke('update_device', { name, kind });
 export const getSyncSettings = (): Promise<SyncSettings> => invoke('get_sync_settings');
 export const updateSyncSettings = (settings: SyncSettings): Promise<SyncSettings> =>
   invoke('update_sync_settings', { settings });

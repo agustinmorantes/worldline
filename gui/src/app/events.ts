@@ -41,8 +41,8 @@ export function listenNotifications(): void {
   });
 
   void getStartupNotice()
-    .then(notice => {
-      if (notice !== null) toast.info(notice, { duration: Infinity });
+    .then(backup => {
+      if (backup !== null) toast.info(getT().notices.oldDataMoved(backup), { duration: Infinity });
     })
     .catch((err: unknown) => { reportError("Couldn't read the startup notice", err); });
 

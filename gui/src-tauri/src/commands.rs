@@ -32,6 +32,15 @@ fn delete_game(id: i32, core: State<Arc<WorldlineCore>>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn untrack_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(), String> {
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.untrack_game(id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn create_slot(
     game_id: i32,
     name: String,
@@ -90,6 +99,16 @@ fn set_game_icon(
 }
 
 #[tauri::command]
+fn set_game_accent(
+    game_id: i32,
+    hue: Option<u16>,
+    core: State<Arc<WorldlineCore>>,
+) -> Result<Game, String> {
+    core.set_game_accent(game_id, hue)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn scan_installed(
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<Vec<InstallScannerItem>, String> {
@@ -135,11 +154,12 @@ fn get_device(core: State<Arc<WorldlineCore>>) -> worldline_core::sync::DeviceMe
 }
 
 #[tauri::command]
-fn update_device_name(
+fn update_device(
     name: String,
+    kind: Option<worldline_core::sync::DeviceKind>,
     core: State<Arc<WorldlineCore>>,
 ) -> Result<worldline_core::sync::DeviceMetadata, String> {
-    core.update_device_name(&name).map_err(|e| e.to_string())
+    core.update_device(&name, kind).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -231,15 +251,23 @@ fn update_pruning_settings(
         .map_err(|e| e.to_string())
 }
 
+/// Previews `settings`, or the saved settings when none are given.
 #[tauri::command]
 async fn preview_pruning(
+    settings: Option<worldline_core::maintenance::RetentionSettings>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<worldline_core::core_facade::PruningPreview, String> {
     let core = Arc::clone(&core);
-    tauri::async_runtime::spawn_blocking(move || core.preview_pruning())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = match settings {
+            Some(settings) => settings,
+            None => core.get_pruning_settings()?,
+        };
+        core.preview_pruning(&settings)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -308,15 +336,16 @@ async fn import_game_history(
     .map_err(|e| e.to_string())
 }
 
-/// Shown once after pre-release data was moved aside on startup.
+/// Where pre-release data was moved aside on startup, if it was; the GUI words the notice.
 #[tauri::command]
 fn get_startup_notice(core: State<Arc<WorldlineCore>>) -> Option<String> {
-    core.moved_old_data().map(|backup| {
-        format!(
-            "Data from a pre-release version was moved to {} and the app started fresh.",
-            backup.display()
-        )
-    })
+    core.moved_old_data()
+        .map(|backup| backup.display().to_string())
+}
+
+#[tauri::command]
+fn set_tray_labels(labels: crate::tray::TrayLabels, app: tauri::AppHandle) -> Result<(), String> {
+    crate::tray::set_labels(&app, labels).map_err(|e| e.to_string())
 }
 
 /// The GUI preferences file, kept with the rest of the app data.
@@ -331,6 +360,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_game,
         save_game,
         delete_game,
+        untrack_game,
         create_slot,
         switch_slot,
         rename_slot,
@@ -338,6 +368,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         restore_version,
         tag_version,
         set_game_icon,
+        set_game_accent,
         scan_installed,
         get_scan_roots,
         add_scan_root,
@@ -345,7 +376,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_monitoring_settings,
         update_monitoring_settings,
         get_device,
-        update_device_name,
+        update_device,
         get_sync_settings,
         update_sync_settings,
         refresh_sync,
@@ -366,5 +397,6 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         crate::dialogs::pick_file,
         crate::dialogs::pick_save_path,
         crate::dialogs::confirm,
+        set_tray_labels,
     ])
 }

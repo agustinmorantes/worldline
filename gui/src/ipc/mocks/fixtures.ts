@@ -61,6 +61,7 @@ function base(games: FullGame[]): Fixture {
       platform: 'windows',
       first_seen: '2024-01-01T00:00:00Z',
       last_seen: '2024-01-01T00:00:00Z',
+      kind: 'desktop',
     },
     syncSettings: { remote_path: null },
     monitoringSettings: { version_cooldown_minutes: 5, snapshot_debounce_seconds: 3 },

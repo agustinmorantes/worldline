@@ -22,6 +22,7 @@ export function makeVersion(overrides: Partial<Version> & Pick<Version, 'id'>): 
     tag: null,
     retired: false,
     created_at: naive(new Date(Date.UTC(2024, 0, id))),
+    origin_device: null,
     ...overrides,
   };
 }
@@ -62,8 +63,11 @@ export function makeGame(overrides: Partial<FullGame> & Pick<FullGame, 'id' | 't
     folder_slug: title.toLowerCase().replace(/\W+/g, '-'),
     active_slot_id: null,
     icon_path: null,
+    accent_hue: 290,
+    accent_hue_source: 'auto',
     tracked_dirs: [],
     slots: [],
+    slot_summaries: [],
     active_slot: null,
     versions: [],
     last_version: null,

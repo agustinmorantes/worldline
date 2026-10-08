@@ -16,11 +16,12 @@ import {
   previewPruning,
   removeSyncDevice,
   runPruning,
-  updateDeviceName,
+  updateDevice,
   updateMonitoringSettings,
   updatePruningSettings,
   updateSyncSettings,
 } from '@/ipc/commands';
+import type { DeviceKind } from '@/ipc/bindings/DeviceKind';
 import type { PruningPreview } from '@/ipc/bindings/PruningPreview';
 import type { RetentionSettings } from '@/ipc/bindings/RetentionSettings';
 import { reportError } from '@/shared/errors/report';
@@ -52,6 +53,7 @@ function SettingsView(): ReactElement {
   const [debounce, setDebounce] = useState('5');
   const [cooldown, setCooldown] = useState('15');
   const [remotePath, setRemotePath] = useState('');
+  const [deviceKind, setDeviceKind] = useState<DeviceKind | null>(null);
   const [deviceName, setDeviceName] = useState('');
   const [deviceUuid, setDeviceUuid] = useState('');
   const { data: syncReport, refetch: refetchSyncReport } = useSyncReport();
@@ -77,6 +79,7 @@ function SettingsView(): ReactElement {
     void Promise.all([getDevice(), getSyncSettings(), getPruningSettings()])
       .then(([device, settings, pruningSettings]) => {
         setDeviceName(device.name);
+        setDeviceKind(device.kind);
         setDeviceUuid(device.device_uuid);
         setRemotePath(settings.remote_path ?? '');
         applyRetention(pruningSettings);
@@ -137,7 +140,7 @@ function SettingsView(): ReactElement {
           snapshot_debounce_seconds: debounceSeconds,
           version_cooldown_minutes: cooldownMinutes,
         }),
-        updateDeviceName(deviceName),
+        updateDevice(deviceName, deviceKind),
       ]);
       const remote = remotePath.trim() === '' ? null : remotePath.trim();
       await updateSyncSettings({ remote_path: remote });

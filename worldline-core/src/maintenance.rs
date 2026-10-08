@@ -36,7 +36,7 @@ pub struct RetentionSettings {
 impl Default for RetentionSettings {
     fn default() -> Self {
         Self {
-            automatic: false,
+            automatic: true,
             keep_all_hours: 1,
             hourly_until_hours: 24,
             daily_until_days: 7,
@@ -539,6 +539,9 @@ mod tests {
                         created_at: t,
                         updated_at: t,
                         deleted_at: None,
+                        icon_sha256: None,
+                        accent_hue: None,
+                        accent_hue_source: Default::default(),
                     },
                     tracked_dirs: vec![],
                     slots: vec![SlotRecord {
@@ -756,6 +759,9 @@ mod tests {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            icon_sha256: None,
+            accent_hue: None,
+            accent_hue_source: Default::default(),
         };
         let slot = SlotMeta {
             uuid: Uuid::from_u128(2),

@@ -4,4 +4,8 @@ export type Version = { id: number, uuid: string, slot_id: number, parent_id: nu
 /**
  * Pruned: the graph node remains but its content is not restorable.
  */
-retired: boolean, created_at: string, };
+retired: boolean, created_at: string, 
+/**
+ * UUID of the device that created it, when known.
+ */
+origin_device: string | null, };

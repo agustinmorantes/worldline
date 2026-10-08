@@ -9,6 +9,7 @@ export interface Events {
   /** [game id, version number] */
   'version-created': [number, number];
   'detection-error': string;
+  'sync-started': null;
   'sync-complete': SyncReport;
   'sync-error': string;
   'history-pruned': null;

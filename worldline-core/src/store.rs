@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 pub const FORMAT_VERSION: u32 = 3;
 const METADATA: &str = "metadata.json";
+/// The game's icon, normalized to 256 px PNG (ADR 0005).
+const ICON: &str = "icon.png";
 const RESERVED_WINDOWS_NAMES: &[&str] = &[
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -35,6 +37,33 @@ pub struct GameMeta {
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Hash of the game folder's `icon.png`; `None` when the game has no icon.
+    #[serde(default)]
+    pub icon_sha256: Option<String>,
+    /// Accent hue (0–359); `None` falls back to one derived from the UUID.
+    #[serde(default)]
+    pub accent_hue: Option<u16>,
+    #[serde(default)]
+    pub accent_hue_source: AccentHueSource,
+}
+
+/// Who chose the accent hue: computed from the icon, or picked by the user
+/// (kept when the icon changes).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccentHueSource {
+    #[default]
+    Auto,
+    User,
+}
+
+impl AccentHueSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::User => "user",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,12 +308,11 @@ impl Store {
     /// is a half-arrived directory, not an error.
     pub fn first_unloadable_metadata(&self) -> Result<Option<PathBuf>> {
         for game_dir in entity_dirs(&self.root.join("games"))? {
-            let game =
-                match entity_state::<GameMeta>(&game_dir, |meta| valid_slug(&meta.folder_slug)) {
-                    Ok(Some(game)) => game,
-                    Ok(None) => continue,
-                    Err(path) => return Ok(Some(path)),
-                };
+            let game = match entity_state::<GameMeta>(&game_dir, game_loadable) {
+                Ok(Some(game)) => game,
+                Ok(None) => continue,
+                Err(path) => return Ok(Some(path)),
+            };
             for dir in entity_dirs(&game_dir.join("tracked-dirs"))? {
                 if let Err(path) = entity_state::<TrackedDirMeta>(&dir, |tracked| {
                     tracked_dir_loadable(tracked, &game)
@@ -316,7 +344,7 @@ impl Store {
         Ok(entity_dirs(&self.root.join("games"))?
             .into_iter()
             .filter_map(|dir| read_entity::<GameMeta>(&dir))
-            .filter(|meta| valid_slug(&meta.folder_slug))
+            .filter(game_loadable)
             .collect())
     }
 
@@ -346,7 +374,7 @@ impl Store {
     pub fn game_by_slug(&self, slug: &str) -> Result<Option<GameRecord>> {
         ensure_slug(slug)?;
         read_entity::<GameMeta>(&self.game_dir(slug))
-            .filter(|meta| meta.folder_slug == slug)
+            .filter(|meta| meta.folder_slug == slug && game_loadable(meta))
             .map(|meta| self.load_game(meta))
             .transpose()
     }
@@ -408,6 +436,7 @@ impl Store {
     /// Writes game metadata, merging last-writer-wins with a sticky tombstone.
     pub fn write_game(&self, meta: &GameMeta) -> Result<()> {
         ensure_slug(&meta.folder_slug)?;
+        validate_appearance(meta)?;
         let dir = self.game_dir(&meta.folder_slug);
         merge_write(&dir, meta, |existing: &GameMeta, incoming| {
             ensure_same(existing.uuid, incoming.uuid)?;
@@ -417,6 +446,34 @@ impl Store {
             merged.created_at = existing.created_at;
             Ok(merged)
         })
+    }
+
+    /// The game metadata stored under `slug`, if readable.
+    pub fn game_meta(&self, slug: &str) -> Result<Option<GameMeta>> {
+        ensure_slug(slug)?;
+        Ok(read_entity::<GameMeta>(&self.game_dir(slug)).filter(game_loadable))
+    }
+
+    pub fn icon_path(&self, game_slug: &str) -> PathBuf {
+        self.game_dir(game_slug).join(ICON)
+    }
+
+    /// The stored icon's bytes, or `None` when it hasn't arrived.
+    pub fn read_icon(&self, game_slug: &str) -> Result<Option<Vec<u8>>> {
+        ensure_slug(game_slug)?;
+        let path = self.icon_path(game_slug);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+        }
+    }
+
+    /// Atomically replaces the game's icon. It is written before the metadata
+    /// naming its hash, so readers of this store see the icon first.
+    pub fn write_icon(&self, game_slug: &str, png: &[u8]) -> Result<()> {
+        ensure_slug(game_slug)?;
+        write_bytes(&self.icon_path(game_slug), png)
     }
 
     pub fn write_tracked_dir(&self, game_slug: &str, meta: &TrackedDirMeta) -> Result<()> {
@@ -663,6 +720,10 @@ where
 }
 
 /// The filters `load_game` applies; `first_unloadable_metadata` mirrors them.
+fn game_loadable(game: &GameMeta) -> bool {
+    valid_slug(&game.folder_slug) && validate_appearance(game).is_ok()
+}
+
 fn tracked_dir_loadable(tracked: &TrackedDirMeta, game: &GameMeta) -> bool {
     tracked.game_uuid == game.uuid && valid_slug(&tracked.folder_slug)
 }
@@ -844,6 +905,24 @@ pub fn validate_relative_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// The icon hash is a SHA-256 and the accent hue an angle below 360.
+pub fn validate_appearance(game: &GameMeta) -> Result<()> {
+    if let Some(hash) = &game.icon_sha256 {
+        parse_hash(hash)?;
+    }
+    if let Some(hue) = game.accent_hue {
+        validate_hue(hue)?;
+    }
+    Ok(())
+}
+
+pub fn validate_hue(hue: u16) -> Result<()> {
+    if hue >= 360 {
+        bail!("accent hue {hue} is out of range (0-359)");
+    }
+    Ok(())
+}
+
 pub fn validate_manifest(version: &VersionMeta) -> Result<()> {
     let mut previous: Option<(&Uuid, &str)> = None;
     for file in &version.files {
@@ -876,17 +955,22 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 
 /// Atomically replaces `path` with the JSON of `value` (temp file, fsync, rename).
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let mut payload = serde_json::to_vec_pretty(value)?;
+    payload.push(b'\n');
+    write_bytes(path, &payload)
+}
+
+/// Atomically replaces `path` with `payload` (temp file, fsync, rename).
+fn write_bytes(path: &Path, payload: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent", path.display()))?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let mut payload = serde_json::to_vec_pretty(value)?;
-    payload.push(b'\n');
     let tmp = parent.join(format!(".tmp-{}", short_random()));
     let result = (|| -> Result<()> {
         let mut file =
             File::create(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
-        file.write_all(&payload)?;
+        file.write_all(payload)?;
         file.sync_all()?;
         drop(file);
         atomic_replace(&tmp, path)?;
@@ -994,7 +1078,54 @@ mod tests {
             created_at: at,
             updated_at: at,
             deleted_at: None,
+            icon_sha256: None,
+            accent_hue: None,
+            accent_hue_source: AccentHueSource::Auto,
         }
+    }
+
+    #[test]
+    fn game_appearance_defaults_and_is_validated() {
+        let root = tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let uuid = Uuid::new_v4();
+        let meta = game(uuid, "Game", Utc::now());
+        // Metadata written before icons existed still loads.
+        let mut old = serde_json::to_value(&meta).unwrap();
+        for field in ["icon_sha256", "accent_hue", "accent_hue_source"] {
+            old.as_object_mut().unwrap().remove(field);
+        }
+        write_json(&store.game_dir(&meta.folder_slug).join(METADATA), &old).unwrap();
+        assert_eq!(store.find_game(uuid).unwrap().unwrap(), meta);
+
+        let bad_hue = GameMeta {
+            accent_hue: Some(360),
+            ..meta.clone()
+        };
+        let bad_hash = GameMeta {
+            icon_sha256: Some("sha256:xyz".into()),
+            ..meta.clone()
+        };
+        assert!(store.write_game(&bad_hue).is_err());
+        assert!(store.write_game(&bad_hash).is_err());
+        write_json(&store.game_dir(&meta.folder_slug).join(METADATA), &bad_hue).unwrap();
+        assert!(store.find_game(uuid).unwrap().is_none());
+        assert!(store.first_unloadable_metadata().unwrap().is_some());
+
+        let user = GameMeta {
+            accent_hue: Some(359),
+            accent_hue_source: AccentHueSource::User,
+            updated_at: meta.updated_at + chrono::Duration::seconds(1),
+            ..meta
+        };
+        store.write_game(&user).unwrap();
+        let text = fs::read_to_string(store.game_dir(&user.folder_slug).join(METADATA)).unwrap();
+        assert!(text.contains(r#""accent_hue_source": "user""#));
+        store.write_icon(&user.folder_slug, b"png").unwrap();
+        assert_eq!(
+            store.read_icon(&user.folder_slug).unwrap().as_deref(),
+            Some(&b"png"[..])
+        );
     }
 
     #[test]
