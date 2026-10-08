@@ -49,8 +49,13 @@ export function listenNotifications(): void {
   });
 
   void getStartupNotice()
-    .then(notice => {
-      if (notice !== null) toast.info(notice, { duration: Infinity });
+    .then(backup => {
+      if (backup !== null) {
+        toast.info(
+          `Data from a pre-release version was moved to ${backup} and the app started fresh.`,
+          { duration: Infinity },
+        );
+      }
     })
     .catch((err: unknown) => { console.error(err); });
 

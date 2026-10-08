@@ -78,14 +78,23 @@ fn run(
     }
 }
 
+/// Unreadable settings count as configured, so the failure gets reported.
+fn sync_configured(core: &WorldlineCore) -> bool {
+    core.get_sync_settings()
+        .map_or(true, |settings| settings.remote_path.is_some())
+}
+
+/// Every sync and push that runs is announced, then reported.
 fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notification>) {
-    match core.sync_if_configured() {
-        Ok(Some(report)) => {
-            let _ = notifications.send(Notification::SyncCompleted(report));
-        }
-        Ok(None) => {}
-        Err(error) => {
-            let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));
+    if sync_configured(core) {
+        let _ = notifications.send(Notification::SyncStarted);
+        match core.refresh_sync() {
+            Ok(report) => {
+                let _ = notifications.send(Notification::SyncCompleted(report));
+            }
+            Err(error) => {
+                let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));
+            }
         }
     }
     match core.prune_if_due() {
@@ -100,12 +109,14 @@ fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notificatio
 }
 
 fn push_only(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notification>) {
-    match core.push_sync() {
-        // Refresh the shown report; this device's pointers just moved.
-        Ok(()) => {
-            if let Ok(report) = core.sync_status() {
-                let _ = notifications.send(Notification::SyncCompleted(report));
-            }
+    if !sync_configured(core) {
+        return;
+    }
+    let _ = notifications.send(Notification::SyncStarted);
+    // Refresh the shown report; this device's pointers just moved.
+    match core.push_sync().and_then(|()| core.sync_status()) {
+        Ok(report) => {
+            let _ = notifications.send(Notification::SyncCompleted(report));
         }
         Err(error) => {
             let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));

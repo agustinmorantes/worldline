@@ -191,6 +191,7 @@ fn prune_settings_preview_and_run() {
         ])
         .assert()
         .success()
+        .stdout(contains("Automatic: true"))
         .stdout(contains("Disk budget: 1000000"))
         .stdout(contains("never expire"));
     cli(dir.path())
@@ -327,6 +328,43 @@ fn end_to_end_across_two_data_dirs() {
         fs::read_to_string(restored.path().join("save.dat")).unwrap(),
         "one"
     );
+}
+
+#[test]
+fn untrack_keeps_the_history_in_the_sync_folder_for_adoption() {
+    let (data, remote, saves) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
+    fs::write(saves.path().join("save.dat"), "one").unwrap();
+    let id = add_game(data.path(), "Paused", saves.path()).to_string();
+    cli(data.path())
+        .args(["games", "untrack", &id])
+        .assert()
+        .failure()
+        .stderr(contains("when sync is on"));
+
+    cli(data.path())
+        .args(["sync", "configure", remote.path().to_str().unwrap()])
+        .assert()
+        .success();
+    cli(data.path()).arg("sync").assert().success();
+    cli(data.path())
+        .args(["games", "untrack", &id])
+        .assert()
+        .success()
+        .stdout(contains("Untracked game"));
+    cli(data.path())
+        .args(["games", "list"])
+        .assert()
+        .success()
+        .stdout(contains("No games."));
+    let status = stdout(data.path(), &["sync", "status"]);
+    let line = status.lines().find(|l| l.contains("Paused")).unwrap();
+    assert!(line.contains("Not tracked here"), "{status}");
+    let uuid = &line[line.find('(').unwrap() + 1..line.find(')').unwrap()];
+    cli(data.path())
+        .args(["sync", "adopt", uuid])
+        .assert()
+        .success()
+        .stdout(contains("1 version(s)"));
 }
 
 #[test]

@@ -32,6 +32,15 @@ fn delete_game(id: i32, core: State<Arc<WorldlineCore>>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn untrack_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(), String> {
+    let core = Arc::clone(&core);
+    tauri::async_runtime::spawn_blocking(move || core.untrack_game(id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn create_slot(
     game_id: i32,
     name: String,
@@ -231,15 +240,23 @@ fn update_pruning_settings(
         .map_err(|e| e.to_string())
 }
 
+/// Previews `settings`, or the saved settings when none are given.
 #[tauri::command]
 async fn preview_pruning(
+    settings: Option<worldline_core::maintenance::RetentionSettings>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<worldline_core::core_facade::PruningPreview, String> {
     let core = Arc::clone(&core);
-    tauri::async_runtime::spawn_blocking(move || core.preview_pruning())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = match settings {
+            Some(settings) => settings,
+            None => core.get_pruning_settings()?,
+        };
+        core.preview_pruning(&settings)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -308,15 +325,16 @@ async fn import_game_history(
     .map_err(|e| e.to_string())
 }
 
-/// Shown once after pre-release data was moved aside on startup.
+/// Where pre-release data was moved aside on startup, if it was; the GUI words the notice.
 #[tauri::command]
 fn get_startup_notice(core: State<Arc<WorldlineCore>>) -> Option<String> {
-    core.moved_old_data().map(|backup| {
-        format!(
-            "Data from a pre-release version was moved to {} and the app started fresh.",
-            backup.display()
-        )
-    })
+    core.moved_old_data()
+        .map(|backup| backup.display().to_string())
+}
+
+#[tauri::command]
+fn set_tray_labels(labels: crate::tray::TrayLabels, app: tauri::AppHandle) -> Result<(), String> {
+    crate::tray::set_labels(&app, labels).map_err(|e| e.to_string())
 }
 
 pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
@@ -325,6 +343,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_game,
         save_game,
         delete_game,
+        untrack_game,
         create_slot,
         switch_slot,
         rename_slot,
@@ -355,5 +374,6 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         export_game_history,
         import_game_history,
         get_startup_notice,
+        set_tray_labels,
     ])
 }

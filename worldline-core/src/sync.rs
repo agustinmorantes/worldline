@@ -1,6 +1,7 @@
 //! Devices, their published pointers and divergence classification. Copying
 //! history lives in `transfer`; the refresh flow lives in the facade.
 
+use crate::error::ErrorKind;
 use crate::index::Pointer;
 use crate::store::{self, GameRecord, Store, read_json, write_json};
 use anyhow::{Context, Result, bail};
@@ -169,7 +170,7 @@ pub struct Remote {
 impl Remote {
     /// Opens (initializing when empty) a remote that must not overlap `data_dir`.
     pub fn open(path: &Path, data_dir: &Path) -> Result<Self> {
-        let remote = std::fs::canonicalize(path).context("Sync folder is unavailable")?;
+        let remote = std::fs::canonicalize(path).context(ErrorKind::SyncFolderUnreachable)?;
         let local =
             std::fs::canonicalize(data_dir).context("Local data directory is unavailable")?;
         if !remote.is_dir() {

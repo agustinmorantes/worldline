@@ -7,12 +7,12 @@ use crate::index::Index;
 use crate::models::*;
 use crate::store::{
     FileEntry, GameMeta, GameRecord, SlotMeta, Store, TrackedDirMeta, VersionMeta, VersionReason,
-    folder_slug, normalize_display_name,
+    folder_slug, normalize_display_name, read_json, write_json,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const DEFAULT_SLOT_NAME: &str = "Default Slot";
@@ -38,14 +38,17 @@ pub struct History {
     pub store: Store,
     pub index: Index,
     device: Uuid,
+    /// Device-local list of games this device stopped tracking (ADR 0006).
+    untracked_path: PathBuf,
 }
 
 impl History {
-    pub fn open(root: &Path, index: Index, device: Uuid) -> Result<Self> {
+    pub fn open(root: &Path, index: Index, device: Uuid, untracked_path: &Path) -> Result<Self> {
         let history = Self {
             store: Store::open(root)?,
             index,
             device,
+            untracked_path: untracked_path.to_path_buf(),
         };
         // Files are the truth: a crash between publishing files and projecting
         // them leaves a stale index, so every start re-projects.
@@ -61,17 +64,47 @@ impl History {
         Ok(self.store.markers()?.into_keys().collect())
     }
 
-    /// Rebuilds the whole index from the repository files.
+    /// Rebuilds the whole index from the repository files. Untracked games
+    /// keep their files but stay out of the index.
     pub fn reindex(&self) -> Result<()> {
-        self.index.reindex(&self.store.catalog()?, &self.retired()?)
+        let untracked = self.untracked()?;
+        let mut catalog = self.store.catalog()?;
+        catalog.retain(|game| !untracked.contains(&game.meta.uuid));
+        self.index.reindex(&catalog, &self.retired()?)
     }
 
     /// Re-projects one game from its files into the index.
     pub fn refresh_game(&self, uuid: Uuid) -> Result<()> {
+        if self.untracked()?.contains(&uuid) {
+            return self.index.remove_game(uuid);
+        }
         match self.store.game(uuid)? {
             Some(record) => self.index.upsert_game(&record, &self.retired()?),
             None => self.index.remove_game(uuid),
         }
+    }
+
+    /// Games this device stopped tracking; their history stays in the store.
+    pub fn untracked(&self) -> Result<HashSet<Uuid>> {
+        if !self.untracked_path.exists() {
+            return Ok(HashSet::new());
+        }
+        read_json(&self.untracked_path).context("Failed to load the untracked games")
+    }
+
+    /// Records whether this device tracks `uuid`, without touching the index:
+    /// callers re-project the game when they are ready for it.
+    pub fn set_untracked(&self, uuid: Uuid, untracked: bool) -> Result<()> {
+        let mut games = self.untracked()?;
+        let changed = if untracked {
+            games.insert(uuid)
+        } else {
+            games.remove(&uuid)
+        };
+        if changed {
+            write_json(&self.untracked_path, &games)?;
+        }
+        Ok(())
     }
 
     pub fn record(&self, game: &Game) -> Result<GameRecord> {

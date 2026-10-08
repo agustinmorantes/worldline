@@ -174,6 +174,7 @@ impl WorldlineCore {
             &data_dir.join("repository"),
             Index::new(pool),
             device.device_uuid,
+            &data_dir.join("untracked_games.json"),
         )?;
         let (sync_trigger, triggers) = mpsc::channel();
         let inner = Arc::new(Inner {
@@ -296,9 +297,42 @@ impl WorldlineCore {
         Ok(game.game)
     }
 
+    /// Deletes a game everywhere: the tombstone reaches every device.
     pub fn delete_game(&self, id: i32) -> Result<()> {
         self.history().delete_game(id)?;
         self.reload_watcher();
+        Ok(())
+    }
+
+    /// Stops tracking a game on this device only (ADR 0006). Pending changes
+    /// are captured and published first; the history stays in the local
+    /// store and the sync folder, and `adopt_remote_game` brings it back.
+    /// Only a game already in the sync folder can be untracked: otherwise
+    /// nothing could bring it back.
+    pub fn untrack_game(&self, id: i32) -> Result<()> {
+        let game = self.get_game(id)?;
+        let uuid = game_uuid(&game.game)?;
+        let remote = self.remote()?.with_context(|| {
+            format!(
+                "'{}' can only be removed from this device when sync is on",
+                game.game.title
+            )
+        })?;
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if remote.store.game(uuid)?.is_none() {
+            bail!(
+                "'{}' is not in the sync folder yet; sync before removing it from this device",
+                game.game.title
+            );
+        }
+        self.guarded(id, VersionReason::Watcher, None, |_| {
+            self.history().set_untracked(uuid, true)?;
+            self.history().refresh_game(uuid)
+        })?;
+        // Publishes the captured progress, and pointers without the game.
+        for problem in self.push_locked(&remote)? {
+            eprintln!("Sync: {problem}");
+        }
         Ok(())
     }
 
@@ -603,6 +637,11 @@ impl WorldlineCore {
         let report = store::with_lock(self.repository_root(), || {
             crate::bundle::import(self.history(), bundle_path, mappings)
         })?;
+        // Importing an untracked game's history tracks it again.
+        if self.history().untracked()?.contains(&report.game_uuid) {
+            self.history().set_untracked(report.game_uuid, false)?;
+            self.history().refresh_game(report.game_uuid)?;
+        }
         self.reload_watcher();
         Ok(report)
     }
@@ -1010,14 +1049,16 @@ impl WorldlineCore {
         write_json(&state_path, &state)
     }
 
-    /// Every game this device has history for, tombstones included.
-    fn local_game_uuids(&self) -> Result<HashSet<Uuid>> {
+    /// Every game this device has history for, tombstones included, except
+    /// untracked games: those are remote games not on this device.
+    fn local_game_uuids(&self, untracked: &HashSet<Uuid>) -> Result<HashSet<Uuid>> {
         Ok(self
             .history()
             .store
             .game_metas()?
             .iter()
             .map(|g| g.uuid)
+            .filter(|uuid| !untracked.contains(uuid))
             .collect())
     }
 
@@ -1051,14 +1092,17 @@ impl WorldlineCore {
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut problems = Vec::new();
         let remote_games = remote.store.catalog()?;
+        // Only an explicit adoption brings an untracked game back.
+        let untracked = self.history().untracked()?;
 
         // Link games tracked on both devices before sync was enabled.
         for remote_game in remote_games.iter().filter(|g| g.meta.deleted_at.is_none()) {
-            if self
-                .history()
-                .index
-                .game_id(remote_game.meta.uuid)?
-                .is_some()
+            if untracked.contains(&remote_game.meta.uuid)
+                || self
+                    .history()
+                    .index
+                    .game_id(remote_game.meta.uuid)?
+                    .is_some()
             {
                 continue;
             }
@@ -1075,7 +1119,7 @@ impl WorldlineCore {
             }
         }
 
-        let local_uuids = self.local_game_uuids()?;
+        let local_uuids = self.local_game_uuids(&untracked)?;
         problems.extend(self.pull_locked(&remote, &remote_games, &local_uuids));
 
         // Adopt remote games installed here. Scanning is slow, so it runs
@@ -1109,6 +1153,10 @@ impl WorldlineCore {
             if !installed_titles()
                 .contains_key(&store::normalize_display_name(&remote_game.meta.title))
             {
+                continue;
+            }
+            // Checked after the scan, so the report still says it's installed.
+            if untracked.contains(&remote_game.meta.uuid) {
                 continue;
             }
             if !matches!(self.match_local_game(remote_game)?, LocalMatch::None) {
@@ -1174,7 +1222,12 @@ impl WorldlineCore {
         if game.meta.deleted_at.is_some() {
             bail!("This game was deleted on another device");
         }
-        match self.match_local_game(&game)? {
+        let found = self.match_local_game(&game)?;
+        if !matches!(found, LocalMatch::Collision(_)) {
+            // Adopting is how an untracked game comes back.
+            self.history().set_untracked(uuid, false)?;
+        }
+        match found {
             LocalMatch::None => {
                 self.adopt(&remote, &game)?;
             }
@@ -1390,6 +1443,17 @@ impl WorldlineCore {
                     history.index.set_active_slot(game_id, slot_id)?;
                 }
             }
+        } else if let Some(slot) = self.get_game(game_id)?.active_slot {
+            // No device points into it (the last one untracked it): resume
+            // from the newest version rather than start a second root.
+            let newest = self
+                .get_slot(slot.id)?
+                .versions
+                .into_iter()
+                .find(|version| !version.retired);
+            history
+                .index
+                .set_active_version(slot.id, newest.map(|version| version.id))?;
         }
         // Decide under suppression and the lock, so saves written while the
         // pull ran are seen and never overwritten.
@@ -1575,12 +1639,7 @@ impl WorldlineCore {
         &self,
         settings: RetentionSettings,
     ) -> Result<RetentionSettings> {
-        if settings.keep_all_hours > settings.hourly_until_hours
-            || settings.hourly_until_hours > settings.daily_until_days * 24
-            || settings.daily_until_days > settings.weekly_until_days
-        {
-            bail!("Retention tiers must not overlap: keep-all ≤ hourly ≤ daily ≤ weekly");
-        }
+        validate_retention(&settings)?;
         let settings = RetentionSettings {
             updated_at: Utc::now(),
             ..settings
@@ -1656,17 +1715,17 @@ impl WorldlineCore {
         })
     }
 
-    pub fn preview_pruning(&self) -> Result<PruningPreview> {
+    /// What pruning with `settings` (saved or not) would do. Writes nothing.
+    pub fn preview_pruning(&self, settings: &RetentionSettings) -> Result<PruningPreview> {
+        validate_retention(settings)?;
         let remote = self.remote()?;
-        let settings =
-            maintenance::sync_settings(&self.retention_path(), remote.as_ref().map(|r| &r.store))?;
         let inputs = self.retention_inputs(remote.as_ref())?;
         let plan = maintenance::plan(&maintenance::PlanInput {
             games: &inputs.games,
             retired: &inputs.retired,
             pointed: &inputs.pointed,
             chunk_sizes: &self.planning_chunk_sizes(remote.as_ref())?,
-            settings: &settings,
+            settings,
             now: planning_now(),
         });
         Ok(PruningPreview {
@@ -1789,6 +1848,16 @@ struct RetentionInputs {
     retired: HashSet<Uuid>,
     pointed: HashSet<Uuid>,
     local_pointed: HashSet<Uuid>,
+}
+
+fn validate_retention(settings: &RetentionSettings) -> Result<()> {
+    if settings.keep_all_hours > settings.hourly_until_hours
+        || settings.hourly_until_hours > settings.daily_until_days * 24
+        || settings.daily_until_days > settings.weekly_until_days
+    {
+        bail!("Retention tiers must not overlap: keep-all ≤ hourly ≤ daily ≤ weekly");
+    }
+    Ok(())
 }
 
 /// Retention decisions depend on `now` truncated to the hour, so devices

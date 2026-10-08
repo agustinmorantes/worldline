@@ -35,7 +35,7 @@ pub struct RetentionSettings {
 impl Default for RetentionSettings {
     fn default() -> Self {
         Self {
-            automatic: false,
+            automatic: true,
             keep_all_hours: 1,
             hourly_until_hours: 24,
             daily_until_days: 7,

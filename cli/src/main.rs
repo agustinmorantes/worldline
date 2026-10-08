@@ -83,6 +83,10 @@ enum GamesAction {
     Delete {
         id: i32,
     },
+    /// Stop tracking a game on this device; its history stays in the sync folder.
+    Untrack {
+        id: i32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -268,6 +272,7 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
                 version_number,
             } => println!("Version {version_number} created for game {game_id}"),
             Notification::Error(err) => eprintln!("Error: {err}"),
+            Notification::SyncStarted => {}
             Notification::SyncCompleted(report) => {
                 println!("Synced.");
                 print_sync_report(&report);
@@ -356,6 +361,10 @@ fn main() -> Result<()> {
             GamesAction::Delete { id } => {
                 core.delete_game(id)?;
                 println!("Deleted game {id}");
+            }
+            GamesAction::Untrack { id } => {
+                core.untrack_game(id)?;
+                println!("Untracked game {id}; its history stays in the sync folder");
             }
         },
         Commands::Versions { action } => match action {
@@ -469,7 +478,7 @@ fn main() -> Result<()> {
                 print_retention(&settings);
             }
             PruneAction::Preview => {
-                let preview = core.preview_pruning()?;
+                let preview = core.preview_pruning(&core.get_pruning_settings()?)?;
                 println!(
                     "{} checkpoint(s) eligible for retirement",
                     preview.retire_versions.len()

@@ -5,6 +5,7 @@ pub mod bundle;
 pub mod chunks;
 pub mod core_facade;
 pub mod detection;
+pub mod error;
 pub mod exclusions;
 pub mod fs_utils;
 pub mod history;
