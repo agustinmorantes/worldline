@@ -3,7 +3,12 @@
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { makeGame, makeSlot, makeTrackedDir } from '../builders';
+import type { DeviceKind } from '../bindings/DeviceKind';
 import type { FullGame } from '../bindings/FullGame';
+import type { MonitoringSettings } from '../bindings/MonitoringSettings';
+import type { PruningPreview } from '../bindings/PruningPreview';
+import type { RetentionSettings } from '../bindings/RetentionSettings';
+import type { SyncSettings } from '../bindings/SyncSettings';
 import { FIXTURES, type Fixture, type FixtureName } from './fixtures';
 
 const FIXTURE_KEY = 'worldline-mock-fixture';
@@ -32,6 +37,19 @@ function storeCommand(cmd: string, args: Args): unknown {
     default:
       throw new Error(`No mock for plugin:store|${cmd}`);
   }
+}
+
+/** A made-up estimate that grows as the tiers shrink, so it moves with the steppers. */
+function previewOf(settings: RetentionSettings): PruningPreview {
+  const kept = Math.min(1, (settings.keep_all_hours + settings.hourly_until_hours / 4 + settings.daily_until_days * 2 + settings.weekly_until_days / 2) / 400);
+  const before = 4_000_000_000;
+  return {
+    retire_versions: [],
+    live_bytes_before: before,
+    live_bytes_after: Math.round(before * kept),
+    budget_unreachable: false,
+    local_gc: { chunks_deleted: 0, bytes_deleted: 0, chunks_condemned: 0 },
+  };
 }
 
 function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
@@ -142,19 +160,51 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       return state.syncReport;
     case 'get_retired_versions':
       return [];
+    case 'update_device':
+      state.device = { ...state.device, name: args.name as string, kind: args.kind as DeviceKind | null };
+      return state.device;
+    case 'update_sync_settings':
+      state.syncSettings = args.settings as SyncSettings;
+      // A fresh cloud folder knows only this device.
+      state.syncReport ??= {
+        synced_at: new Date().toISOString(),
+        games: [],
+        remote_games: [],
+        devices: [state.device],
+        remote_versions: {},
+        problems: [],
+      };
+      return state.syncSettings;
+    case 'remove_sync_device':
+      if (typeof state.syncReport === 'object') {
+        state.syncReport.devices = state.syncReport.devices.filter((d) => d.device_uuid !== args.deviceUuid);
+      }
+      return null;
     case 'get_monitoring_settings':
+      return state.monitoringSettings;
+    case 'update_monitoring_settings':
+      state.monitoringSettings = args.monitoringSettings as MonitoringSettings;
       return state.monitoringSettings;
     case 'get_pruning_settings':
       return state.retentionSettings;
+    case 'update_pruning_settings':
+      state.retentionSettings = args.settings as RetentionSettings;
+      return state.retentionSettings;
     case 'preview_pruning':
+      return previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+    case 'run_pruning': {
+      const preview = previewOf(state.retentionSettings);
       return {
-        retire_versions: [],
-        live_bytes_before: 0,
-        live_bytes_after: 0,
+        retired_versions: [],
         budget_unreachable: false,
-        local_gc: { chunks_deleted: 0, bytes_deleted: 0, chunks_condemned: 0 },
+        local_gc: { chunks_deleted: 12, bytes_deleted: preview.live_bytes_before - preview.live_bytes_after, chunks_condemned: 0 },
+        remote_gc: null,
       };
+    }
+    case 'set_tray_labels':
+      return null;
     case 'pick_folder':
+      return state.pickedFolder ?? null;
     case 'pick_file':
     case 'pick_save_path':
       return null;

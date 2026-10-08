@@ -398,5 +398,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         crate::dialogs::pick_save_path,
         crate::dialogs::confirm,
         set_tray_labels,
+        #[cfg(feature = "e2e")]
+        crate::tray::e2e_tray_labels,
     ])
 }

@@ -22,6 +22,8 @@ export interface Fixture {
   /** What `scan_installed` answers; `'pending'` never settles. */
   scan?: InstallScannerItem[] | 'pending';
   scanRoots?: string[];
+  /** What `pick_folder` answers; unset, the picker is cancelled. */
+  pickedFolder?: string;
 }
 
 const minutesAgo = (minutes: number): string => naive(new Date(Date.now() - minutes * 60_000));
@@ -244,6 +246,24 @@ function addGamesDone(): Fixture {
   return { ...state, syncReport: { ...report, remote_games: report.remote_games.map((g) => ({ ...g, adopted: true })) } };
 }
 
+/** Settings with sync on: this PC, the handheld and a laptop share the cloud. */
+function settings(): Fixture {
+  const state = library();
+  const report = state.syncReport as SyncReport;
+  return {
+    ...state,
+    syncReport: {
+      ...report,
+      devices: [
+        state.device,
+        { ...DECK, last_seen: new Date(Date.now() - 120 * 60_000).toISOString() },
+        { ...DECK, device_uuid: '00000000-0000-4000-8000-00000000d003', name: 'Old laptop', platform: 'windows', kind: 'laptop', last_seen: new Date(Date.now() - 40 * 86_400_000).toISOString() },
+      ],
+    },
+    pickedFolder: 'E:/OneDrive/Worldline',
+  };
+}
+
 export const FIXTURES = {
   default: () => base([eldenRing(), hollowKnight()]),
   empty: () => base([]),
@@ -256,6 +276,9 @@ export const FIXTURES = {
   scanning: () => addGames('pending'),
   scanned: () => addGames(SCANNED),
   addGamesDone,
+  settings,
+  /** Sync off; the folder picker answers with a cloud folder. */
+  cloudOff: () => ({ ...base([eldenRing(), hollowKnight()]), pickedFolder: 'D:/Dropbox/Worldline' }),
 } satisfies Record<string, () => Fixture>;
 
 export type FixtureName = keyof typeof FIXTURES;
