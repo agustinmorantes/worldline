@@ -2,6 +2,7 @@
 // (`bun run dev:mock`, Playwright screen tests). Never bundled into the app.
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { InvokeArgs } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { makeGame, makeSlot, makeTrackedDir } from '../builders';
 import type { DeviceKind } from '../bindings/DeviceKind';
 import type { Failure } from '../bindings/Failure';
@@ -61,6 +62,8 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
   };
 
   switch (cmd) {
+    case 'get_running_games':
+      return [...(state.running ?? [])];
     case 'get_games':
       return structuredClone(state.games);
     case 'get_game':
@@ -235,4 +238,6 @@ export function installMocks(): void {
     },
     { shouldMockEvents: true },
   );
+  // Screen tests play backend events (a game stopping) through this.
+  (window as unknown as { mockEmit: typeof emit }).mockEmit = emit;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeGame, makeVersion, naive } from '@/ipc/builders';
 import type { GameSyncStatus } from '@/ipc/bindings/GameSyncStatus';
-import { gameStatus, initials, sortLibrary } from './library';
+import { gameStatus, initials, sortLibrary, withRunning } from './library';
 
 const played = (id: number, title: string, iso: string | null) =>
   makeGame({ id, title, versions: iso === null ? [] : [makeVersion({ id, created_at: naive(new Date(iso)) })] });
@@ -62,5 +62,19 @@ describe('gameStatus', () => {
 
   it('treats an in-sync game as last played', () => {
     expect(gameStatus(game, { on: true, reported: true, status: status('in_sync', null) }).kind).toBe('last-played');
+  });
+});
+
+describe('running games', () => {
+  it('puts recording above every other status', () => {
+    const game = played(1, 'Hades', '2026-01-01T10:00:00Z');
+    expect(gameStatus(game, { on: true, reported: true, status: status('diverged') }, true)).toEqual({ kind: 'recording' });
+  });
+
+  it('adds a started game once and drops a stopped one', () => {
+    expect(withRunning(undefined, 1, true)).toEqual([1]);
+    expect(withRunning([1, 2], 1, true)).toEqual([2, 1]);
+    expect(withRunning([1, 2], 1, false)).toEqual([2]);
+    expect(withRunning([2], 1, false)).toEqual([2]);
   });
 });

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { type ReactElement, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useGame, useRetiredVersions, useSyncReport, useSyncSettings } from '@/features/library/queries';
+import { useGame, useRetiredVersions, useRunningGames, useSyncReport, useSyncSettings } from '@/features/library/queries';
 import { useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { GameHeader, type GameView } from '@/features/game/GameHeader';
@@ -48,6 +48,7 @@ export function GameDetail(): ReactElement {
   const { data: game, isLoading, error, refetch } = useGame(id);
   const { data: settings } = useSyncSettings();
   const report = useSyncReport();
+  const { data: runningGames } = useRunningGames();
   const running = useSyncRunning();
   const { data: retiredIds = [] } = useRetiredVersions();
   const { data: monitoring } = useMonitoringSettings();
@@ -192,6 +193,7 @@ export function GameDetail(): ReactElement {
     <div className="flex h-full flex-col overflow-hidden">
       <GameHeader
         game={game}
+        running={runningGames?.includes(game.id) === true}
         sync={chipState}
         inCloud={syncOn && report.data?.remote_games.some((g) => g.uuid === game.uuid) === true}
         syncDevice={remoteKind}

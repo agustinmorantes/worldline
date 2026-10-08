@@ -24,6 +24,8 @@ export interface Fixture {
   scanRoots?: string[];
   /** What `pick_folder` answers; unset, the picker is cancelled. */
   pickedFolder?: string;
+  /** What `get_running_games` answers: ids of the games running now. */
+  running?: number[];
 }
 
 const minutesAgo = (minutes: number): string => naive(new Date(Date.now() - minutes * 60_000));
@@ -281,6 +283,8 @@ export const FIXTURES = {
   settings,
   /** Sync off; the folder picker answers with a cloud folder. */
   cloudOff: () => ({ ...base([eldenRing(), hollowKnight()]), pickedFolder: 'D:/Dropbox/Worldline' }),
+  /** Elden Ring is running; its row and header say "Recording". */
+  running: () => ({ ...base([eldenRing(), hollowKnight()]), running: [1] }),
 } satisfies Record<string, () => Fixture>;
 
 export type FixtureName = keyof typeof FIXTURES;

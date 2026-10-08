@@ -1,5 +1,5 @@
 import { UseQueryResult, useQuery } from '@tanstack/react-query';
-import { getGame, getGames, getRetiredVersions, getSyncSettings, refreshSync } from '@/ipc/commands';
+import { getGame, getGames, getRetiredVersions, getRunningGames, getSyncSettings, refreshSync } from '@/ipc/commands';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { SyncReport } from '@/ipc/bindings/SyncReport';
 import type { SyncSettings } from '@/ipc/bindings/SyncSettings';
@@ -48,4 +48,14 @@ export const useSyncReport = (): UseQueryResult<SyncReport> => {
 
 export const useRetiredVersions = (): UseQueryResult<string[]> => {
   return useQuery({ queryKey: ['retired-versions'], queryFn: getRetiredVersions });
+};
+
+/** Ids of the games running now, read once; `game-started` and `game-stopped` keep it current. */
+export const useRunningGames = (): UseQueryResult<number[]> => {
+  return useQuery({
+    queryKey: ['running-games'],
+    queryFn: getRunningGames,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
 };

@@ -1,7 +1,7 @@
 // The game view's header: icon, title, the playthrough/sync/options chips, the Sessions/Graph
 // toggle and the approximate play time.
 import type { ReactElement } from 'react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Cloud, CloudCheck } from 'lucide-react';
 import type { DeviceKind } from '@/ipc/bindings/DeviceKind';
 import type { FullGame } from '@/ipc/bindings/FullGame';
@@ -17,8 +17,10 @@ import { PlaythroughPicker } from './PlaythroughPicker';
 
 export type GameView = 'sessions' | 'graph';
 
-export function GameHeader({ game, sync, inCloud, syncDevice, onSyncChip, played, sessions, view, onView, busy, onSwitchSlot, onCreateSlot }: {
+export function GameHeader({ game, running, sync, inCloud, syncDevice, onSyncChip, played, sessions, view, onView, busy, onSwitchSlot, onCreateSlot }: {
   game: FullGame;
+  /** The game is running, so its saves are being recorded. */
+  running: boolean;
   sync: SyncChip;
   /** The game is in the cloud, so it can be removed from this PC. */
   inCloud: boolean;
@@ -43,6 +45,21 @@ export function GameHeader({ game, sync, inCloud, syncDevice, onSyncChip, played
         <h1 className="truncate font-display text-[34px] font-extrabold leading-[1.15]">{game.title}</h1>
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <PlaythroughPicker game={game} disabled={busy} onSwitch={onSwitchSlot} onCreate={onCreateSlot} />
+          <AnimatePresence initial={false}>
+            {running && (
+              <motion.span
+                key="recording"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.3 }}
+                className={cn(chip, 'text-live hover:bg-el')}
+              >
+                <span aria-hidden="true" className="size-2 rounded-full bg-live [animation:blink_1.4s_ease-in-out_infinite]" />
+                {t.gameStatus.recording}
+              </motion.span>
+            )}
+          </AnimatePresence>
           {sync.kind !== 'off' && <SyncChipButton sync={sync} device={syncDevice} onClick={onSyncChip} />}
           <GameMenu game={game} inCloud={inCloud} />
           <ViewToggle view={view} onView={onView} />

@@ -2,7 +2,7 @@ import { test as base } from '@playwright/test';
 
 interface ScreenOptions {
   /** Backend fixture from `src/ipc/mocks/fixtures.ts`. */
-  fixture: 'default' | 'empty' | 'library' | 'syncing' | 'sessions' | 'ghost' | 'diverged' | 'addGames' | 'scanning' | 'scanned' | 'addGamesDone' | 'settings' | 'cloudOff' | 'offline';
+  fixture: 'default' | 'empty' | 'library' | 'syncing' | 'sessions' | 'ghost' | 'diverged' | 'addGames' | 'scanning' | 'scanned' | 'addGamesDone' | 'settings' | 'cloudOff' | 'offline' | 'running';
   /** Stored preferences, merged over the defaults. Contextual hints count as seen unless `hints` is given. */
   prefs: Record<string, unknown>;
 }

@@ -6,6 +6,10 @@ export type Game = { id: number, uuid: string, title: string, title_normalized: 
  */
 icon_path: string | null, 
 /**
+ * Where the game is installed on this device, once a scan found it.
+ */
+install_dir: string | null, 
+/**
  * The accent hue to show (0–359): the stored one, or the UUID fallback.
  */
 accent_hue: number, 

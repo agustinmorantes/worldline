@@ -44,6 +44,7 @@ export function sortLibrary(games: FullGame[]): FullGame[] {
 }
 
 export type GameStatus =
+  | { kind: 'recording' }
   | { kind: 'new-from'; device: string }
   | { kind: 'played-too'; device: string }
   | { kind: 'not-in-cloud' }
@@ -59,8 +60,9 @@ export interface GameSyncView {
   status: GameSyncStatus | undefined;
 }
 
-/** The row's status line. */
-export function gameStatus(game: FullGame, sync: GameSyncView): GameStatus {
+/** The row's status line. A running game says so above anything else. */
+export function gameStatus(game: FullGame, sync: GameSyncView, running = false): GameStatus {
+  if (running) return { kind: 'recording' };
   const device = sync.status?.remote_device ?? null;
   if (sync.status?.relation === 'fast_forward' && device !== null) return { kind: 'new-from', device };
   if (sync.status?.relation === 'diverged' && device !== null) return { kind: 'played-too', device };
@@ -68,4 +70,10 @@ export function gameStatus(game: FullGame, sync: GameSyncView): GameStatus {
   if (at === null) return { kind: 'no-saves' };
   if (sync.on && sync.reported && sync.status === undefined) return { kind: 'not-in-cloud' };
   return { kind: 'last-played', at };
+}
+
+/** The running game ids after `game-started` (`running`) or `game-stopped` for `gameId`. */
+export function withRunning(ids: number[] | undefined, gameId: number, running: boolean): number[] {
+  const rest = (ids ?? []).filter((id) => id !== gameId);
+  return running ? [...rest, gameId] : rest;
 }

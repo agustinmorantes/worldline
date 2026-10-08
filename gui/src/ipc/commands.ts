@@ -22,6 +22,7 @@ import type { Version } from './bindings/Version';
 
 export const getGames = (): Promise<FullGame[]> => invoke('get_games');
 export const getGame = (id: number): Promise<FullGame> => invoke('get_game', { id });
+export const getRunningGames = (): Promise<number[]> => invoke('get_running_games');
 /** Creates or updates a game; `dirs` replaces its tracked directories when given. */
 export const saveGame = (game: GameForm, dirs: string[] | null): Promise<Game> =>
   invoke('save_game', { game, dirs });

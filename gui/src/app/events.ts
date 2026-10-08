@@ -5,6 +5,7 @@ import {queryClient} from "@/app/query-client";
 import {reportError} from "@/shared/errors/report";
 import {getT} from "@/shared/i18n";
 import {isFolderUnreachable, setSyncOutcome, setSyncRunning} from "@/features/library/sync-activity";
+import {withRunning} from "@/features/library/library";
 
 export function listenNotifications(): void {
   void on("version-created", ([gameId, versionNumber]) => {
@@ -26,6 +27,14 @@ export function listenNotifications(): void {
   void on("detection-error", payload => {
     reportError(getT().errors.detectionFailed, payload);
   })
+
+  void on('game-started', (gameId) => {
+    queryClient.setQueryData<number[]>(['running-games'], (ids) => withRunning(ids, gameId, true));
+  });
+
+  void on('game-stopped', (gameId) => {
+    queryClient.setQueryData<number[]>(['running-games'], (ids) => withRunning(ids, gameId, false));
+  });
 
   void on('sync-started', () => {
     setSyncRunning(true);

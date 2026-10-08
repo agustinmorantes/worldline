@@ -15,6 +15,9 @@ export interface Events {
   'sync-error': Failure;
   'history-pruned': null;
   'pruning-error': Failure;
+  /** A game's process started or its last one exited; the payload is the game id. */
+  'game-started': number;
+  'game-stopped': number;
 }
 
 export function on<K extends keyof Events>(

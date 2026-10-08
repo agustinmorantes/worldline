@@ -30,6 +30,7 @@ export const en = {
     playedToo: (device: string): string => `${device} played too`,
     notInCloud: 'Not in the cloud yet',
     noSaves: 'No saves yet',
+    recording: 'Recording',
   },
   sync: {
     thisPc: 'This PC',

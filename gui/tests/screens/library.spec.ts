@@ -29,3 +29,21 @@ test('a failed load shows a localized message with copyable details', async ({ p
   await expect(toast).toBeVisible();
   await expect(toast.getByRole('button', { name: 'Copy details' })).toBeVisible();
 });
+
+test.describe('a running game', () => {
+  test.use({ fixture: 'running' });
+
+  test('says Recording in its row and header until it stops', async ({ page }) => {
+    await page.goto('/game/1');
+    const row = page.getByRole('complementary', { name: 'Library' }).getByRole('link', { name: /elden ring/i });
+    const header = page.locator('header', { has: page.getByRole('heading', { name: 'Elden Ring' }) });
+    await expect(row.getByText('Recording')).toBeVisible();
+    await expect(header.getByText('Recording')).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'Library' }).getByRole('link', { name: /hollow knight/i }).getByText('Recording')).toHaveCount(0);
+
+    await page.evaluate(() => (window as unknown as { mockEmit: (event: string, payload: unknown) => Promise<void> }).mockEmit('game-stopped', 1));
+    await expect(row.getByText('Recording')).toHaveCount(0);
+    await expect(header.getByText('Recording')).toHaveCount(0);
+    await expect(row.getByText(/ago/)).toBeVisible();
+  });
+});

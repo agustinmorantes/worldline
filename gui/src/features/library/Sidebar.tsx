@@ -1,6 +1,6 @@
 import { type MouseEvent, type ReactElement, type ReactNode, useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Plus, SlidersHorizontal } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
@@ -11,7 +11,7 @@ import { cn } from '@/shared/ui/utils';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { GameIcon } from './GameIcon';
 import { type GameStatus, type GameSyncView, gameStatus, sortLibrary } from './library';
-import { useGames, useSyncReport, useSyncSettings } from './queries';
+import { useGames, useRunningGames, useSyncReport, useSyncSettings } from './queries';
 import { anchorKey, type NavTarget, useShellNav } from './shell-nav';
 import { SyncCard } from './SyncCard';
 import { useNow } from './useNow';
@@ -22,6 +22,7 @@ export function Sidebar(): ReactElement {
   const { data: games, isLoading, error } = useGames();
   const { data: settings } = useSyncSettings();
   const { data: report } = useSyncReport();
+  const { data: running } = useRunningGames();
   const reduced = useMotionReduced();
   const sorted = useMemo(() => (games ? sortLibrary(games) : []), [games]);
   const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
@@ -32,7 +33,7 @@ export function Sidebar(): ReactElement {
     reported: report !== undefined,
     status: report?.games.find((s) => s.game_uuid === game.uuid),
   });
-  const rows = sorted.map((game) => ({ game, status: gameStatus(game, syncView(game)) }));
+  const rows = sorted.map((game) => ({ game, status: gameStatus(game, syncView(game), running?.includes(game.id) === true) }));
   const fromDevice = rows.find((r) => r.status.kind === 'new-from' || r.status.kind === 'played-too');
 
   return (
@@ -146,6 +147,10 @@ function GameRow({ game, status }: { game: FullGame; status: GameStatus }): Reac
             className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
           />
         )}
+        {/* The narrow rail hides the status line, so the icon carries the live dot. */}
+        {status.kind === 'recording' && (
+          <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 hidden size-2 rounded-full bg-live [animation:blink_1.4s_ease-in-out_infinite] max-[1099px]:block" />
+        )}
       </span>
       <span className={`relative flex min-w-0 flex-col gap-[3px] max-[1099px]:sr-only`}>
         <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
@@ -157,6 +162,7 @@ function GameRow({ game, status }: { game: FullGame; status: GameStatus }): Reac
 
 function statusText(status: GameStatus, t: Messages, when: (date: Date) => string): string {
   switch (status.kind) {
+    case 'recording': return t.gameStatus.recording;
     case 'new-from': return t.gameStatus.newFrom(status.device);
     case 'played-too': return t.gameStatus.playedToo(status.device);
     case 'not-in-cloud': return t.gameStatus.notInCloud;
@@ -170,15 +176,27 @@ function StatusLine({ status }: { status: GameStatus }): ReactElement {
   const locale = useLocale();
   const now = useNow(60_000);
   const fromDevice = status.kind === 'new-from' || status.kind === 'played-too';
+  const recording = status.kind === 'recording';
   const text = statusText(status, t, (date) => {
     const relative = formatRelative(date, locale, now);
     return relative.charAt(0).toLocaleUpperCase(locale) + relative.slice(1);
   });
+  // "Recording" fades in when the game starts and back out when it stops.
   return (
-    <span className={cn('flex items-center gap-1.5 truncate text-xs font-medium transition-colors duration-300', fromDevice ? 'text-deck' : 'text-tx3')}>
-      {fromDevice && <DeviceGlyph kind="handheld" />}
-      {text}
-    </span>
+    <AnimatePresence initial={false} mode="wait">
+      <motion.span
+        key={recording ? 'recording' : 'idle'}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.3 }}
+        className={cn('flex items-center gap-1.5 truncate text-xs font-medium transition-colors duration-300', recording ? 'text-live' : fromDevice ? 'text-deck' : 'text-tx3')}
+      >
+        {recording && <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-live [animation:blink_1.4s_ease-in-out_infinite]" />}
+        {fromDevice && <DeviceGlyph kind="handheld" />}
+        {text}
+      </motion.span>
+    </AnimatePresence>
   );
 }
 

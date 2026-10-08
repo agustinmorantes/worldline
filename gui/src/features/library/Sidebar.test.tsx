@@ -9,6 +9,7 @@ vi.mock('@/features/library/queries', () => ({
   useGames: vi.fn(),
   useSyncSettings: vi.fn(),
   useSyncReport: vi.fn(),
+  useRunningGames: vi.fn(() => ({ data: [] })),
 }));
 
 vi.mock('@tanstack/react-router', () => ({
@@ -16,7 +17,7 @@ vi.mock('@tanstack/react-router', () => ({
     <a href="#" {...props}>{children}</a>,
 }));
 
-import { useGames, useSyncReport, useSyncSettings } from '@/features/library/queries';
+import { useGames, useRunningGames, useSyncReport, useSyncSettings } from '@/features/library/queries';
 
 function mockGames(data: FullGame[] | undefined, opts: { isLoading?: boolean; error?: Error | null } = {}) {
   vi.mocked(useGames).mockReturnValue({
@@ -97,5 +98,13 @@ describe('Sidebar', () => {
     renderSidebar();
     expect(screen.getByText('2 games in your cloud aren’t on this PC yet')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument();
+  });
+
+  it('says Recording on a running game only', () => {
+    mockGames([makeGame({ id: 1, title: 'Elden Ring' }), makeGame({ id: 2, title: 'Dark Souls' })]);
+    vi.mocked(useRunningGames).mockReturnValueOnce({ data: [2] } as unknown as ReturnType<typeof useRunningGames>);
+    renderSidebar();
+    expect(screen.getByRole('link', { name: /dark souls/i })).toHaveTextContent('Recording');
+    expect(screen.getByRole('link', { name: /elden ring/i })).not.toHaveTextContent('Recording');
   });
 });

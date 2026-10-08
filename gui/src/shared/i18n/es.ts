@@ -29,6 +29,7 @@ export const es: Messages = {
     playedToo: (device) => `También jugaste en ${device}`,
     notInCloud: 'Aún no está en la nube',
     noSaves: 'Sin partidas guardadas',
+    recording: 'Grabando',
   },
   sync: {
     thisPc: 'Este PC',
