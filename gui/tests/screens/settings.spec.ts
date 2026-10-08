@@ -81,6 +81,37 @@ test.describe('cloud on', () => {
     await cloud.getByRole('button', { name: 'Save' }).click();
     await expect(cloud.getByText('Living room PC')).toBeVisible();
   });
+
+  test('turns the cloud off after a confirm', async ({ page }) => {
+    await page.goto('/settings');
+    const cloud = page.getByRole('region', { name: 'Cloud' });
+    const sidebar = page.getByRole('complementary', { name: 'Library' });
+    await expect(sidebar.getByRole('button', { name: /sync now/i })).toBeVisible();
+
+    await cloud.getByRole('button', { name: 'Turn off cloud' }).click();
+    await expect(cloud.getByText('Pick a folder your cloud app syncs')).toBeVisible();
+    await expect(sidebar.getByRole('button', { name: /Turn on cloud/ })).toBeVisible();
+    await expect(sidebar.getByRole('button', { name: /sync now/i })).toHaveCount(0);
+  });
+});
+
+test.describe('cloud folder unavailable', () => {
+  test.use({ fixture: 'offline' });
+
+  test('says so in the sync card and in settings, without a toast', async ({ page }) => {
+    await page.goto('/settings');
+    const card = page.getByRole('complementary', { name: 'Library' }).getByRole('button', { name: /sync now/i });
+    await expect(card).toContainText('Cloud folder not available');
+    const cloud = page.getByRole('region', { name: 'Cloud' });
+    await expect(cloud.getByRole('status')).toContainText('Cloud folder not available');
+    await expect(cloud.getByRole('status')).toContainText('Check that your cloud app is running');
+
+    await card.click();
+    await expect(card).toContainText('Cloud folder not available');
+    await cloud.getByRole('button', { name: 'Sync now' }).click();
+    await expect(cloud.getByRole('status')).toBeVisible();
+    await expect(page.getByText('Couldn’t sync.')).toHaveCount(0);
+  });
 });
 
 test.describe('cloud off', () => {

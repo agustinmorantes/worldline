@@ -37,6 +37,8 @@ export const es: Messages = {
     synced: (when) => `Sincronizado ${when}`,
     notSynced: 'Aún sin sincronizar',
     unreachable: 'No se pudo llegar a la nube',
+    unavailable: 'Carpeta de la nube no disponible',
+    unavailableHint: 'Comprueba que tu app de nube esté abierta y su unidad conectada. Los puntos de control quedan en este PC hasta que vuelva.',
     syncNow: 'Sincronizar ahora',
     failed: 'No se pudo sincronizar.',
     turnOn: 'Activar la nube',
@@ -246,6 +248,8 @@ export const es: Messages = {
     removeTitle: 'Quitar dispositivo',
     removeBody: (name) =>
       `¿Quitar ${name} de tu nube? Hazlo cuando ya no lo uses, para que la limpieza libere lo que conservaba.`,
+    turnOff: 'Desactivar la nube',
+    turnOffBody: 'Este PC deja de sincronizar. No se borra nada, ni en este PC ni en la carpeta de la nube.',
     appearance: 'Apariencia',
     language: 'Idioma',
     system: 'Sistema',
@@ -260,6 +264,7 @@ export const es: Messages = {
       cloud: 'No se pudo usar esa carpeta para la nube.',
       device: 'No se pudo cambiar este dispositivo.',
       remove: 'No se pudo quitar el dispositivo.',
+      turnOff: 'No se pudo desactivar la nube.',
     },
   },
   home: {

@@ -4,6 +4,7 @@
 
 use crate::core_facade::WorldlineCore;
 use crate::detection::Notification;
+use crate::error::Failure;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
@@ -93,7 +94,7 @@ fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notificatio
                 let _ = notifications.send(Notification::SyncCompleted(report));
             }
             Err(error) => {
-                let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));
+                let _ = notifications.send(Notification::SyncFailed(Failure::from(&error)));
             }
         }
     }
@@ -103,7 +104,7 @@ fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notificatio
         }
         Ok(_) => {}
         Err(error) => {
-            let _ = notifications.send(Notification::PruningFailed(format!("{error:#}")));
+            let _ = notifications.send(Notification::PruningFailed(Failure::from(&error)));
         }
     }
 }
@@ -119,7 +120,7 @@ fn push_only(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notificatio
             let _ = notifications.send(Notification::SyncCompleted(report));
         }
         Err(error) => {
-            let _ = notifications.send(Notification::SyncFailed(format!("{error:#}")));
+            let _ = notifications.send(Notification::SyncFailed(Failure::from(&error)));
         }
     }
 }

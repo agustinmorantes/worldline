@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { $, browser, expect } from '@wdio/globals';
@@ -64,5 +64,34 @@ describe('Settings', () => {
     await section('Apariencia').$('[role="radio"]=English').click();
     await expect($('h1=Settings')).toBeDisplayed();
     await browser.waitUntil(async () => (await invoke<TrayLabels>('e2e_tray_labels')).open === 'Open');
+  });
+
+  it('shows an unavailable cloud folder until it is back', async () => {
+    const card = library().$('button[aria-label^="Sync now"]');
+    const unavailable = section('Cloud').$('span=Cloud folder not available');
+    const away = `${remote}-away`;
+    renameSync(remote, away);
+    try {
+      await card.click();
+      await expect(card).toHaveText(/Cloud folder not available/);
+      await expect(unavailable).toBeDisplayed();
+    } finally {
+      renameSync(away, remote);
+    }
+
+    await card.click();
+    await expect(card).toHaveText(/Synced/);
+    await expect(unavailable).not.toBeDisplayed();
+  });
+
+  it('turns the cloud off and leaves the folder alone', async () => {
+    const cloud = section('Cloud');
+    await cloud.$('button=Turn off cloud').click();
+
+    await expect(cloud.$('button=Choose folder')).toBeDisplayed();
+    await expect(library().$('button*=Turn on cloud')).toBeDisplayed();
+    const settings = await invoke<{ remote_path: string | null }>('get_sync_settings');
+    expect(settings.remote_path).toBeNull();
+    expect(readdirSync(remote)).not.toHaveLength(0);
   });
 });

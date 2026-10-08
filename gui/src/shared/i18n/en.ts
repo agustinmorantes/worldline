@@ -38,6 +38,8 @@ export const en = {
     synced: (when: string): string => `Synced ${when}`,
     notSynced: 'Not synced yet',
     unreachable: 'Couldn’t reach the cloud',
+    unavailable: 'Cloud folder not available',
+    unavailableHint: 'Check that your cloud app is running and its drive is connected. Checkpoints stay on this PC until it’s back.',
     syncNow: 'Sync now',
     failed: 'Couldn’t sync.',
     turnOn: 'Turn on cloud',
@@ -247,6 +249,8 @@ export const en = {
     removeTitle: 'Remove device',
     removeBody: (name: string): string =>
       `Remove ${name} from your cloud? Do it once it’s gone for good, so cleanup can free what it kept.`,
+    turnOff: 'Turn off cloud',
+    turnOffBody: 'This PC stops syncing. Nothing is deleted, on this PC or in the cloud folder.',
     appearance: 'Appearance',
     language: 'Language',
     system: 'System',
@@ -261,6 +265,7 @@ export const en = {
       cloud: 'Couldn’t use that folder for the cloud.',
       device: 'Couldn’t change this device.',
       remove: 'Couldn’t remove the device.',
+      turnOff: 'Couldn’t turn off the cloud.',
     },
   },
   home: {

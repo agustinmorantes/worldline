@@ -1,6 +1,7 @@
 // Typed subscriptions to the events emitted in `src-tauri/src/lib.rs`. The only
 // place in the GUI that calls `listen`.
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { Failure } from './bindings/Failure';
 import type { SyncReport } from './bindings/SyncReport';
 
 /** Event name → payload. */
@@ -11,9 +12,9 @@ export interface Events {
   'detection-error': string;
   'sync-started': null;
   'sync-complete': SyncReport;
-  'sync-error': string;
+  'sync-error': Failure;
   'history-pruned': null;
-  'pruning-error': string;
+  'pruning-error': Failure;
 }
 
 export function on<K extends keyof Events>(

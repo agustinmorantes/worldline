@@ -4,6 +4,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { makeGame, makeSlot, makeTrackedDir } from '../builders';
 import type { DeviceKind } from '../bindings/DeviceKind';
+import type { Failure } from '../bindings/Failure';
 import type { FullGame } from '../bindings/FullGame';
 import type { MonitoringSettings } from '../bindings/MonitoringSettings';
 import type { PruningPreview } from '../bindings/PruningPreview';
@@ -156,6 +157,12 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       return state.syncSettings;
     case 'refresh_sync':
       if (state.syncReport === 'pending') return new Promise(() => undefined);
+      if (state.syncReport === 'unreachable') {
+        const failure: Failure = { message: 'Sync folder is unavailable: The system cannot find the path specified. (os error 3)', kind: 'sync_folder_unreachable' };
+        // Tauri rejects with the command's error value as is, not an Error.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject(failure);
+      }
       if (state.syncReport === undefined) throw new Error('Sync is not configured');
       return state.syncReport;
     case 'get_retired_versions':

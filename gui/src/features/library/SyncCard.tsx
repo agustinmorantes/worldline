@@ -4,7 +4,7 @@ import { reportError } from '@/shared/errors/report';
 import { formatRelative, useLocale, useT } from '@/shared/i18n';
 import { useSyncReport, useSyncSettings } from './queries';
 import { useShellNav } from './shell-nav';
-import { useSyncRunning } from './sync-activity';
+import { isFolderUnreachable, useFolderUnreachable, useSyncRunning } from './sync-activity';
 import { useNow } from './useNow';
 
 /** "This PC ── Cloud" at the bottom of the sidebar. Click to sync now. */
@@ -14,6 +14,7 @@ export function SyncCard(): ReactElement | null {
   const { data: settings } = useSyncSettings();
   const report = useSyncReport();
   const running = useSyncRunning();
+  const unreachable = useFolderUnreachable();
   const now = useNow(30_000);
   const { go } = useShellNav();
 
@@ -34,23 +35,27 @@ export function SyncCard(): ReactElement | null {
   }
 
   const syncing = running || report.isFetching;
+  const unavailable = unreachable && !syncing;
   const status = syncing
     ? t.sync.syncing
-    : report.data !== undefined
-      ? t.sync.synced(formatRelative(new Date(report.data.synced_at), locale, now))
-      : report.isError ? t.sync.unreachable : t.sync.notSynced;
+    : unavailable
+      ? t.sync.unavailable
+      : report.data !== undefined
+        ? t.sync.synced(formatRelative(new Date(report.data.synced_at), locale, now))
+        : report.isError ? t.sync.unreachable : t.sync.notSynced;
 
   const syncNow = (): void => {
     if (syncing) return;
     void report.refetch().then((result) => {
-      if (result.isError) reportError(t.sync.failed, result.error);
+      // The card itself says when the folder is unavailable.
+      if (result.isError && !isFolderUnreachable(result.error)) reportError(t.sync.failed, result.error);
     });
   };
 
   return (
     <button
       type="button"
-      title={t.sync.syncNow}
+      title={unavailable ? t.sync.unavailableHint : t.sync.syncNow}
       aria-label={`${t.sync.syncNow}. ${status}`}
       aria-busy={syncing}
       className={`${card} px-3.5 py-3 max-[1099px]:px-0`}
@@ -65,14 +70,14 @@ export function SyncCard(): ReactElement | null {
           )}
         </span>
         <span className="text-tx max-[1099px]:hidden">{t.sync.cloud}</span>
-        <span className="relative flex text-tx">
-          <Cloud size={16} aria-hidden="true" />
+        <span className={`relative flex ${unavailable ? 'text-warn' : 'text-tx'}`}>
+          {unavailable ? <CloudOff size={16} aria-hidden="true" /> : <Cloud size={16} aria-hidden="true" />}
           {syncing && (
             <span className="absolute -right-0.5 -top-0.5 hidden size-1.5 rounded-full bg-tx [animation:blink_1.4s_ease-in-out_infinite] max-[1099px]:block" />
           )}
         </span>
       </span>
-      <span className="mt-2 block truncate text-left text-xs text-tx3 max-[1099px]:hidden">{status}</span>
+      <span className={`mt-2 block truncate text-left text-xs max-[1099px]:hidden ${unavailable ? 'text-warn' : 'text-tx3'}`}>{status}</span>
     </button>
   );
 }

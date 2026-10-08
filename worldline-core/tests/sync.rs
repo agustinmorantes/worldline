@@ -1025,9 +1025,18 @@ fn an_unreachable_remote_is_reported_and_capture_still_works() {
     let device = Device::new();
     device.write("save.dat", "1");
     let (core, rx) = open_running(device.data.path(), Some(&missing));
-    wait_for(&rx, "the failure report", |n| {
-        matches!(n, Notification::SyncFailed(_))
-    });
+    let unreachable = Some(ErrorKind::SyncFolderUnreachable);
+    wait_for(
+        &rx,
+        "the failure report",
+        |n| matches!(n, Notification::SyncFailed(failure) if failure.kind == unreachable),
+    );
+    // Pruning bails on the same folder; front ends tell it apart by its kind.
+    wait_for(
+        &rx,
+        "the pruning failure",
+        |n| matches!(n, Notification::PruningFailed(failure) if failure.kind == unreachable),
+    );
     fs::create_dir_all(device.save_dir()).unwrap();
     let game = core
         .save_game(

@@ -17,8 +17,8 @@ export interface Fixture {
   syncSettings: SyncSettings;
   monitoringSettings: MonitoringSettings;
   retentionSettings: RetentionSettings;
-  /** What `refresh_sync` answers; `'pending'` never settles. Unset: sync fails. */
-  syncReport?: SyncReport | 'pending';
+  /** What `refresh_sync` answers; `'pending'` never settles, `'unreachable'` can't find the folder. Unset: sync fails. */
+  syncReport?: SyncReport | 'pending' | 'unreachable';
   /** What `scan_installed` answers; `'pending'` never settles. */
   scan?: InstallScannerItem[] | 'pending';
   scanRoots?: string[];
@@ -269,6 +269,8 @@ export const FIXTURES = {
   empty: () => base([]),
   library,
   syncing: () => ({ ...library(), syncReport: 'pending' as const }),
+  /** Sync on, but the cloud folder is gone (an unplugged drive, the cloud app closed). */
+  offline: () => ({ ...settings(), syncReport: 'unreachable' as const }),
   sessions: () => sessions(),
   ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
   diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),

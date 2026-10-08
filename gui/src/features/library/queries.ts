@@ -3,6 +3,7 @@ import { getGame, getGames, getRetiredVersions, getSyncSettings, refreshSync } f
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { SyncReport } from '@/ipc/bindings/SyncReport';
 import type { SyncSettings } from '@/ipc/bindings/SyncSettings';
+import { setSyncOutcome } from './sync-activity';
 
 export const useGames = (): UseQueryResult<FullGame[]> => {
   return useQuery({
@@ -33,7 +34,10 @@ export const useSyncReport = (): UseQueryResult<SyncReport> => {
   const remote = settings?.remote_path;
   return useQuery({
     queryKey: ['sync-report'],
-    queryFn: refreshSync,
+    queryFn: () => refreshSync().then(
+      (report) => { setSyncOutcome(null); return report; },
+      (err: unknown) => { setSyncOutcome(err); throw err; },
+    ),
     enabled: typeof remote === 'string' && remote !== '',
     retry: false,
     staleTime: Infinity,

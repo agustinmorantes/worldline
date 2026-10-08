@@ -4,6 +4,7 @@
 pub mod scheduler;
 mod watcher;
 
+use crate::error::Failure;
 use crate::history::CheckpointOutcome;
 use crate::models::FullGame;
 use crate::sync::SyncReport;
@@ -30,9 +31,9 @@ pub enum Notification {
     Error(String),
     SyncStarted,
     SyncCompleted(SyncReport),
-    SyncFailed(String),
+    SyncFailed(Failure),
     HistoryPruned,
-    PruningFailed(String),
+    PruningFailed(Failure),
 }
 
 /// A nesting suppression counter: while any guard is alive, nothing is

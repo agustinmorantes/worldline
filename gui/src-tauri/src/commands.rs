@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{generate_handler, Emitter, State};
+use worldline_core::error::Failure;
 use worldline_core::install_scanner::InstallScannerItem;
 use worldline_core::models::*;
 use worldline_core::WorldlineCore;
@@ -184,12 +185,12 @@ async fn update_sync_settings(
 #[tauri::command]
 async fn refresh_sync(
     core: State<'_, Arc<WorldlineCore>>,
-) -> Result<worldline_core::sync::SyncReport, String> {
+) -> Result<worldline_core::sync::SyncReport, Failure> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.refresh_sync())
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| Failure::from(&anyhow::Error::from(e)))?
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]

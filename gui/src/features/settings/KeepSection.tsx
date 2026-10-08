@@ -48,7 +48,7 @@ export function KeepSection(): ReactElement {
     setCleaning(true);
     try {
       const report = await runPruning();
-      setFreed(report.local_gc.bytes_deleted);
+      setFreed(report.local_gc.bytes_deleted + (report.remote_gc?.bytes_deleted ?? 0));
       void queryClient.invalidateQueries({ queryKey: ['pruning-preview'] });
       void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
       void queryClient.invalidateQueries({ queryKey: ['games'] });

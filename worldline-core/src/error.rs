@@ -1,9 +1,12 @@
 //! The coarse error kinds a front end can tell apart (ADR 0007). Every other
 //! failure is just an error: front ends show their own message for the call.
 
+use serde::Serialize;
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ErrorKind {
     /// The sync folder is missing or can't be read (an unplugged drive, an offline share).
     SyncFolderUnreachable,
@@ -28,4 +31,21 @@ pub fn error_kind(error: &anyhow::Error) -> Option<ErrorKind> {
         .downcast_ref::<ErrorKind>()
         .or_else(|| error.chain().find_map(|cause| cause.downcast_ref()))
         .copied()
+}
+
+/// A failure as front ends receive it: the whole chain for the log, and its kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Failure {
+    pub message: String,
+    pub kind: Option<ErrorKind>,
+}
+
+impl From<&anyhow::Error> for Failure {
+    fn from(error: &anyhow::Error) -> Self {
+        Self {
+            message: format!("{error:#}"),
+            kind: error_kind(error),
+        }
+    }
 }

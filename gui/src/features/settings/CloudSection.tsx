@@ -2,13 +2,13 @@
 // where it is stored and the devices using it.
 import { type ReactElement, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { FolderClosed, Pencil, Trash2 } from 'lucide-react';
+import { CloudOff, FolderClosed, Pencil, Trash2 } from 'lucide-react';
 import type { DeviceKind } from '@/ipc/bindings/DeviceKind';
 import type { DeviceMetadata } from '@/ipc/bindings/DeviceMetadata';
 import { confirm, pickFolder, removeSyncDevice, updateDevice, updateSyncSettings } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { useSyncReport, useSyncSettings } from '@/features/library/queries';
-import { useSyncRunning } from '@/features/library/sync-activity';
+import { isFolderUnreachable, setSyncOutcome, useFolderUnreachable, useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { reportError } from '@/shared/errors/report';
 import { formatRelative, useLocale, useT } from '@/shared/i18n';
@@ -165,12 +165,30 @@ function CloudOn({ remote, device }: { remote: string; device: DeviceMetadata })
   const report = useSyncReport();
   const running = useSyncRunning();
   const syncing = running || report.isFetching;
+  const unavailable = useFolderUnreachable() && !syncing;
   const others = report.data?.devices.filter((d) => d.device_uuid !== device.device_uuid) ?? [];
 
   const resync = async (failed: string): Promise<void> => {
     const result = await report.refetch();
-    if (result.isError) reportError(failed, result.error);
+    // An unavailable folder is shown below the path instead.
+    if (result.isError && !isFolderUnreachable(result.error)) reportError(failed, result.error);
   };
+
+  async function turnOff(): Promise<void> {
+    if (!await confirm(t.settings.turnOff, t.settings.turnOffBody)) return;
+    try {
+      await updateSyncSettings({ remote_path: null });
+    } catch (err) {
+      reportError(t.settings.failed.turnOff, err);
+      return;
+    }
+    setSyncOutcome(null);
+    // Turning it on again starts with a fresh first sync, not this folder's last report.
+    queryClient.removeQueries({ queryKey: ['sync-report'] });
+    void queryClient.invalidateQueries({ queryKey: ['sync-settings'] });
+    void queryClient.invalidateQueries({ queryKey: ['games'] });
+    void queryClient.invalidateQueries({ queryKey: ['game'] });
+  }
 
   async function change(): Promise<void> {
     const path = await pickFolder(t.settings.pickCloudFolder);
@@ -202,6 +220,15 @@ function CloudOn({ remote, device }: { remote: string; device: DeviceMetadata })
         path={remote}
         action={<button type="button" className={cn(chip, 'bg-ln')} onClick={() => { void change(); }}>{t.settings.change}</button>}
       />
+      {unavailable && (
+        <div role="status" className="mt-2 flex items-start gap-3 rounded-[14px] bg-el px-3.5 py-3">
+          <CloudOff size={18} aria-hidden="true" className="mt-px shrink-0 text-warn" />
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[13px] font-semibold text-warn">{t.sync.unavailable}</span>
+            <span className="text-xs text-tx3">{t.sync.unavailableHint}</span>
+          </span>
+        </div>
+      )}
       <h3 className={cn(eyebrow, 'mt-[22px]')}>{t.settings.devices}</h3>
       <ul className="mt-2.5 flex flex-col gap-2">
         <li><ThisDevice device={device} onSaved={() => { void resync(t.sync.failed); }} /></li>
@@ -209,14 +236,17 @@ function CloudOn({ remote, device }: { remote: string; device: DeviceMetadata })
           <li key={other.device_uuid}><OtherDevice device={other} onRemove={() => { void remove(other); }} /></li>
         ))}
       </ul>
-      <button
-        type="button"
-        className={cn(btn, 'mt-5')}
-        disabled={syncing}
-        onClick={() => { void resync(t.sync.failed); }}
-      >
-        {syncing ? t.sync.syncing : t.sync.syncNow}
-      </button>
+      <div className="mt-5 flex gap-2">
+        <button
+          type="button"
+          className={btn}
+          disabled={syncing}
+          onClick={() => { void resync(t.sync.failed); }}
+        >
+          {syncing ? t.sync.syncing : t.sync.syncNow}
+        </button>
+        <button type="button" className={btnQuiet} onClick={() => { void turnOff(); }}>{t.settings.turnOff}</button>
+      </div>
     </>
   );
 }

@@ -4,7 +4,7 @@ import {on} from "@/ipc/events";
 import {queryClient} from "@/app/query-client";
 import {reportError} from "@/shared/errors/report";
 import {getT} from "@/shared/i18n";
-import {setSyncRunning} from "@/features/library/sync-activity";
+import {isFolderUnreachable, setSyncOutcome, setSyncRunning} from "@/features/library/sync-activity";
 
 export function listenNotifications(): void {
   void on("version-created", ([gameId, versionNumber]) => {
@@ -33,19 +33,24 @@ export function listenNotifications(): void {
 
   void on('sync-complete', report => {
     setSyncRunning(false);
+    setSyncOutcome(null);
     queryClient.setQueryData(['sync-report'], report);
     void queryClient.invalidateQueries({ queryKey: ['games'] });
     void queryClient.invalidateQueries({ queryKey: ['game'] });
     void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
   });
 
-  // Background syncs retry every few minutes; an offline folder is not worth a toast each time.
+  // Background syncs retry every few minutes; an offline folder is not worth a toast each
+  // time. The sync card and Settings → Cloud say it instead.
   void on('sync-error', payload => {
     setSyncRunning(false);
+    setSyncOutcome(payload);
     console.warn('Sync failed:', payload);
   });
 
+  // Cleanup bails on an unreachable folder too, every time it comes due.
   void on('pruning-error', payload => {
+    if (isFolderUnreachable(payload)) return;
     reportError(getT().errors.pruningFailed, payload);
   });
 
