@@ -49,6 +49,10 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .context("failed to get app data directory")?;
     #[cfg(feature = "e2e")]
     let data_dir = std::env::var_os("WORLDLINE_E2E_DATA_DIR").map_or(data_dir, PathBuf::from);
+    // The asset scope in `tauri.conf.json` names the real data directory.
+    #[cfg(feature = "e2e")]
+    app.asset_protocol_scope()
+        .allow_directory(data_dir.join("repository"), true)?;
     app.manage(DataDir(data_dir.clone()));
     let (core, notifications) = WorldlineCore::open_shared(
         &data_dir,
@@ -73,6 +77,14 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     notif_app
                         .emit("version-created", (game_id, version_number))
+                        .ok();
+                }
+                detection::Notification::ScreenshotAttached {
+                    game_id,
+                    version_id,
+                } => {
+                    notif_app
+                        .emit("screenshot-attached", (game_id, version_id))
                         .ok();
                 }
                 detection::Notification::Error(err) => {

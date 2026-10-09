@@ -190,8 +190,15 @@ fn a_running_game_refuses_a_rewind_before_touching_anything() {
     game.wait().unwrap();
 
     assert_eq!(error_kind(&error), Some(ErrorKind::GameRunning));
-    assert_eq!(device.game(id).versions.len(), versions, "no checkpoint first");
-    assert_eq!(fs::read_to_string(saves(root.path()).join("x")).unwrap(), "later");
+    assert_eq!(
+        device.game(id).versions.len(),
+        versions,
+        "no checkpoint first"
+    );
+    assert_eq!(
+        fs::read_to_string(saves(root.path()).join("x")).unwrap(),
+        "later"
+    );
 }
 
 /// Sync applies another device's progress by itself only when it sees the
@@ -207,8 +214,14 @@ fn an_emptied_tip_from_another_device_is_not_applied_over_saves() {
     let b = Device::synced(remote.path());
     let cache = b.core.data_dir.join("cache");
     fs::create_dir_all(&cache).unwrap();
-    fs::copy(a.core.data_dir.join("cache").join("manifest.yaml"), cache.join("manifest.yaml")).unwrap();
-    b.core.add_scan_root(&root.path().to_string_lossy()).unwrap();
+    fs::copy(
+        a.core.data_dir.join("cache").join("manifest.yaml"),
+        cache.join("manifest.yaml"),
+    )
+    .unwrap();
+    b.core
+        .add_scan_root(&root.path().to_string_lossy())
+        .unwrap();
     b.core.scan_installed().unwrap();
     let uuid = uuid::Uuid::parse_str(&a.game(id_a).game.uuid).unwrap();
     let id_b = b.core.adopt_remote_game(uuid).unwrap().game.id;
@@ -224,5 +237,8 @@ fn an_emptied_tip_from_another_device_is_not_applied_over_saves() {
     b.core.refresh_sync().unwrap();
 
     assert_eq!(b.active_version(id_b).id, before.id);
-    assert_eq!(fs::read_to_string(saves(root.path()).join("x")).unwrap(), "x");
+    assert_eq!(
+        fs::read_to_string(saves(root.path()).join("x")).unwrap(),
+        "x"
+    );
 }

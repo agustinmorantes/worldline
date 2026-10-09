@@ -53,7 +53,8 @@ fn create_slot(
     name: String,
     core: State<Arc<WorldlineCore>>,
 ) -> Result<FullGame, Failure> {
-    core.create_slot(game_id, &name).map_err(|e| Failure::from(&e))
+    core.create_slot(game_id, &name)
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -144,6 +145,21 @@ fn remove_scan_root(path: String, core: State<Arc<WorldlineCore>>) -> Result<(),
 #[tauri::command]
 fn get_monitoring_settings(core: State<Arc<WorldlineCore>>) -> Result<MonitoringSettings, String> {
     core.get_monitoring_settings().map_err(|e| e.to_string())
+}
+
+/// Whether this device can take screenshots; the GUI hides their settings when not.
+#[tauri::command]
+fn screenshots_supported() -> bool {
+    WorldlineCore::screenshots_supported()
+}
+
+/// The version's screenshot file, when it has one.
+#[tauri::command]
+fn get_screenshot_path(
+    version_id: i32,
+    core: State<Arc<WorldlineCore>>,
+) -> Result<Option<PathBuf>, String> {
+    core.screenshot_path(version_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -389,6 +405,8 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         remove_scan_root,
         get_monitoring_settings,
         update_monitoring_settings,
+        screenshots_supported,
+        get_screenshot_path,
         get_device,
         update_device,
         get_sync_settings,

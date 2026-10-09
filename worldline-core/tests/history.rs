@@ -502,7 +502,11 @@ fn a_rollback_held_up_by_the_game_finishes_by_itself_and_blocks_capture_until_th
 
     let error = device.core.checkpoint(game.game.id).unwrap_err();
     assert_eq!(error_kind(&error), Some(ErrorKind::RestoreIncomplete));
-    assert_eq!(device.game(game.game.id).versions.len(), versions, "the half-written folder isn't recorded");
+    assert_eq!(
+        device.game(game.game.id).versions.len(),
+        versions,
+        "the half-written folder isn't recorded"
+    );
 
     drop(held);
     device.core.checkpoint(game.game.id).unwrap();

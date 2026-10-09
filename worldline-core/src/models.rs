@@ -131,11 +131,18 @@ pub struct FullVersion {
     pub slot: Slot,
 }
 
+/// Device-local. Settings saved before a field existed load its default.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MonitoringSettings {
     pub version_cooldown_minutes: u32,
     pub snapshot_debounce_seconds: f32,
+    /// Screenshot the running game once per checkpoint (opt-in; ignored
+    /// where `WorldlineCore::screenshots_supported` is false).
+    pub screenshots_enabled: bool,
+    /// Sync screenshots to other devices. Bundles always carry them.
+    pub sync_screenshots: bool,
 }
 
 impl Default for MonitoringSettings {
@@ -143,6 +150,8 @@ impl Default for MonitoringSettings {
         Self {
             version_cooldown_minutes: 15,
             snapshot_debounce_seconds: 5.0,
+            screenshots_enabled: false,
+            sync_screenshots: true,
         }
     }
 }

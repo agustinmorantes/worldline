@@ -64,6 +64,23 @@ enum Commands {
         action: RepoAction,
     },
     Watch,
+    /// Screenshots a running game's window repeatedly and prints one CSV line
+    /// per shot (profiling only).
+    #[cfg(windows)]
+    #[command(hide = true)]
+    ScreenshotStress {
+        #[arg(long)]
+        game: i32,
+        /// Seconds between shots.
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        every: u64,
+        /// How many shots; 0 runs until Ctrl+C.
+        #[arg(long, default_value_t = 0)]
+        count: u32,
+        /// Where each shot is written (overwritten every time).
+        #[arg(long, default_value = "screenshot.jpg")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -307,6 +324,10 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
                 game_id,
                 version_number,
             } => println!("Version {version_number} created for game {game_id}"),
+            Notification::ScreenshotAttached {
+                game_id,
+                version_id,
+            } => println!("Screenshot saved for version id {version_id} of game {game_id}"),
             Notification::Error(err) => eprintln!("Error: {err}"),
             Notification::SyncStarted => {}
             Notification::SyncCompleted(report) => {
@@ -321,6 +342,82 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Takes a shot every `every` seconds on this thread, which `Capturer`
+/// switches to background priority.
+#[cfg(windows)]
+fn screenshot_stress(
+    install_dir: &str,
+    every: u64,
+    count: u32,
+    out: &std::path::Path,
+) -> Result<()> {
+    use worldline_core::screenshot::{self, Capturer, Shot};
+    if !screenshot::supported() {
+        bail!("Screenshots need Windows 11");
+    }
+    let started = std::time::Instant::now();
+    screenshot::background_thread()?;
+    let capturer = Capturer::new()?;
+    eprintln!("device ready in {:.1} ms", ms(started.elapsed()));
+    println!(
+        "unix_ms,qpc,status,src_w,src_h,pids_ms,window_ms,session_ms,first_frame_ms,readback_ms,resize_ms,encode_ms,write_ms,total_ms,cpu_ms,bytes,working_set_mb,peak_working_set_mb"
+    );
+    let mut taken = 0;
+    while count == 0 || taken < count {
+        let next = std::time::Instant::now() + std::time::Duration::from_secs(every);
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis();
+        let qpc = screenshot::qpc();
+        // The real worker gets the PIDs from `RunningMonitor`; the scan is
+        // timed to show what that saves.
+        let start = std::time::Instant::now();
+        let pids = screenshot::pids_under(install_dir);
+        let pids_time = start.elapsed();
+        let (status, t, write_time) = match capturer.shot(&pids) {
+            Ok(Shot::Taken(jpeg, t)) => {
+                let start = std::time::Instant::now();
+                let temp = out.with_extension("jpg.tmp");
+                std::fs::write(&temp, &jpeg)?;
+                std::fs::rename(&temp, out)?;
+                ("saved", t, start.elapsed())
+            }
+            Ok(Shot::Skipped(reason, t)) => (reason, t, Default::default()),
+            Err(e) => {
+                eprintln!("shot failed: {e:#}");
+                ("error", Default::default(), Default::default())
+            }
+        };
+        let mb = |bytes: usize| bytes as f64 / 1_048_576.0;
+        println!(
+            "{unix_ms},{qpc},{status},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{:.1},{:.1}",
+            t.source.0,
+            t.source.1,
+            ms(pids_time),
+            ms(t.window),
+            ms(t.session),
+            ms(t.first_frame),
+            ms(t.readback),
+            ms(t.resize),
+            ms(t.encode),
+            ms(write_time),
+            ms(pids_time + t.total + write_time),
+            ms(t.cpu),
+            t.bytes,
+            mb(t.working_set),
+            mb(t.peak_working_set),
+        );
+        taken += 1;
+        std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ms(d: std::time::Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
 }
 
 fn main() -> Result<()> {
@@ -706,6 +803,20 @@ fn main() -> Result<()> {
             }
         },
         Commands::Watch => unreachable!("handled before opening the core"),
+        #[cfg(windows)]
+        Commands::ScreenshotStress {
+            game,
+            every,
+            count,
+            out,
+        } => {
+            let install_dir = core
+                .get_game(game)?
+                .game
+                .install_dir
+                .ok_or_else(|| anyhow!("game {game} has no install dir"))?;
+            screenshot_stress(&install_dir, every, count, &out)?;
+        }
     }
 
     Ok(())

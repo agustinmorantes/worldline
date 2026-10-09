@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// How long a condemned chunk must stay unreferenced before it is deleted.
@@ -389,8 +389,10 @@ pub struct GcReport {
     pub chunks_condemned: usize,
 }
 
-/// Chunks of every live version plus of the `extra` versions (device pointers).
-fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<HashSet<String>> {
+/// Chunks of every live version plus of the `extra` versions (device
+/// pointers), and the screenshots the other versions still have: retirement
+/// keeps a version's metadata as a record, but not its image.
+fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<(HashSet<String>, Vec<PathBuf>)> {
     if let Some(path) = store.first_unloadable_metadata()? {
         bail!(
             "{} is unloadable; garbage collection is skipped until it is fixed",
@@ -399,6 +401,7 @@ fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<HashSet<String>> 
     }
     let retired = store.markers()?;
     let mut live = HashSet::new();
+    let mut dead_screenshots = Vec::new();
     for game in store.catalog()? {
         for slot in &game.slots {
             let slot_live = game.meta.deleted_at.is_none() && slot.meta.deleted_at.is_none();
@@ -407,16 +410,39 @@ fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<HashSet<String>> 
                     || extra.contains(&version.uuid)
                 {
                     live.extend(version.chunk_hashes().map(str::to_string));
+                } else {
+                    let screenshot = store.screenshot_path(
+                        &game.meta.folder_slug,
+                        &slot.meta.folder_slug,
+                        &version.folder_slug,
+                    );
+                    if screenshot.exists() {
+                        dead_screenshots.push(screenshot);
+                    }
                 }
             }
         }
     }
-    Ok(live)
+    Ok((live, dead_screenshots))
+}
+
+/// Best effort: a screenshot held open (shown in the GUI, read by a sync
+/// client) stays until a later GC; it doesn't stop this one.
+fn delete_screenshots(paths: &[PathBuf]) {
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("Cannot delete {} yet: {error}", path.display());
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Deletes every unreferenced chunk. The caller must hold the repository lock.
 pub fn gc_local(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
-    let live = live_chunks(store, pointed)?;
+    let (live, dead_screenshots) = live_chunks(store, pointed)?;
+    delete_screenshots(&dead_screenshots);
     let mut report = GcReport::default();
     for (hash, size) in store.chunk_sizes()? {
         if !live.contains(&hash) {
@@ -432,7 +458,7 @@ pub fn gc_local(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
 
 /// Bytes a local GC would reclaim now.
 pub fn gc_preview(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
-    let live = live_chunks(store, pointed)?;
+    let (live, _) = live_chunks(store, pointed)?;
     let mut report = GcReport::default();
     for (hash, size) in store.chunk_sizes()? {
         if !live.contains(&hash) {
@@ -459,7 +485,8 @@ pub fn gc_remote(
     device: Uuid,
     now: DateTime<Utc>,
 ) -> Result<GcReport> {
-    let live = live_chunks(store, pointed)?;
+    let (live, dead_screenshots) = live_chunks(store, pointed)?;
+    delete_screenshots(&dead_screenshots);
     let sizes = store.chunk_sizes()?;
     let dir = store.root().join("gc").join("condemned");
     let mut report = GcReport::default();

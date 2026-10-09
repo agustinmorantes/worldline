@@ -47,6 +47,8 @@ pub struct Transfer<'a> {
     src: &'a Store,
     dst: &'a Store,
     completeness: Completeness,
+    /// Whether versions' screenshots travel too (they always do in bundles).
+    screenshots: bool,
     /// Chunks already checked in this run, so each is handled once.
     seen: HashSet<String>,
     pub report: TransferReport,
@@ -58,9 +60,17 @@ impl<'a> Transfer<'a> {
             src,
             dst,
             completeness,
+            screenshots: true,
             seen: HashSet::new(),
             report: TransferReport::default(),
         }
+    }
+
+    /// Copies screenshots or leaves them behind (sync with "sync
+    /// screenshots" off).
+    pub fn screenshots(mut self, copy: bool) -> Self {
+        self.screenshots = copy;
+        self
     }
 
     /// Copies one game (as read from `src`) and returns the version UUIDs
@@ -161,6 +171,9 @@ impl<'a> Transfer<'a> {
                 }
                 self.dst
                     .publish_version(slug, slot_slugs[&version.slot_uuid], version)?;
+                if !retired {
+                    self.copy_screenshot(slug, slot_slugs[&version.slot_uuid], version)?;
+                }
                 if !already {
                     self.report.copied_versions.push(version.uuid);
                     present.insert(version.uuid);
@@ -216,6 +229,32 @@ impl<'a> Transfer<'a> {
         match self.src_icon(meta)? {
             Some(png) => self.dst.write_icon(&meta.folder_slug, &png),
             None => Ok(()),
+        }
+    }
+
+    /// Gives `dst` the version's screenshot when only `src` has it. One taken
+    /// after the version was copied arrives on a later run.
+    fn copy_screenshot(
+        &self,
+        game_slug: &str,
+        slot_slug: &str,
+        version: &VersionMeta,
+    ) -> Result<()> {
+        let path =
+            |store: &Store| store.screenshot_path(game_slug, slot_slug, &version.folder_slug);
+        if !self.screenshots || path(self.dst).exists() {
+            return Ok(());
+        }
+        let source = path(self.src);
+        match std::fs::read(&source) {
+            Ok(jpeg) => {
+                self.dst
+                    .write_screenshot(game_slug, slot_slug, &version.folder_slug, &jpeg)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to read {}", source.display()))
+            }
         }
     }
 

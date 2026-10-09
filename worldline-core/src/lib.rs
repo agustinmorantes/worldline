@@ -18,6 +18,11 @@ pub mod models;
 pub mod path_placeholders;
 pub mod restore;
 pub mod schema;
+#[cfg(windows)]
+pub mod screenshot;
+#[cfg(not(windows))]
+#[path = "screenshot_unsupported.rs"]
+pub mod screenshot;
 pub mod store;
 pub mod sync;
 mod sync_loop;

@@ -1,16 +1,19 @@
-// The selected checkpoint: when and where it was made, its name, and the hold-to-rewind button.
+// The selected checkpoint: its screenshot, when and where it was made, its name, and the
+// hold-to-rewind button.
 import { type ReactElement, useState } from 'react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { ArrowDown, X } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { Version } from '@/ipc/bindings/Version';
 import { GameIcon } from '@/features/library/GameIcon';
 import type { CheckpointDevice } from '@/features/game/game-view';
 import { formatRelative, formatTime, useLocale, useT } from '@/shared/i18n';
-import { ease } from '@/shared/motion/motion';
+import { duration, ease, useMotionReduced } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { HoldButton } from '@/shared/ui/HoldButton';
 import { formatDuration } from './Timeline';
+import { useScreenshot } from './queries';
 import { timeOf } from './sessions';
 
 export function CheckpointPanel({ game, version, active, onLine, device, lessPlayMs, aheadDevice, busy, running, onName, onRewind, onClose, now }: {
@@ -79,7 +82,7 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
         </>
       )}
       <div className="overflow-hidden rounded-[20px] bg-sf shadow-[0_24px_48px_-24px_oklch(0%_0_0/0.6)]">
-        <div className="h-1 transition-[background] duration-500" style={{ background: tint }} />
+        <ScreenshotSlot versionId={version.id} tint={tint} />
         <div className="px-[18px] pb-[18px] pt-4">
           <div className="mb-1.5 flex items-baseline gap-2.5">
             <span className="text-[11px] font-bold uppercase tracking-[0.12em]" style={{ color: tint }}>{eyebrow}</span>
@@ -141,6 +144,60 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
           )}
         </>
       )}
+    </motion.div>
+  );
+}
+
+/** The screenshot's size in the panel: its full 336 px width, at 16:9. */
+const SHOT = { width: 336, height: 189 };
+/** The tint line under it, and all of the slot while there is no screenshot. */
+const LINE = 4;
+
+/**
+ * The tint line on top of the card. When the checkpoint's screenshot exists, the line grows
+ * into it once the image has loaded, and the image settles in above the line.
+ */
+export function ScreenshotSlot({ versionId, tint }: { versionId: number; tint: string }): ReactElement {
+  const t = useT();
+  const reduced = useMotionReduced();
+  const { data: path } = useScreenshot(versionId);
+  const src = typeof path === 'string' ? convertFileSrc(path) : null;
+  /** The source that finished loading; a broken file never opens the slot. */
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const open = src !== null && loaded === src;
+  const transition = reduced ? { duration: 0 } : { duration: duration.slow, ease };
+
+  return (
+    <motion.div
+      className="relative overflow-hidden transition-[background] duration-500"
+      style={{ background: tint }}
+      initial={false}
+      animate={{ height: open ? SHOT.height : LINE }}
+      transition={transition}
+    >
+      {/* Cleanup can take the screenshot away; it fades as the slot folds back into the line. */}
+      <AnimatePresence initial={false}>
+        {src !== null && (
+          <motion.img
+            key={src}
+            src={src}
+            alt={t.checkpoint.screenshot}
+            width={SHOT.width}
+            height={SHOT.height - LINE}
+            loading="lazy"
+            decoding="async"
+            draggable={false}
+            aria-hidden={!open}
+            onLoad={() => { setLoaded(src); }}
+            className="absolute inset-x-0 top-0 w-full object-cover"
+            style={{ height: SHOT.height - LINE }}
+            initial={false}
+            animate={open ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.04 }}
+            exit={{ opacity: 0 }}
+            transition={transition}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

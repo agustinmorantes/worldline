@@ -24,6 +24,10 @@ export function listenNotifications(): void {
       });
   })
 
+  void on('screenshot-attached', ([, versionId]) => {
+    void queryClient.invalidateQueries({ queryKey: ['screenshot', versionId] });
+  });
+
   void on("detection-error", payload => {
     reportError(getT().errors.detectionFailed, payload);
   })
@@ -47,6 +51,7 @@ export function listenNotifications(): void {
     void queryClient.invalidateQueries({ queryKey: ['games'] });
     void queryClient.invalidateQueries({ queryKey: ['game'] });
     void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
+    void queryClient.invalidateQueries({ queryKey: ['screenshot'] });
   });
 
   // Background syncs retry every few minutes; an offline folder is not worth a toast each
@@ -78,5 +83,6 @@ export function listenNotifications(): void {
     void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
     void queryClient.invalidateQueries({ queryKey: ['games'] });
     void queryClient.invalidateQueries({ queryKey: ['game'] });
+    void queryClient.invalidateQueries({ queryKey: ['screenshot'] });
   });
 }

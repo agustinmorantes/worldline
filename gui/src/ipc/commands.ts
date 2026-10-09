@@ -49,6 +49,9 @@ export const restoreVersion = (id: number): Promise<void> => invoke('restore_ver
 /** An empty tag clears it. */
 export const tagVersion = (id: number, tag: string): Promise<Version> =>
   invoke('tag_version', { id, tag });
+/** The version's screenshot file, or null when it has none. */
+export const getScreenshotPath = (versionId: number): Promise<string | null> =>
+  invoke('get_screenshot_path', { versionId });
 
 // Install scanning
 
@@ -64,6 +67,8 @@ export const getMonitoringSettings = (): Promise<MonitoringSettings> =>
 export const updateMonitoringSettings = (
   monitoringSettings: MonitoringSettings,
 ): Promise<MonitoringSettings> => invoke('update_monitoring_settings', { monitoringSettings });
+/** False below Windows 11 and off Windows: screenshot settings are hidden. */
+export const screenshotsSupported = (): Promise<boolean> => invoke('screenshots_supported');
 
 export const getPruningSettings = (): Promise<RetentionSettings> => invoke('get_pruning_settings');
 export const updatePruningSettings = (settings: RetentionSettings): Promise<RetentionSettings> =>

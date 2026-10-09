@@ -166,7 +166,10 @@ pub fn apply(store: &Store, prepared: PreparedRestore, txn_root: &Path) -> Resul
     let mut journal = Journal {
         phase: Phase::MovingAside,
         roots,
-        targets: files.iter().map(|(n, path, _)| (*n, path.clone())).collect(),
+        targets: files
+            .iter()
+            .map(|(n, path, _)| (*n, path.clone()))
+            .collect(),
     };
     if let Err(error) = stage(store, &dir, &files) {
         if crashed() {
@@ -234,7 +237,11 @@ fn swap(
 ) -> Result<Vec<(usize, PathBuf)>> {
     let mut aside = Vec::new();
     for (n, root) in journal.roots.iter().enumerate() {
-        aside.extend(entries(root, &exclusions[n])?.into_iter().map(|path| (n, path)));
+        aside.extend(
+            entries(root, &exclusions[n])?
+                .into_iter()
+                .map(|path| (n, path)),
+        );
     }
     write_journal(journal_path, journal)?;
     for (n, relative) in &aside {
@@ -368,7 +375,8 @@ pub fn recover(txn_root: &Path) -> Result<Recovery> {
 }
 
 fn txn_root(dir: &Path) -> &Path {
-    dir.parent().expect("a transaction folder is in the transaction root")
+    dir.parent()
+        .expect("a transaction folder is in the transaction root")
 }
 
 fn id(dir: &Path) -> &std::ffi::OsStr {
@@ -554,7 +562,6 @@ fn set_rolling_back(on: bool) {
     let _ = on;
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,7 +591,11 @@ mod tests {
             let source = temp.path().join("source");
             let mut target = Vec::new();
             for (n, files) in [
-                &[("save1.dat", "new 1"), ("nested/save2.dat", "new 2"), ("fresh/save3.dat", "new 3")][..],
+                &[
+                    ("save1.dat", "new 1"),
+                    ("nested/save2.dat", "new 2"),
+                    ("fresh/save3.dat", "new 3"),
+                ][..],
                 &[("y.dat", "new y")][..],
             ]
             .into_iter()
@@ -621,7 +632,10 @@ mod tests {
         fn prepared(&self) -> PreparedRestore {
             PreparedRestore {
                 roots: BTreeMap::from([
-                    (self.roots[0].clone(), crate::exclusions::parse(r#"["*.cfg"]"#)),
+                    (
+                        self.roots[0].clone(),
+                        crate::exclusions::parse(r#"["*.cfg"]"#),
+                    ),
                     (self.roots[1].clone(), Vec::new()),
                 ]),
                 files: self.target.clone(),
@@ -738,7 +752,11 @@ mod tests {
             }
             recover(&fx.txn).unwrap();
             assert!(fx.txn_is_empty(), "leftovers after a crash at op {fail_at}");
-            assert_eq!(fx.live(), before, "a crash at op {fail_at} changed the saves");
+            assert_eq!(
+                fx.live(),
+                before,
+                "a crash at op {fail_at} changed the saves"
+            );
         }
     }
 
