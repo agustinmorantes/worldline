@@ -195,6 +195,10 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'update_monitoring_settings':
       state.monitoringSettings = args.monitoringSettings as MonitoringSettings;
       return state.monitoringSettings;
+    case 'screenshots_supported':
+      return true;
+    case 'get_screenshot_path':
+      return null;
     case 'get_pruning_settings':
       return state.retentionSettings;
     case 'update_pruning_settings':

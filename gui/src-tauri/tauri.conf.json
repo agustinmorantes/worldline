@@ -26,7 +26,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPLOCALDATA/**"]
+        "scope": ["$APPLOCALDATA/repository/**", "$APPLOCALDATA/cache/icon_cache/**"]
       }
     }
   },

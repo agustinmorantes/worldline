@@ -1,5 +1,5 @@
 import { type QueryKey, type UseQueryResult, keepPreviousData, useQuery } from '@tanstack/react-query';
-import { getDevice, getMonitoringSettings, getPruningSettings, previewPruning } from '@/ipc/commands';
+import { getDevice, getMonitoringSettings, getPruningSettings, previewPruning, screenshotsSupported } from '@/ipc/commands';
 import type { DeviceMetadata } from '@/ipc/bindings/DeviceMetadata';
 import type { MonitoringSettings } from '@/ipc/bindings/MonitoringSettings';
 import type { PruningPreview } from '@/ipc/bindings/PruningPreview';
@@ -9,6 +9,10 @@ import { reportError } from '@/shared/errors/report';
 
 export const useMonitoringSettings = (): UseQueryResult<MonitoringSettings> =>
   useQuery({ queryKey: ['monitoring-settings'], queryFn: getMonitoringSettings });
+
+/** Whether this device can take screenshots; it doesn't change while the app runs. */
+export const useScreenshotsSupported = (): UseQueryResult<boolean> =>
+  useQuery({ queryKey: ['screenshots-supported'], queryFn: screenshotsSupported, staleTime: Infinity });
 
 export const useRetention = (): UseQueryResult<RetentionSettings> =>
   useQuery({ queryKey: ['pruning-settings'], queryFn: getPruningSettings });

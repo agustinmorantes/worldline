@@ -9,6 +9,8 @@ export interface Events {
   'change-detected': number;
   /** [game id, version number] */
   'version-created': [number, number];
+  /** [game id, version id]: the version's screenshot arrived, usually seconds after it. */
+  'screenshot-attached': [number, number];
   'detection-error': string;
   'sync-started': null;
   'sync-complete': SyncReport;
