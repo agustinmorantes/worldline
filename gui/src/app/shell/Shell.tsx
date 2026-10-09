@@ -23,6 +23,10 @@ const GLOW = `radial-gradient(closest-side, ${[[1, 32], [0.84, 48], [0.5, 64], [
   .map(([k, at]) => `color-mix(in oklch, var(--acc-glow) ${(k * 100).toString()}%, transparent) ${at.toString()}%`)
   .join(', ')})`;
 
+/** The docked header icon's shadow (DockedGameIcon), and the same shadow faded out. */
+const DOCK_SHADOW = '0 18px 40px -12px rgba(0, 0, 0, 0.6)';
+const NO_SHADOW = '0 18px 40px -12px rgba(0, 0, 0, 0)';
+
 function targetOf(pathname: string): NavTarget | null {
   const game = /^\/game\/(\d+)/.exec(pathname);
   if (game) return { view: 'game', gameId: Number(game[1]) };
@@ -258,13 +262,17 @@ export function Shell({ titleBar, sidebar, children }: {
 
         {flights.map((flight) => {
           const size = Math.max(flight.from.width, flight.to.width);
+          // The docked icon's shadow, faded against the shadowless sidebar icon so neither end pops.
+          const from = flight.kind === 'home' ? DOCK_SHADOW : NO_SHADOW;
+          const to = flight.kind === 'out' ? DOCK_SHADOW : NO_SHADOW;
           return (
             <motion.div
               key={flight.key}
               aria-hidden="true"
-              className="pointer-events-none fixed left-0 top-0 z-50 origin-top-left drop-shadow-[0_18px_40px_oklch(0%_0_0/0.5)]"
-              initial={{ x: flight.from.left, y: flight.from.top, scale: flight.from.width / size }}
-              animate={{ x: flight.to.left, y: flight.to.top, scale: flight.to.width / size }}
+              className="pointer-events-none fixed left-0 top-0 z-50 origin-top-left"
+              style={{ borderRadius: Math.round(size * 0.305) }}
+              initial={{ x: flight.from.left, y: flight.from.top, scale: flight.from.width / size, boxShadow: from }}
+              animate={{ x: flight.to.left, y: flight.to.top, scale: flight.to.width / size, boxShadow: to }}
               transition={{ duration: flight.kind === 'home' ? 0.38 : 0.52, ease }}
             >
               <GameIcon
