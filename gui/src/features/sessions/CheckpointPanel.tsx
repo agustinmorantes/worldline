@@ -13,7 +13,7 @@ import { HoldButton } from '@/shared/ui/HoldButton';
 import { formatDuration } from './Timeline';
 import { timeOf } from './sessions';
 
-export function CheckpointPanel({ game, version, active, onLine, device, lessPlayMs, aheadDevice, busy, onName, onRewind, onClose, now }: {
+export function CheckpointPanel({ game, version, active, onLine, device, lessPlayMs, aheadDevice, busy, running, onName, onRewind, onClose, now }: {
   game: FullGame;
   version: Version;
   /** The checkpoint you are on. */
@@ -26,6 +26,8 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
   /** Another device's progress that would move aside. */
   aheadDevice: string | null;
   busy: boolean;
+  /** The game is running here, so it may hold or save over its files. */
+  running: boolean;
   onName: (tag: string) => void;
   onRewind: () => void;
   /** Present when the panel is a drawer. */
@@ -123,6 +125,14 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
             onComplete={onRewind}
             rumble
           />
+          {running ? (
+            <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-warn">
+              <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-warn" />
+              {t.checkpoint.running(game.title)}
+            </div>
+          ) : (
+            <div className="mt-3 text-center text-xs text-tx3">{t.checkpoint.closeFirst}</div>
+          )}
           {aheadDevice !== null && (
             <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-warn">
               <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-warn" />

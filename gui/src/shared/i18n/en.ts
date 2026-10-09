@@ -100,6 +100,8 @@ export const en = {
     exportName: (title: string): string => `${title} history`,
     exported: (count: number, title: string): string =>
       `Exported ${plural('en', count, { one: '# checkpoint', other: '# checkpoints' })} of ${title}`,
+    closeAndRetry: (title: string): string => `Close ${title} and try again.`,
+    closeIfOpen: 'If the game is open, close it and try again.',
     failed: {
       rewind: 'Couldn’t rewind.',
       name: 'Couldn’t name the checkpoint.',
@@ -204,6 +206,8 @@ export const en = {
     holdToSwitch: 'Hold to switch',
     holdHint: 'Hold the button, or hold Space or Enter.',
     aheadWarning: (device: string): string => `${device}’s newer progress moves to its own timeline`,
+    closeFirst: 'Close the game first, or it may save over this.',
+    running: (title: string): string => `${title} is running. Close it first.`,
     thisDevice: 'This PC',
     close: 'Close',
   },

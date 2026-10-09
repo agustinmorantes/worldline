@@ -15,10 +15,12 @@ export function errorDetails(error: unknown): string {
   }
 }
 
-export function reportError(message: string, error: unknown): void {
+/** `hint`, when given, says what to do about it under the message. */
+export function reportError(message: string, error: unknown, hint?: string): void {
   const details = errorDetails(error);
   void logError(`${message}: ${details}`).catch(() => undefined);
   toast.error(message, {
+    description: hint,
     action: {
       label: getT().errors.copyDetails,
       onClick: () => { void navigator.clipboard.writeText(details); },

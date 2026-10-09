@@ -89,6 +89,9 @@ export function GameDetail(): ReactElement {
     );
   }
 
+  const gameRunning = runningGames?.includes(game.id) === true;
+  // Everything that rewrites the save folder fails when the game holds its files.
+  const closeHint = gameRunning ? t.game.closeAndRetry(game.title) : t.game.closeIfOpen;
   const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
   const chipState = syncChip({ on: syncOn, running: running || report.isFetching, reported: report.data !== undefined, status });
   const deviceOf = (version: Version): ReturnType<typeof checkpointDevice> => checkpointDevice(version, here, report.data);
@@ -117,7 +120,7 @@ export function GameDetail(): ReactElement {
       setLandedId(version.id);
       select(undefined);
     } catch (err) {
-      reportError(t.game.failed.rewind, err);
+      reportError(t.game.failed.rewind, err, closeHint);
     } finally {
       setRewinding(false);
       setBusy(false);
@@ -142,7 +145,7 @@ export function GameDetail(): ReactElement {
       setLandedId(pendingId);
       select(undefined);
     } catch (err) {
-      reportError(t.game.failed.apply, err);
+      reportError(t.game.failed.apply, err, closeHint);
     } finally {
       setBusy(false);
     }
@@ -156,7 +159,7 @@ export function GameDetail(): ReactElement {
       setOpenForks(new Set());
       select(undefined);
     } catch (err) {
-      reportError(failed, err);
+      reportError(failed, err, closeHint);
     } finally {
       setBusy(false);
     }
@@ -192,7 +195,7 @@ export function GameDetail(): ReactElement {
     <div className="flex h-full flex-col overflow-hidden">
       <GameHeader
         game={game}
-        running={runningGames?.includes(game.id) === true}
+        running={gameRunning}
         sync={chipState}
         inCloud={syncOn && report.data?.remote_games.some((g) => g.uuid === game.uuid) === true}
         syncDevice={remoteKind}
@@ -279,6 +282,7 @@ export function GameDetail(): ReactElement {
               lessPlayMs={lessPlay}
               aheadDevice={pendingId === null ? null : (status?.remote_device ?? t.sessions.anotherDevice)}
               busy={busy}
+              running={gameRunning}
               onName={(tag) => { void name(selected, tag); }}
               onRewind={() => { void rewind(selected); }}
               onClose={() => { select(undefined); }}

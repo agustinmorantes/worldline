@@ -104,6 +104,16 @@ test.describe('progress from another device', () => {
   });
 });
 
+test.describe('game running', () => {
+  test.use({ fixture: 'running' });
+
+  test('asks to close the game before rewinding', async ({ page }) => {
+    await page.goto('/game/1');
+    await page.locator('button[id^=checkpoint-]:not([disabled])').nth(2).click();
+    await expect(page.getByText('Elden Ring is running. Close it first.')).toBeVisible();
+  });
+});
+
 test.describe('diverged', () => {
   test.use({ fixture: 'diverged' });
 

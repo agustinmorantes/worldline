@@ -98,6 +98,8 @@ export const es: Messages = {
     exportName: (title) => `Historial de ${title}`,
     exported: (count, title) =>
       `Se exportaron ${plural('es', count, { one: '# punto de control', other: '# puntos de control' })} de ${title}`,
+    closeAndRetry: (title) => `Cierra ${title} y vuelve a intentarlo.`,
+    closeIfOpen: 'Si el juego está abierto, ciérralo y vuelve a intentarlo.',
     failed: {
       rewind: 'No se pudo volver atrás.',
       name: 'No se pudo poner nombre al punto de control.',
@@ -202,6 +204,8 @@ export const es: Messages = {
     holdToSwitch: 'Mantén para cambiar',
     holdHint: 'Mantén presionado el botón, o mantén Espacio o Enter.',
     aheadWarning: (device) => `El progreso más nuevo de ${device} pasa a su propia línea temporal`,
+    closeFirst: 'Cierra el juego antes, o podría guardar encima.',
+    running: (title) => `${title} está abierto. Ciérralo antes.`,
     thisDevice: 'Esta PC',
     close: 'Cerrar',
   },
