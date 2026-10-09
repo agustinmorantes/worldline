@@ -136,7 +136,7 @@ export interface FileFilter {
 export const pickFolder = (title: string): Promise<string | null> => invoke('pick_folder', { title });
 export const pickFile = (title: string, filters: FileFilter[]): Promise<string | null> =>
   invoke('pick_file', { title, filters });
-export const pickSavePath = (title: string, fileName: string): Promise<string | null> =>
-  invoke('pick_save_path', { title, fileName });
+export const pickSavePath = (title: string, fileName: string, filters: FileFilter[]): Promise<string | null> =>
+  invoke('pick_save_path', { title, fileName, filters });
 export const confirm = (title: string, message: string): Promise<boolean> =>
   invoke('confirm', { title, message });

@@ -104,7 +104,7 @@ fn importing_an_untracked_games_history_tracks_it_again() {
     let game = device.add_game("Bundled");
     device.core.push_sync().unwrap();
     let out = tempfile::tempdir().unwrap();
-    let bundle = out.path().join("bundle");
+    let bundle = out.path().join("bundle.zip");
     device
         .core
         .export_game_history(game.game.id, &bundle)

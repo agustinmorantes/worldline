@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use worldline_core::models::*;
@@ -108,4 +109,35 @@ impl Device {
             .unwrap();
         self.core.get_game(game.id).unwrap()
     }
+}
+
+/// Unzips the bundle, lets `change` edit its files, and zips it back.
+pub fn edit_bundle(bundle: &Path, change: impl FnOnce(&Path)) {
+    let dir = tempfile::tempdir().unwrap();
+    zip::ZipArchive::new(fs::File::open(bundle).unwrap())
+        .unwrap()
+        .extract(dir.path())
+        .unwrap();
+    change(dir.path());
+    let mut zip = zip::ZipWriter::new(fs::File::create(bundle).unwrap());
+    let mut pending = vec![dir.path().to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in fs::read_dir(&current).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path
+                .strip_prefix(dir.path())
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let options = zip::write::SimpleFileOptions::default();
+            if path.is_dir() {
+                zip.add_directory(name, options).unwrap();
+                pending.push(path);
+            } else {
+                zip.start_file(name, options).unwrap();
+                zip.write_all(&fs::read(&path).unwrap()).unwrap();
+            }
+        }
+    }
+    zip.finish().unwrap();
 }

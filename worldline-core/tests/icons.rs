@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::Device;
+use common::{Device, edit_bundle};
 use image::{Rgba, RgbaImage};
 use std::collections::HashMap;
 use std::fs;
@@ -180,7 +180,7 @@ fn bundles_carry_the_icon() {
     set_icon(&a, id, BLUE);
     a.core.set_game_accent(id, Some(42)).unwrap();
     let out = tempfile::tempdir().unwrap();
-    let bundle = out.path().join("bundle");
+    let bundle = out.path().join("bundle.zip");
     a.core.export_game_history(id, &bundle).unwrap();
 
     let b = Device::new();
@@ -199,12 +199,14 @@ fn bundles_carry_the_icon() {
     );
 
     // A bundle whose icon is missing is incomplete.
-    fs::remove_file(
-        Store::open_existing(&bundle)
-            .unwrap()
-            .icon_path(&imported.folder_slug),
-    )
-    .unwrap();
+    edit_bundle(&bundle, |dir| {
+        fs::remove_file(
+            Store::open_existing(dir)
+                .unwrap()
+                .icon_path(&imported.folder_slug),
+        )
+        .unwrap()
+    });
     let c = Device::new();
     assert!(c.core.import_game_history(&bundle, &mappings).is_err());
 }

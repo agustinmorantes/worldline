@@ -91,7 +91,7 @@ fn imported_history_is_not_snapshotted_until_a_version_is_chosen() {
     source.write("save.dat", "exported");
     let exported = source.add_game("Imported");
     let out = tempfile::tempdir().unwrap();
-    let bundle = out.path().join("bundle");
+    let bundle = out.path().join("bundle.zip");
     source
         .core
         .export_game_history(exported.game.id, &bundle)

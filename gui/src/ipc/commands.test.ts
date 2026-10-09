@@ -28,7 +28,7 @@ describe('ipc commands', () => {
       () => commands.importGameHistory('C:/bundle', { dir: 'C:/saves' }),
       { bundlePath: 'C:/bundle', mappings: { dir: 'C:/saves' } },
     ],
-    ['pick_save_path', () => commands.pickSavePath('Export', 'history'), { title: 'Export', fileName: 'history' }],
+    ['pick_save_path', () => commands.pickSavePath('Export', 'history.zip', [{ name: 'Zip', extensions: ['zip'] }]), { title: 'Export', fileName: 'history.zip', filters: [{ name: 'Zip', extensions: ['zip'] }] }],
   ])('%s', async (command, call, args) => {
     await call();
     expect(invoke).toHaveBeenCalledWith(command, args);

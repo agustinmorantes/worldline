@@ -97,7 +97,8 @@ export const en = {
     iconFiles: 'Images and programs',
     pickSaveFolder: 'Choose a save folder',
     exportTo: 'Choose where to export the history',
-    exportName: (title: string): string => `${title} history`,
+    exportName: (title: string): string => `${title} history.zip`,
+    bundleFiles: 'History bundles',
     exported: (count: number, title: string): string =>
       `Exported ${plural('en', count, { one: '# checkpoint', other: '# checkpoints' })} of ${title}`,
     closeAndRetry: (title: string): string => `Nothing was changed. Close ${title} and try again.`,
@@ -153,7 +154,7 @@ export const en = {
     pickSaveFolderSub: 'For games the scan can’t find',
     openBundle: 'Open a history bundle',
     openBundleSub: 'A game exported from Worldline',
-    pickBundle: 'Choose the exported history folder',
+    pickBundle: 'Choose the exported history file',
     gameName: 'Game name',
     addGame: 'Add game',
     cancel: 'Cancel',

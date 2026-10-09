@@ -6,7 +6,7 @@ import { FolderOpen, Package } from 'lucide-react';
 import { toast } from 'sonner';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { HistoryBundleSummary } from '@/ipc/bindings/HistoryBundleSummary';
-import { getGames, importGameHistory, inspectHistoryBundle, pickFolder, saveGame } from '@/ipc/commands';
+import { getGames, importGameHistory, inspectHistoryBundle, pickFile, pickFolder, saveGame } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { GameIcon } from '@/features/library/GameIcon';
 import { useShellNav } from '@/features/library/shell-nav';
@@ -35,7 +35,7 @@ export function ManualSection({ library }: { library: FullGame[] }): ReactElemen
   }
 
   async function openBundle(): Promise<void> {
-    const path = await pickFolder(t.addGames.pickBundle);
+    const path = await pickFile(t.addGames.pickBundle, [{ name: t.game.bundleFiles, extensions: ['zip'] }]);
     if (path === null) return;
     try {
       setDraft({ kind: 'bundle', path, summary: await inspectHistoryBundle(path), mappings: {} });

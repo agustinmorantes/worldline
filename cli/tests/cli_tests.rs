@@ -305,7 +305,7 @@ fn end_to_end_across_two_data_dirs() {
         .success()
         .stdout(contains("Remote:"));
 
-    let bundle = c.path().join("journey-bundle");
+    let bundle = c.path().join("journey-bundle.zip");
     cli(b.path())
         .args(["history", "export", "Journey", bundle.to_str().unwrap()])
         .assert()
