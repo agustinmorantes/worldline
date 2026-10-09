@@ -4,17 +4,21 @@
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Corner } from '@/shared/prefs/schema';
 import type { Locale } from '@/shared/i18n/locale';
+import type { BranchFrom } from './bindings/BranchFrom';
+import type { CaptureFailure } from './bindings/CaptureFailure';
 import type { Failure } from './bindings/Failure';
 import type { SyncReport } from './bindings/SyncReport';
 
 /** Event name → payload. */
 export interface Events {
   'change-detected': number;
-  /** [game id, version number] */
-  'version-created': [number, number];
+  /** [game id, version number, the parent when the version starts a new timeline] */
+  'version-created': [number, number, BranchFrom | null];
   /** [game id, version id]: the version's screenshot arrived, usually seconds after it. */
   'screenshot-attached': [number, number];
   'detection-error': string;
+  /** [game id, reason]: an automatic capture failed; `detection-error` carries the details. */
+  'checkpoint-failed': [number, CaptureFailure];
   'sync-started': null;
   'sync-complete': SyncReport;
   'sync-error': Failure;
