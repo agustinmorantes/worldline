@@ -95,7 +95,8 @@ export const es: Messages = {
     iconFiles: 'Imágenes y programas',
     pickSaveFolder: 'Elige una carpeta de partidas',
     exportTo: 'Elige dónde exportar el historial',
-    exportName: (title) => `Historial de ${title}`,
+    exportName: (title) => `Historial de ${title}.zip`,
+    bundleFiles: 'Historiales exportados',
     exported: (count, title) =>
       `Se exportaron ${plural('es', count, { one: '# punto de control', other: '# puntos de control' })} de ${title}`,
     closeAndRetry: (title) => `No se cambió nada. Cierra ${title} y vuelve a intentarlo.`,
@@ -151,7 +152,7 @@ export const es: Messages = {
     pickSaveFolderSub: 'Para juegos que la búsqueda no encuentra',
     openBundle: 'Abrir un historial exportado',
     openBundleSub: 'Un juego exportado desde Worldline',
-    pickBundle: 'Elige la carpeta del historial exportado',
+    pickBundle: 'Elige el archivo del historial exportado',
     gameName: 'Nombre del juego',
     addGame: 'Agregar juego',
     cancel: 'Cancelar',

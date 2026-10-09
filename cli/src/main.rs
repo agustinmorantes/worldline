@@ -176,14 +176,14 @@ enum PruneAction {
 #[derive(Subcommand)]
 enum HistoryAction {
     Inspect {
-        bundle_dir: PathBuf,
+        bundle_zip: PathBuf,
     },
     Export {
         game: String,
-        destination_dir: PathBuf,
+        destination_zip: PathBuf,
     },
     Import {
-        bundle_dir: PathBuf,
+        bundle_zip: PathBuf,
         #[arg(long = "map", value_name = "TRACKED-DIR-UUID=ABSOLUTE-PATH")]
         mappings: Vec<String>,
     },
@@ -423,10 +423,10 @@ fn ms(d: std::time::Duration) -> f64 {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Commands::History {
-        action: HistoryAction::Inspect { bundle_dir },
+        action: HistoryAction::Inspect { bundle_zip },
     } = &cli.command
     {
-        print_history_summary(&WorldlineCore::inspect_history_bundle(bundle_dir)?);
+        print_history_summary(&WorldlineCore::inspect_history_bundle(bundle_zip)?);
         return Ok(());
     }
     let data_dir = match cli.data_dir {
@@ -660,10 +660,10 @@ fn main() -> Result<()> {
             HistoryAction::Inspect { .. } => unreachable!("handled before opening the core"),
             HistoryAction::Export {
                 game,
-                destination_dir,
+                destination_zip,
             } => {
                 let report =
-                    core.export_game_history(resolve_game_id(&core, &game)?, &destination_dir)?;
+                    core.export_game_history(resolve_game_id(&core, &game)?, &destination_zip)?;
                 println!(
                     "Exported {}: {} slot(s), {} version(s), {} chunk(s), {} retired version(s)",
                     report.title,
@@ -674,7 +674,7 @@ fn main() -> Result<()> {
                 );
             }
             HistoryAction::Import {
-                bundle_dir,
+                bundle_zip,
                 mappings: values,
             } => {
                 let mut mappings = HashMap::new();
@@ -688,7 +688,7 @@ fn main() -> Result<()> {
                         bail!("Duplicate mapping for tracked-directory UUID {uuid}");
                     }
                 }
-                let report = core.import_game_history(&bundle_dir, &mappings)?;
+                let report = core.import_game_history(&bundle_zip, &mappings)?;
                 println!(
                     "Imported {}: {} slot(s), {} version(s), {} chunk(s), {} retired version(s)",
                     report.title,

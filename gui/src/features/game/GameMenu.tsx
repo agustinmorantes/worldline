@@ -71,7 +71,7 @@ export function GameMenu({ game, inCloud }: {
 
   async function exportHistory(): Promise<void> {
     try {
-      const destination = await pickSavePath(t.game.exportTo, t.game.exportName(game.title));
+      const destination = await pickSavePath(t.game.exportTo, t.game.exportName(game.title), [{ name: t.game.bundleFiles, extensions: ['zip'] }]);
       if (destination === null) return;
       const report = await exportGameHistory(game.id, destination);
       toast.success(t.game.exported(report.version_count, report.title));

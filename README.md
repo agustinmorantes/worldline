@@ -27,7 +27,7 @@ Use `--data-dir <path>` before the command to keep a test repository separate fr
 
 Add a game and choose its save folders, or use the installed-game import screen to discover games. Checkpoints are created when monitored save files change. The timeline shows slot histories and branches; restoring a checkpoint writes its saved files to the tracked folders, so inspect the selected version first.
 
-In Settings, choose a shared folder to sync between devices. Each device keeps its own active slot and version pointers. History cleanup can retire eligible checkpoints while preserving graph links. Export History on a game's detail screen creates a portable directory bundle; Import History in Settings inspects a bundle and asks where each tracked save folder belongs on this machine. Importing history does not restore live save files.
+In Settings, choose a shared folder to sync between devices. Each device keeps its own active slot and version pointers. History cleanup can retire eligible checkpoints while preserving graph links. Export History on a game's detail screen creates a portable `.zip` bundle; Import History in Settings inspects a bundle and asks where each tracked save folder belongs on this machine. Importing history does not restore live save files.
 
 The CLI also supports `history inspect`, `history export`, and `history import --map UUID=/absolute/path`. Run `cargo run -p cli -- history --help` for the exact arguments. `sync configure|status|adopt`, `devices list|remove` and `prune settings|preview|run` cover sync and history cleanup.
 

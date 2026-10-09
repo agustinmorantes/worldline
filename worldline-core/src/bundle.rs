@@ -1,6 +1,7 @@
-//! History bundles: a store holding one game, plus `export.json`. Export and
-//! import are transfers with the `Complete` policy; this module only adds the
-//! bundle manifest, preflight checks and tracked-path mapping.
+//! History bundles: a zip of a store holding one game, plus `export.json`.
+//! Export and import are transfers with the `Complete` policy; this module only
+//! adds the zip packaging, bundle manifest, preflight checks and tracked-path
+//! mapping.
 
 use crate::history::{History, overlapping_paths, same_path};
 use crate::store::{
@@ -60,13 +61,76 @@ struct Bundle {
     store: Store,
     game: GameRecord,
     retired: HashMap<Uuid, crate::store::RetirementMarker>,
+    // Dropped last, after `store` lets go of the files.
+    _unpacked: Option<Unpacked>,
+}
+
+/// A temporary directory holding an unzipped bundle, removed on drop.
+struct Unpacked(PathBuf);
+
+impl Drop for Unpacked {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Zips the contents of `dir` into the new file `file`.
+fn pack(dir: &Path, file: &Path) -> Result<()> {
+    let mut zip = zip::ZipWriter::new(
+        std::fs::File::create_new(file)
+            .with_context(|| format!("Failed to create {}", file.display()))?,
+    );
+    let options = zip::write::SimpleFileOptions::default();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in std::fs::read_dir(&current)? {
+            let path = entry?.path();
+            let name = path
+                .strip_prefix(dir)?
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            if path.is_dir() {
+                zip.add_directory(name, options)?;
+                pending.push(path);
+            } else {
+                zip.start_file(name, options)?;
+                std::io::copy(&mut std::fs::File::open(&path)?, &mut zip)?;
+            }
+        }
+    }
+    zip.finish()?.sync_all()?;
+    Ok(())
+}
+
+fn unpack(path: &Path) -> Result<Unpacked> {
+    let file =
+        std::fs::File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .with_context(|| format!("{} is not a history bundle", path.display()))?;
+    let unpacked = Unpacked(
+        std::env::temp_dir().join(format!("worldline-bundle-{}", crate::store::short_random())),
+    );
+    archive
+        .extract(&unpacked.0)
+        .with_context(|| format!("Failed to unzip {}", path.display()))?;
+    Ok(unpacked)
 }
 
 fn open(path: &Path) -> Result<Bundle> {
-    let store = Store::open_existing(path)
+    let unpacked = unpack(path)?;
+    let mut bundle = load(&unpacked.0, path)?;
+    bundle._unpacked = Some(unpacked);
+    Ok(bundle)
+}
+
+/// Opens the unzipped bundle at `root`; `path` names it in errors.
+fn load(root: &Path, path: &Path) -> Result<Bundle> {
+    let store = Store::open_existing(root)
         .with_context(|| format!("{} is not a history bundle", path.display()))?;
     let manifest: ExportManifest =
-        read_json(&path.join("export.json")).context("The bundle has no readable export.json")?;
+        read_json(&root.join("export.json")).context("The bundle has no readable export.json")?;
     if manifest.bundle_format != BUNDLE_FORMAT {
         bail!("Unsupported bundle format {}", manifest.bundle_format);
     }
@@ -88,6 +152,7 @@ fn open(path: &Path) -> Result<Bundle> {
         store,
         game,
         retired,
+        _unpacked: None,
     })
 }
 
@@ -140,7 +205,7 @@ pub fn inspect(path: &Path) -> Result<HistoryBundleSummary> {
     Ok(summary(&open(path)?))
 }
 
-/// Writes one game into a new directory. The caller holds the repository lock.
+/// Writes one game into a new zip file. The caller holds the repository lock.
 pub fn export(
     history: &History,
     game_id: i32,
@@ -148,7 +213,7 @@ pub fn export(
 ) -> Result<HistoryTransferReport> {
     if destination.exists() {
         bail!(
-            "{} already exists; choose a new folder",
+            "{} already exists; choose a new file name",
             destination.display()
         );
     }
@@ -163,7 +228,8 @@ pub fn export(
     let markers = history.store.markers()?;
 
     let staging = parent.join(format!(".export-{}", crate::store::short_random()));
-    let result = (|| -> Result<()> {
+    let staging_zip = staging.with_extension("zip");
+    let result = (|| -> Result<HistoryBundleSummary> {
         let bundle = Store::open(&staging)?;
         Transfer::new(&history.store, &bundle, Completeness::Complete).copy_game(
             &record,
@@ -178,14 +244,18 @@ pub fn export(
                 exported_at: Utc::now(),
             },
         )?;
-        rename_no_replace(&staging, destination)
-            .with_context(|| format!("Failed to publish the bundle at {}", destination.display()))
+        let summary = summary(&load(&staging, destination)?);
+        pack(&staging, &staging_zip)?;
+        rename_no_replace(&staging_zip, destination).with_context(|| {
+            format!("Failed to publish the bundle at {}", destination.display())
+        })?;
+        Ok(summary)
     })();
+    let _ = std::fs::remove_dir_all(&staging);
     if result.is_err() {
-        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_file(&staging_zip);
     }
-    result?;
-    inspect(destination).map(report)
+    result.map(report)
 }
 
 /// Adds a bundle's history to the local store without restoring anything.

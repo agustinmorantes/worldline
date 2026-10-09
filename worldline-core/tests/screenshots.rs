@@ -196,7 +196,7 @@ fn bundles_carry_screenshots_even_with_sync_off() {
     let version = game.last_version.unwrap();
     attach(&a, version.id, b"exported");
     let out = tempfile::tempdir().unwrap();
-    let bundle = out.path().join("bundle");
+    let bundle = out.path().join("bundle.zip");
     a.core.export_game_history(game.game.id, &bundle).unwrap();
 
     let b = Device::new();

@@ -27,6 +27,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 fastcdc = "3"
 zstd = "0.14.0"
 ts-rs = { version = "12", optional = true, features = ["chrono-impl", "uuid-impl"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 
 [features]
 # Exports the GUI-facing types as TypeScript (see `../.cargo/config.toml`).

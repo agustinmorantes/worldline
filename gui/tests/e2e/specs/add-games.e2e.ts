@@ -36,7 +36,7 @@ async function syncAndReload(): Promise<void> {
 // PC, then bring it back by importing the bundle.
 describe('Add games', () => {
   const saves = path.join(dataDir, 'saves', 'Hades');
-  const bundle = path.join(dataDir, 'exports', 'Hades history');
+  const bundle = path.join(dataDir, 'exports', 'Hades history.zip');
   let remote = '';
 
   before(async () => {

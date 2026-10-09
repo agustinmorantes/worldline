@@ -51,20 +51,26 @@ pub async fn pick_file(
 pub async fn pick_save_path(
     title: String,
     file_name: String,
+    filters: Vec<FileFilter>,
     app: AppHandle,
 ) -> Result<Option<String>, String> {
     #[cfg(feature = "e2e")]
     {
-        let _ = (title, file_name, app);
+        let _ = (title, file_name, filters, app);
         Ok(stub_path())
     }
     #[cfg(not(feature = "e2e"))]
     picked(move || {
-        app.dialog()
+        let mut dialog = app
+            .dialog()
             .file()
             .set_title(title)
-            .set_file_name(file_name)
-            .blocking_save_file()
+            .set_file_name(file_name);
+        for filter in &filters {
+            let extensions: Vec<&str> = filter.extensions.iter().map(String::as_str).collect();
+            dialog = dialog.add_filter(&filter.name, &extensions);
+        }
+        dialog.blocking_save_file()
     })
     .await
 }

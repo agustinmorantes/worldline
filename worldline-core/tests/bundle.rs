@@ -1,6 +1,6 @@
 mod common;
 
-use common::Device;
+use common::{Device, edit_bundle};
 use std::collections::HashMap;
 use std::fs;
 use uuid::Uuid;
@@ -12,7 +12,7 @@ fn exported(device: &Device) -> (tempfile::TempDir, std::path::PathBuf, i32) {
     let tip = device.checkpoint(game.game.id);
     device.core.tag_version(tip.id, "boss".into()).unwrap();
     let out = tempfile::tempdir().unwrap();
-    let path = out.path().join("bundle");
+    let path = out.path().join("bundle.zip");
     let report = device
         .core
         .export_game_history(game.game.id, &path)
@@ -24,6 +24,11 @@ fn exported(device: &Device) -> (tempfile::TempDir, std::path::PathBuf, i32) {
             .export_game_history(game.game.id, &path)
             .is_err(),
         "never overwrites"
+    );
+    assert_eq!(
+        fs::read_dir(out.path()).unwrap().count(),
+        1,
+        "leaves no staging behind"
     );
     (out, path, game.game.id)
 }
@@ -44,7 +49,9 @@ fn mapping(
 fn round_trip_imports_history_without_restoring_and_reimport_is_idempotent() {
     let a = Device::new();
     let (_out, bundle, _) = exported(&a);
-    fs::write(bundle.join("desktop.ini"), b"[.ShellClassInfo]").unwrap();
+    edit_bundle(&bundle, |dir| {
+        fs::write(dir.join("desktop.ini"), b"[.ShellClassInfo]").unwrap()
+    });
 
     let b = Device::new();
     fs::create_dir_all(b.save_dir()).unwrap();
@@ -94,11 +101,13 @@ fn round_trip_imports_history_without_restoring_and_reimport_is_idempotent() {
 fn a_damaged_bundle_is_rejected_before_anything_is_written() {
     let a = Device::new();
     let (_out, bundle, _) = exported(&a);
-    for shard in fs::read_dir(bundle.join("chunks")).unwrap() {
-        for chunk in fs::read_dir(shard.unwrap().path()).unwrap() {
-            fs::write(chunk.unwrap().path(), b"garbage").unwrap();
+    edit_bundle(&bundle, |dir| {
+        for shard in fs::read_dir(dir.join("chunks")).unwrap() {
+            for chunk in fs::read_dir(shard.unwrap().path()).unwrap() {
+                fs::write(chunk.unwrap().path(), b"garbage").unwrap();
+            }
         }
-    }
+    });
     let b = Device::new();
     let map = mapping(&bundle, &b.save_dir());
     assert!(b.core.import_game_history(&bundle, &map).is_err());
@@ -141,27 +150,26 @@ fn a_bundle_with_cyclic_ancestry_is_rejected_by_inspect_and_import() {
     let b = Device::new();
     let map = mapping(&bundle, &b.save_dir());
     // Make the root's parent its own child.
-    let mut metas = Vec::new();
-    let games = bundle.join("games");
-    let slots = games.join(only_child(&games)).join("slots");
-    let versions = slots.join(only_child(&slots)).join("versions");
-    for dir in fs::read_dir(&versions).unwrap() {
-        let path = dir.unwrap().path().join("metadata.json");
-        let json: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        metas.push((path, json));
-    }
-    let uuid = |json: &serde_json::Value| json["uuid"].clone();
-    let child = metas
-        .iter()
-        .find(|(_, json)| !json["parent_uuid"].is_null())
-        .map(|(_, json)| uuid(json))
-        .unwrap();
-    let (root_path, root) = metas
-        .iter_mut()
-        .find(|(_, json)| json["parent_uuid"].is_null())
-        .unwrap();
-    root["parent_uuid"] = child;
-    fs::write(root_path, serde_json::to_vec(root).unwrap()).unwrap();
+    edit_bundle(&bundle, |dir| {
+        let mut metas = Vec::new();
+        for path in version_metadata(dir) {
+            let json: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            metas.push((path, json));
+        }
+        let uuid = |json: &serde_json::Value| json["uuid"].clone();
+        let child = metas
+            .iter()
+            .find(|(_, json)| !json["parent_uuid"].is_null())
+            .map(|(_, json)| uuid(json))
+            .unwrap();
+        let (root_path, root) = metas
+            .iter_mut()
+            .find(|(_, json)| json["parent_uuid"].is_null())
+            .unwrap();
+        root["parent_uuid"] = child;
+        fs::write(root_path, serde_json::to_vec(root).unwrap()).unwrap();
+    });
 
     assert!(worldline_core::WorldlineCore::inspect_history_bundle(&bundle).is_err());
     assert!(b.core.import_game_history(&bundle, &map).is_err());
@@ -194,7 +202,9 @@ fn a_bundle_with_unreadable_version_metadata_is_rejected() {
     let a = Device::new();
     let (_out, bundle, _) = exported(&a);
     let map = mapping(&bundle, &Device::new().save_dir());
-    fs::write(&version_metadata(&bundle)[0], "invalid JSON").unwrap();
+    edit_bundle(&bundle, |dir| {
+        fs::write(&version_metadata(dir)[0], "invalid JSON").unwrap()
+    });
 
     assert!(worldline_core::WorldlineCore::inspect_history_bundle(&bundle).is_err());
     let b = Device::new();
@@ -206,18 +216,21 @@ fn a_bundle_with_unreadable_version_metadata_is_rejected() {
 fn a_rejected_reimport_leaves_local_metadata_untouched() {
     let a = Device::new();
     let (_out, bundle, id) = exported(&a);
-    let games = bundle.join("games");
-    let game_meta = games.join(only_child(&games)).join("metadata.json");
-    let mut game: serde_json::Value =
-        serde_json::from_slice(&fs::read(&game_meta).unwrap()).unwrap();
-    game["title"] = "Renamed In Bundle".into();
-    game["updated_at"] = "2999-01-01T00:00:00Z".into();
-    fs::write(&game_meta, serde_json::to_vec(&game).unwrap()).unwrap();
-    // Same version UUID, different immutable content.
-    let path = &version_metadata(&bundle)[0];
-    let mut version: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    version["reason"] = "pre_switch".into();
-    fs::write(path, serde_json::to_vec(&version).unwrap()).unwrap();
+    edit_bundle(&bundle, |dir| {
+        let games = dir.join("games");
+        let game_meta = games.join(only_child(&games)).join("metadata.json");
+        let mut game: serde_json::Value =
+            serde_json::from_slice(&fs::read(&game_meta).unwrap()).unwrap();
+        game["title"] = "Renamed In Bundle".into();
+        game["updated_at"] = "2999-01-01T00:00:00Z".into();
+        fs::write(&game_meta, serde_json::to_vec(&game).unwrap()).unwrap();
+        // Same version UUID, different immutable content.
+        let path = &version_metadata(dir)[0];
+        let mut version: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        version["reason"] = "pre_switch".into();
+        fs::write(path, serde_json::to_vec(&version).unwrap()).unwrap();
+    });
 
     assert!(
         a.core
@@ -234,15 +247,18 @@ fn a_version_uuid_reused_under_another_folder_is_rejected() {
     let a = Device::new();
     let (_out, bundle, _id) = exported(&a);
     // Same version UUID, moved to another folder with different content.
-    let path = &version_metadata(&bundle)[0];
-    let old = path.parent().unwrap();
-    let new = old.with_file_name("v001-moved");
-    fs::rename(old, &new).unwrap();
-    let path = new.join("metadata.json");
-    let mut version: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    version["folder_slug"] = "v001-moved".into();
-    version["reason"] = "manual".into();
-    fs::write(&path, serde_json::to_vec(&version).unwrap()).unwrap();
+    edit_bundle(&bundle, |dir| {
+        let path = &version_metadata(dir)[0];
+        let old = path.parent().unwrap();
+        let new = old.with_file_name("v001-moved");
+        fs::rename(old, &new).unwrap();
+        let path = new.join("metadata.json");
+        let mut version: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        version["folder_slug"] = "v001-moved".into();
+        version["reason"] = "manual".into();
+        fs::write(&path, serde_json::to_vec(&version).unwrap()).unwrap();
+    });
 
     assert!(
         a.core
@@ -251,4 +267,12 @@ fn a_version_uuid_reused_under_another_folder_is_rejected() {
     );
     let local = worldline_core::store::Store::open_existing(a.core.repository_root()).unwrap();
     assert_eq!(local.catalog().unwrap()[0].versions().count(), 2);
+}
+
+#[test]
+fn a_file_that_is_not_a_zip_is_rejected() {
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("bundle.zip");
+    fs::write(&path, b"not a zip").unwrap();
+    assert!(worldline_core::WorldlineCore::inspect_history_bundle(&path).is_err());
 }
