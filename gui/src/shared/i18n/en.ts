@@ -100,8 +100,10 @@ export const en = {
     exportName: (title: string): string => `${title} history`,
     exported: (count: number, title: string): string =>
       `Exported ${plural('en', count, { one: '# checkpoint', other: '# checkpoints' })} of ${title}`,
-    closeAndRetry: (title: string): string => `Close ${title} and try again.`,
-    closeIfOpen: 'If the game is open, close it and try again.',
+    closeAndRetry: (title: string): string => `Nothing was changed. Close ${title} and try again.`,
+    closeIfOpen: 'Nothing was changed. If the game is open, close it and try again.',
+    restoreIncomplete: 'Worldline couldn’t finish and couldn’t fully undo it.',
+    restoreIncompleteHint: 'Your saves are safe in the checkpoint taken just before. Close the game, then rewind to it.',
     failed: {
       rewind: 'Couldn’t rewind.',
       name: 'Couldn’t name the checkpoint.',
@@ -375,6 +377,7 @@ export const en = {
   notices: {
     oldDataMoved: (path: string): string =>
       `Data from a pre-release version was moved to ${path} and the app started fresh.`,
+    restoresRecovered: 'A rewind was interrupted last time. Your saves were put back as they were.',
   },
 };
 

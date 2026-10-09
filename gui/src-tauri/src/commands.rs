@@ -52,8 +52,8 @@ fn create_slot(
     game_id: i32,
     name: String,
     core: State<Arc<WorldlineCore>>,
-) -> Result<FullGame, String> {
-    core.create_slot(game_id, &name).map_err(|e| e.to_string())
+) -> Result<FullGame, Failure> {
+    core.create_slot(game_id, &name).map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -61,9 +61,9 @@ fn switch_slot(
     game_id: i32,
     slot_id: i32,
     core: State<Arc<WorldlineCore>>,
-) -> Result<FullGame, String> {
+) -> Result<FullGame, Failure> {
     core.switch_slot(game_id, slot_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -80,14 +80,14 @@ fn delete_slot(
     slot_id: i32,
     replacement_slot_id: Option<i32>,
     core: State<Arc<WorldlineCore>>,
-) -> Result<FullGame, String> {
+) -> Result<FullGame, Failure> {
     core.delete_slot(slot_id, replacement_slot_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
-fn restore_version(id: i32, core: State<Arc<WorldlineCore>>) -> Result<(), String> {
-    core.restore_version(id).map_err(|e| format!("{e:#}"))
+fn restore_version(id: i32, core: State<Arc<WorldlineCore>>) -> Result<(), Failure> {
+    core.restore_version(id).map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -216,12 +216,12 @@ async fn adopt_remote_game(
 async fn apply_remote_version(
     version_id: i32,
     core: State<'_, Arc<WorldlineCore>>,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.apply_remote_version(version_id))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| Failure::from(&anyhow::Error::from(e)))?
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -350,6 +350,12 @@ fn get_startup_notice(core: State<Arc<WorldlineCore>>) -> Option<String> {
         .map(|backup| backup.display().to_string())
 }
 
+/// How many writes to live saves a crash interrupted, put back on this start.
+#[tauri::command]
+fn get_recovered_restores(core: State<Arc<WorldlineCore>>) -> usize {
+    core.recovered_restores()
+}
+
 #[tauri::command]
 fn set_tray_labels(labels: crate::tray::TrayLabels, app: tauri::AppHandle) -> Result<(), String> {
     crate::tray::set_labels(&app, labels).map_err(|e| e.to_string())
@@ -400,6 +406,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         export_game_history,
         import_game_history,
         get_startup_notice,
+        get_recovered_restores,
         get_prefs_path,
         crate::dialogs::pick_folder,
         crate::dialogs::pick_file,

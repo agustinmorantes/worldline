@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use worldline_core::detection::{Notification, NotificationReceiver};
+use worldline_core::error::{ErrorKind, error_kind};
 use worldline_core::models::GameForm;
 use worldline_core::{OpenOptions, WorldlineCore};
 
@@ -170,4 +171,58 @@ fn running_games_are_reported_as_they_start_and_stop() {
     wait_for(&notifications, &Notification::GameStopped { game_id });
     assert!(core.running_games().is_empty());
     core.shutdown();
+}
+
+#[test]
+fn a_running_game_refuses_a_rewind_before_touching_anything() {
+    let device = Device::new();
+    let root = install(&device.core);
+    device.core.scan_installed().unwrap();
+    let id = add_game(&device.core, TITLE, &saves(root.path()));
+    let first = device.active_version(id);
+    fs::write(saves(root.path()).join("x"), "later").unwrap();
+    device.checkpoint(id);
+    let versions = device.game(id).versions.len();
+
+    let mut game = run_from(&install_dir(root.path()));
+    let error = device.core.restore_version(first.id).unwrap_err();
+    game.kill().unwrap();
+    game.wait().unwrap();
+
+    assert_eq!(error_kind(&error), Some(ErrorKind::GameRunning));
+    assert_eq!(device.game(id).versions.len(), versions, "no checkpoint first");
+    assert_eq!(fs::read_to_string(saves(root.path()).join("x")).unwrap(), "later");
+}
+
+/// Sync applies another device's progress by itself only when it sees the
+/// game closed, which needs the install dir.
+#[test]
+fn an_emptied_tip_from_another_device_is_not_applied_over_saves() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let root = install(&a.core);
+    a.core.scan_installed().unwrap();
+    let id_a = add_game(&a.core, TITLE, &saves(root.path()));
+    a.core.refresh_sync().unwrap();
+    let b = Device::synced(remote.path());
+    let cache = b.core.data_dir.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    fs::copy(a.core.data_dir.join("cache").join("manifest.yaml"), cache.join("manifest.yaml")).unwrap();
+    b.core.add_scan_root(&root.path().to_string_lossy()).unwrap();
+    b.core.scan_installed().unwrap();
+    let uuid = uuid::Uuid::parse_str(&a.game(id_a).game.uuid).unwrap();
+    let id_b = b.core.adopt_remote_game(uuid).unwrap().game.id;
+    assert!(b.game(id_b).game.install_dir.is_some());
+    let before = b.active_version(id_b);
+
+    // A's saves are deleted, and A records that.
+    fs::remove_file(saves(root.path()).join("x")).unwrap();
+    a.checkpoint(id_a);
+    a.core.push_sync().unwrap();
+    fs::write(saves(root.path()).join("x"), "x").unwrap(); // B's machine still has it
+
+    b.core.refresh_sync().unwrap();
+
+    assert_eq!(b.active_version(id_b).id, before.id);
+    assert_eq!(fs::read_to_string(saves(root.path()).join("x")).unwrap(), "x");
 }

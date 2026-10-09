@@ -1,5 +1,5 @@
 import {toast} from "sonner";
-import {getGame, getStartupNotice} from "@/ipc/commands";
+import {getGame, getRecoveredRestores, getStartupNotice} from "@/ipc/commands";
 import {on} from "@/ipc/events";
 import {queryClient} from "@/app/query-client";
 import {reportError} from "@/shared/errors/report";
@@ -66,6 +66,11 @@ export function listenNotifications(): void {
   void getStartupNotice()
     .then(backup => {
       if (backup !== null) toast.info(getT().notices.oldDataMoved(backup), { duration: Infinity });
+    })
+    .catch((err: unknown) => { reportError("Couldn't read the startup notice", err); });
+  void getRecoveredRestores()
+    .then(count => {
+      if (count > 0) toast.info(getT().notices.restoresRecovered, { duration: Infinity });
     })
     .catch((err: unknown) => { reportError("Couldn't read the startup notice", err); });
 

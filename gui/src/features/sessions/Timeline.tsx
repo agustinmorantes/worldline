@@ -154,11 +154,13 @@ export function Dot({ game, version, left, top, side, elsewhere, graph = false, 
   );
 }
 
-export function GhostRow({ versions, device, onContinue, busy, now }: {
+export function GhostRow({ versions, device, onContinue, busy, running, now }: {
   versions: Version[];
   device: CheckpointDevice;
   onContinue: () => void;
   busy: boolean;
+  /** The game is running: bringing progress here would write under it. */
+  running: boolean;
   now: Date;
 }): ReactElement {
   const t = useT();
@@ -198,7 +200,7 @@ export function GhostRow({ versions, device, onContinue, busy, now }: {
       />
       <button
         type="button"
-        disabled={busy}
+        disabled={busy || running}
         onClick={onContinue}
         className="ml-auto h-[38px] shrink-0 rounded-xl bg-deck px-[18px] text-sm font-bold text-[oklch(20%_0.05_205)] transition-[transform,filter] duration-[180ms] ease-spring hover:-translate-y-px hover:brightness-110 active:scale-95 disabled:opacity-60"
       >

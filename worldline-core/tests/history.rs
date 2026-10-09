@@ -429,3 +429,47 @@ fn deep_integrity_rebuilds_files_and_flags_a_wrong_size() {
     assert_eq!(report.damaged_files.len(), 1);
     assert!(report.corrupt_chunks.is_empty());
 }
+
+#[cfg(windows)]
+#[test]
+fn a_save_the_game_holds_fails_the_restore_without_changing_anything() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use worldline_core::error::{ErrorKind, error_kind};
+    let device = Device::new();
+    device.write("a.dat", "old a");
+    device.write("b.dat", "old b");
+    let game = device.add_game("Silksong");
+    let old = device.active_version(game.game.id);
+    device.write("a.dat", "new a");
+    device.write("b.dat", "new b");
+    device.checkpoint(game.game.id);
+    // Like a running game: others may read the file but not delete it.
+    const FILE_SHARE_READ: u32 = 1;
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(device.save_dir().join("b.dat"))
+        .unwrap();
+
+    let error = device.core.restore_version(old.id).unwrap_err();
+
+    assert_eq!(error_kind(&error), Some(ErrorKind::SavesInUse));
+    drop(held);
+    assert_eq!(device.read("a.dat").as_deref(), Some("new a"));
+    assert_eq!(device.read("b.dat").as_deref(), Some("new b"));
+    let txn = device.data.path().join("txn");
+    assert!(fs::read_dir(txn).map_or(true, |mut left| left.next().is_none()));
+}
+
+#[test]
+fn opening_clears_what_an_interrupted_restore_left() {
+    let data = tempfile::tempdir().unwrap();
+    let staged = data.path().join("txn").join("cut").join("new").join("0");
+    fs::create_dir_all(&staged).unwrap();
+    fs::write(staged.join("save.dat"), "half").unwrap();
+
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+
+    assert!(!data.path().join("txn").join("cut").exists());
+    assert_eq!(core.recovered_restores(), 0, "nothing live was touched");
+}

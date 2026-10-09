@@ -98,8 +98,10 @@ export const es: Messages = {
     exportName: (title) => `Historial de ${title}`,
     exported: (count, title) =>
       `Se exportaron ${plural('es', count, { one: '# punto de control', other: '# puntos de control' })} de ${title}`,
-    closeAndRetry: (title) => `Cierra ${title} y vuelve a intentarlo.`,
-    closeIfOpen: 'Si el juego está abierto, ciérralo y vuelve a intentarlo.',
+    closeAndRetry: (title) => `No se cambió nada. Cierra ${title} y vuelve a intentarlo.`,
+    closeIfOpen: 'No se cambió nada. Si el juego está abierto, ciérralo y vuelve a intentarlo.',
+    restoreIncomplete: 'Worldline no pudo terminar ni deshacerlo por completo.',
+    restoreIncompleteHint: 'Tus partidas están a salvo en el punto de control creado justo antes. Cierra el juego y vuelve a él.',
     failed: {
       rewind: 'No se pudo volver atrás.',
       name: 'No se pudo poner nombre al punto de control.',
@@ -372,5 +374,6 @@ export const es: Messages = {
   notices: {
     oldDataMoved: (path) =>
       `Los datos de una versión preliminar se movieron a ${path} y la aplicación empezó de cero.`,
+    restoresRecovered: 'La última vez se interrumpió una vuelta atrás. Tus partidas quedaron como estaban.',
   },
 };

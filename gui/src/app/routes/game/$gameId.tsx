@@ -16,6 +16,7 @@ import { layoutSessions, navOrder, playedMs, sessionGapMs } from '@/features/ses
 import type { Version } from '@/ipc/bindings/Version';
 import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
+import type { Failure } from '@/ipc/bindings/Failure';
 import { reportError } from '@/shared/errors/report';
 import { useT } from '@/shared/i18n';
 import { btn } from '@/shared/ui/classes';
@@ -90,8 +91,16 @@ export function GameDetail(): ReactElement {
   }
 
   const gameRunning = runningGames?.includes(game.id) === true;
-  // Everything that rewrites the save folder fails when the game holds its files.
-  const closeHint = gameRunning ? t.game.closeAndRetry(game.title) : t.game.closeIfOpen;
+  // Everything that rewrites the save folder is all or nothing, and fails when the game holds its files.
+  const writeFailed = (message: string, err: unknown): void => {
+    const kind = typeof err === 'object' && err !== null ? (err as Partial<Failure>).kind : undefined;
+    if (kind === 'restore_incomplete') {
+      reportError(t.game.restoreIncomplete, err, t.game.restoreIncompleteHint);
+      return;
+    }
+    const held = gameRunning || kind === 'game_running' || kind === 'saves_in_use';
+    reportError(message, err, held ? t.game.closeAndRetry(game.title) : t.game.closeIfOpen);
+  };
   const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
   const chipState = syncChip({ on: syncOn, running: running || report.isFetching, reported: report.data !== undefined, status });
   const deviceOf = (version: Version): ReturnType<typeof checkpointDevice> => checkpointDevice(version, here, report.data);
@@ -120,7 +129,7 @@ export function GameDetail(): ReactElement {
       setLandedId(version.id);
       select(undefined);
     } catch (err) {
-      reportError(t.game.failed.rewind, err, closeHint);
+      writeFailed(t.game.failed.rewind, err);
     } finally {
       setRewinding(false);
       setBusy(false);
@@ -145,7 +154,7 @@ export function GameDetail(): ReactElement {
       setLandedId(pendingId);
       select(undefined);
     } catch (err) {
-      reportError(t.game.failed.apply, err, closeHint);
+      writeFailed(t.game.failed.apply, err);
     } finally {
       setBusy(false);
     }
@@ -159,7 +168,7 @@ export function GameDetail(): ReactElement {
       setOpenForks(new Set());
       select(undefined);
     } catch (err) {
-      reportError(failed, err, closeHint);
+      writeFailed(failed, err);
     } finally {
       setBusy(false);
     }
@@ -204,7 +213,7 @@ export function GameDetail(): ReactElement {
         sessions={sessions}
         view={search.view ?? 'sessions'}
         onView={(view) => { void navigate({ search: (prev) => ({ ...prev, view: view === 'graph' ? view : undefined }) }); }}
-        busy={busy}
+        busy={busy || gameRunning}
         onSwitchSlot={(slotId) => {
           if (slotId !== game.active_slot?.id) void slotChange(() => switchSlot(game.id, slotId), t.game.failed.switchSlot);
         }}
@@ -223,6 +232,7 @@ export function GameDetail(): ReactElement {
                   device={deviceOf(layout.ghost[0])}
                   onContinue={() => { void continueHere(); }}
                   busy={busy}
+                  running={gameRunning}
                   now={now}
                 />
               )}

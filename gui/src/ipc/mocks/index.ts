@@ -154,6 +154,8 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       return 'mock://prefs.json';
     case 'get_startup_notice':
       return null;
+    case 'get_recovered_restores':
+      return 0;
     case 'get_device':
       return state.device;
     case 'get_sync_settings':

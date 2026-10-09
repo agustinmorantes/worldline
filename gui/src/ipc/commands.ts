@@ -76,6 +76,7 @@ export const getRetiredVersions = (): Promise<string[]> => invoke('get_retired_v
 
 /** Where pre-release data was moved aside on startup, if it was. */
 export const getStartupNotice = (): Promise<string | null> => invoke('get_startup_notice');
+export const getRecoveredRestores = (): Promise<number> => invoke('get_recovered_restores');
 
 /** The tray's text, in the GUI's language (ADR 0007). */
 export interface TrayLabels {

@@ -121,7 +121,7 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
           <HoldButton
             label={onLine ? t.checkpoint.holdToRewind : t.checkpoint.holdToSwitch}
             hint={t.checkpoint.holdHint}
-            disabled={busy}
+            disabled={busy || running}
             onComplete={onRewind}
             rumble
           />

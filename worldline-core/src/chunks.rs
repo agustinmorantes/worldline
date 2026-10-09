@@ -37,11 +37,38 @@ pub fn capture(store: &Store, roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
             &mut files,
         )?;
         for (relative, path) in files {
-            entries.push(capture_file(store, root.uuid, relative, &path)?);
+            entries.push(capture_stable(store, root.uuid, relative, &path)?);
         }
     }
     entries.sort();
     Ok(entries)
+}
+
+/// Captures `source`, reading it again when its size or modified time changed
+/// during the read (the game was writing it), so a torn file is never recorded.
+fn capture_stable(
+    store: &Store,
+    tracked_dir_uuid: Uuid,
+    path: String,
+    source: &Path,
+) -> Result<FileEntry> {
+    for _ in 0..3 {
+        let before = stamp(source)?;
+        let entry = capture_file(store, tracked_dir_uuid, path.clone(), source)?;
+        #[cfg(test)]
+        tests::after_read(source);
+        if stamp(source)? == before {
+            return Ok(entry);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    bail!("{} kept changing while it was read", source.display())
+}
+
+fn stamp(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
+    Ok((metadata.len(), metadata.modified().ok()))
 }
 
 fn capture_file(
@@ -233,7 +260,40 @@ fn collect_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use tempfile::tempdir;
+
+    thread_local! {
+        /// How many more reads the file changes after.
+        static CHANGES_AFTER_READ: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn after_read(source: &Path) {
+        let left = CHANGES_AFTER_READ.get();
+        if left > 0 {
+            CHANGES_AFTER_READ.set(left - 1);
+            let mut contents = fs::read(source).unwrap();
+            contents.push(b'+');
+            fs::write(source, contents).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_file_written_during_the_read_is_read_again() {
+        let store_dir = tempdir().unwrap();
+        let store = Store::open(store_dir.path()).unwrap();
+        let live = tempdir().unwrap();
+        fs::write(live.path().join("save.dat"), b"v").unwrap();
+
+        CHANGES_AFTER_READ.set(1);
+        let manifest = capture(&store, &roots(live.path())).unwrap();
+        assert_eq!(manifest[0].size, 2, "the settled file was recorded");
+
+        CHANGES_AFTER_READ.set(3);
+        let error = capture(&store, &roots(live.path())).unwrap_err();
+        CHANGES_AFTER_READ.set(0);
+        assert!(format!("{error:#}").contains("kept changing"));
+    }
 
     fn roots(path: &Path) -> Vec<CaptureRoot<'_>> {
         vec![CaptureRoot {

@@ -12,6 +12,11 @@ pub enum ErrorKind {
     SyncFolderUnreachable,
     /// The operation needs the game closed.
     GameRunning,
+    /// The game holds a save file; nothing was changed.
+    SavesInUse,
+    /// A write to live saves failed and couldn't be fully undone; the
+    /// checkpoint taken before it holds the saves.
+    RestoreIncomplete,
 }
 
 impl fmt::Display for ErrorKind {
@@ -19,6 +24,8 @@ impl fmt::Display for ErrorKind {
         f.write_str(match self {
             Self::SyncFolderUnreachable => "Sync folder is unavailable",
             Self::GameRunning => "The game is running",
+            Self::SavesInUse => "The game is using its save files",
+            Self::RestoreIncomplete => "The saves couldn't be fully put back",
         })
     }
 }

@@ -1,5 +1,6 @@
 use crate::bundle::{HistoryBundleSummary, HistoryTransferReport};
 use crate::detection::running::RunningMonitor;
+use crate::error::ErrorKind;
 use crate::detection::{CaptureTarget, Notification, NotificationReceiver, Suppression, Watcher};
 use crate::history::{CheckpointOutcome, History, game_uuid};
 use crate::index::{DbPool, Index};
@@ -130,6 +131,8 @@ pub struct WorldlineCore {
     scanned_installs: Mutex<HashMap<String, Option<String>>>,
     last_prune: Mutex<Option<DateTime<Utc>>>,
     moved_old_data: Option<PathBuf>,
+    /// Writes to live saves a crash interrupted, rolled back on this start.
+    recovered_restores: usize,
 }
 
 impl WorldlineCore {
@@ -181,6 +184,10 @@ impl WorldlineCore {
             device.device_uuid,
             &data_dir.join("untracked_games.json"),
         )?;
+        // Before the watcher starts, so it never captures a half-written folder.
+        let recovered_restores =
+            store::with_lock(history.root(), || restore::recover(&data_dir.join("txn")))
+                .context("Failed to settle an interrupted restore")?;
         let (sync_trigger, triggers) = mpsc::channel();
         let inner = Arc::new(Inner {
             history,
@@ -200,6 +207,7 @@ impl WorldlineCore {
             scanned_installs: Mutex::new(HashMap::new()),
             last_prune: Mutex::new(None),
             moved_old_data,
+            recovered_restores,
         };
         if options.watch {
             let mut settings = core.get_monitoring_settings()?;
@@ -231,6 +239,16 @@ impl WorldlineCore {
     /// Where pre-Fase-III data was moved on this start, if any.
     pub fn moved_old_data(&self) -> Option<&Path> {
         self.moved_old_data.as_deref()
+    }
+
+    /// How many writes to live saves a crash interrupted, rolled back on this start.
+    pub fn recovered_restores(&self) -> usize {
+        self.recovered_restores
+    }
+
+    /// Where writes to live saves keep their transactions (ADR 0008).
+    fn txn_root(&self) -> PathBuf {
+        self.data_dir.join("txn")
     }
 
     fn history(&self) -> &History {
@@ -361,7 +379,12 @@ impl WorldlineCore {
                 game.game.title
             );
         }
-        self.guarded(id, VersionReason::Watcher, None, |_| {
+        self.exclusive(|| {
+            if !game.tracked_dirs.is_empty() {
+                self.inner
+                    .checkpoint(&self.get_game(id)?, VersionReason::Watcher)
+                    .context("Failed to checkpoint the current saves first")?;
+            }
             self.history().set_untracked(uuid, true)?;
             self.history().refresh_game(uuid)
         })?;
@@ -388,7 +411,9 @@ impl WorldlineCore {
     /// repository lock, after checkpointing the live state, so uncaptured
     /// progress is never overwritten. `restoring` is the version `apply` will
     /// restore, if any: the checkpoint then also covers the retired tracked
-    /// directories that restore writes back.
+    /// directories that restore writes back. Refuses while the game is seen
+    /// running, which could save over the result; when that's unknown, the
+    /// transaction in `restore::apply` still keeps the saves whole.
     fn guarded<T>(
         &self,
         game_id: i32,
@@ -398,6 +423,10 @@ impl WorldlineCore {
     ) -> Result<T> {
         self.exclusive(|| {
             let game = self.covering(self.get_game(game_id)?, restoring)?;
+            if sync::game_is_running(game.game.install_dir.as_deref()) == Some(true) {
+                return Err(anyhow::Error::new(ErrorKind::GameRunning)
+                    .context("Nothing was changed. Close the game and try again"));
+            }
             if !game.tracked_dirs.is_empty() {
                 self.inner
                     .checkpoint(&game, reason)
@@ -464,7 +493,7 @@ impl WorldlineCore {
             &meta,
             version.version.retired,
         )?;
-        restore::apply(&history.store, prepared)?;
+        restore::apply(&history.store, prepared, &self.txn_root())?;
         history
             .index
             .set_active_version(version.slot.id, Some(version.version.id))?;
@@ -495,7 +524,7 @@ impl WorldlineCore {
         self.guarded(game_id, VersionReason::PreSlotCreate, None, |game| {
             let slot = self.history().create_slot(game_id, name)?;
             let prepared = restore::clear_only(&game.tracked_dirs)?;
-            restore::apply(&self.history().store, prepared)?;
+            restore::apply(&self.history().store, prepared, &self.txn_root())?;
             self.history().index.set_active_slot(game_id, slot.id)?;
             let game = self.get_game(game_id)?;
             if !game.tracked_dirs.is_empty() {
@@ -533,6 +562,7 @@ impl WorldlineCore {
                 restore::apply(
                     &self.history().store,
                     restore::clear_only(&game.tracked_dirs)?,
+                    &self.txn_root(),
                 )?;
                 self.history().index.set_active_slot(game.game.id, slot_id)
             }
@@ -1645,6 +1675,23 @@ impl WorldlineCore {
             };
             let target = self.get_version(target_id)?;
             if target.version.retired {
+                continue;
+            }
+            // An empty tip over saves here is more likely a wipe elsewhere
+            // than progress: it stays a divergence for the user to choose.
+            let current = pointer
+                .version
+                .map(|v| self.history().index.version_id(v))
+                .transpose()?
+                .flatten();
+            if let Some(current) = current
+                && !self
+                    .history()
+                    .version_meta(&self.get_version(current)?)?
+                    .files
+                    .is_empty()
+                && self.history().version_meta(&target)?.files.is_empty()
+            {
                 continue;
             }
             if !pointer.active {
