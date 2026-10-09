@@ -7,6 +7,7 @@ pub(crate) mod running;
 pub mod scheduler;
 pub mod shots;
 mod watcher;
+pub(crate) mod worker;
 
 use crate::error::Failure;
 use crate::history::CheckpointOutcome;

@@ -43,6 +43,17 @@ fn screenshot_in(root: &Path, device: &Device, version_id: i32) -> PathBuf {
     )
 }
 
+/// What the save-storage ratio (NFR 4.2.2.1) and retention planning count:
+/// the stored chunks.
+fn save_bytes(device: &Device) -> u64 {
+    Store::open_existing(device.core.repository_root())
+        .unwrap()
+        .chunk_sizes()
+        .unwrap()
+        .values()
+        .sum()
+}
+
 fn sync_screenshots(device: &Device, on: bool) {
     let settings = device.core.get_monitoring_settings().unwrap();
     device
@@ -88,6 +99,7 @@ fn a_screenshot_reaches_the_other_device_even_when_taken_after_the_push() {
     let first = game.last_version.unwrap();
     a.write("save.dat", "2");
     let second = a.checkpoint(game.game.id);
+    let save_bytes_before = save_bytes(&a);
     attach(&a, second.id, b"second");
     assert_eq!(screenshot(&a, first.id), None);
     assert_eq!(screenshot(&a, second.id).as_deref(), Some(&b"second"[..]));
@@ -108,6 +120,7 @@ fn a_screenshot_reaches_the_other_device_even_when_taken_after_the_push() {
     assert_eq!(screenshot(&b, on_b.id).as_deref(), Some(&b"first"[..]));
 
     // The extra file is neither a problem nor counted as save storage.
+    assert_eq!(save_bytes(&a), save_bytes_before);
     assert!(a.core.check_integrity(true).unwrap().is_ok());
     assert!(b.core.check_integrity(true).unwrap().is_ok());
     b.core.reindex().unwrap();
@@ -200,4 +213,59 @@ fn bundles_carry_screenshots_even_with_sync_off() {
         screenshot(&b, imported.id).as_deref(),
         Some(&b"exported"[..])
     );
+}
+
+/// The GUI or a sync client may hold a screenshot open; GC goes on without
+/// it and a later run deletes it.
+#[cfg(windows)]
+#[test]
+fn a_screenshot_in_use_does_not_stop_gc_and_goes_on_a_later_run() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let a = Device::new();
+    a.write("save.dat", "v1");
+    let game = a.add_game("Held");
+    for n in 2..=5 {
+        a.write("save.dat", &format!("v{n}"));
+        a.checkpoint(game.game.id);
+    }
+    let versions = a.game(game.game.id).versions;
+    for version in &versions {
+        attach(&a, version.id, b"shot");
+    }
+    // No sharing: deleting them fails while open.
+    let handles: Vec<_> = versions
+        .iter()
+        .map(|version| {
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(screenshot_in(a.core.repository_root(), &a, version.id))
+                .unwrap()
+        })
+        .collect();
+    a.core
+        .update_pruning_settings(RetentionSettings {
+            keep_all_hours: 0,
+            hourly_until_hours: 0,
+            daily_until_days: 0,
+            weekly_until_days: 0,
+            branch_expiry_days: None,
+            ..RetentionSettings::default()
+        })
+        .unwrap();
+    let later = chrono::Utc::now() + chrono::Duration::hours(2);
+    let report = a.core.run_pruning_at(later).unwrap();
+    assert!(!report.retired_versions.is_empty());
+    let retired: Vec<_> = a
+        .game(game.game.id)
+        .versions
+        .into_iter()
+        .filter(|version| version.retired)
+        .map(|version| screenshot_in(a.core.repository_root(), &a, version.id))
+        .collect();
+    assert!(retired.iter().all(|path| path.exists()));
+
+    drop(handles);
+    a.core.run_pruning_at(later).unwrap();
+    assert!(retired.iter().all(|path| !path.exists()));
 }

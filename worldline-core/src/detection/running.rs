@@ -34,6 +34,11 @@ impl RunningGames {
         self.lock().get(&game_id).cloned().unwrap_or_default()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set(&self, game_id: i32, pids: Vec<u32>) {
+        self.lock().insert(game_id, pids);
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<i32, Vec<u32>>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }

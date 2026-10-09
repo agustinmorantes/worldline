@@ -426,22 +426,23 @@ fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<(HashSet<String>,
     Ok((live, dead_screenshots))
 }
 
-fn delete_screenshots(paths: &[PathBuf]) -> Result<()> {
+/// Best effort: a screenshot held open (shown in the GUI, read by a sync
+/// client) stays until a later GC; it doesn't stop this one.
+fn delete_screenshots(paths: &[PathBuf]) {
     for path in paths {
         match std::fs::remove_file(path) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(error).with_context(|| format!("failed to delete {}", path.display()));
+                eprintln!("Cannot delete {} yet: {error}", path.display());
             }
             _ => {}
         }
     }
-    Ok(())
 }
 
 /// Deletes every unreferenced chunk. The caller must hold the repository lock.
 pub fn gc_local(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
     let (live, dead_screenshots) = live_chunks(store, pointed)?;
-    delete_screenshots(&dead_screenshots)?;
+    delete_screenshots(&dead_screenshots);
     let mut report = GcReport::default();
     for (hash, size) in store.chunk_sizes()? {
         if !live.contains(&hash) {
@@ -485,7 +486,7 @@ pub fn gc_remote(
     now: DateTime<Utc>,
 ) -> Result<GcReport> {
     let (live, dead_screenshots) = live_chunks(store, pointed)?;
-    delete_screenshots(&dead_screenshots)?;
+    delete_screenshots(&dead_screenshots);
     let sizes = store.chunk_sizes()?;
     let dir = store.root().join("gc").join("condemned");
     let mut report = GcReport::default();

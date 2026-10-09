@@ -1,10 +1,11 @@
 use super::RunningGames;
 use super::scheduler::Scheduler;
 use super::shots::{Attach, Change, Shots};
+use super::worker::{Shoot, Worker};
 use super::{CaptureTarget, Notification, Suppression};
 use crate::history::CheckpointOutcome;
 use crate::models::{FullGame, MonitoringSettings};
-use crate::screenshot::{self, Worker};
+use crate::screenshot;
 use chrono::{Duration, NaiveDateTime, Utc};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
@@ -20,10 +21,12 @@ enum Event {
     Fs(DebounceEventResult),
     Reload,
     Settings(MonitoringSettings),
-    /// A checkpoint completed: `created` is the new version's id.
+    /// A checkpoint that `started` before reading the saves completed:
+    /// `created` is the new version's id.
     Checkpointed {
         game_id: i32,
         created: Option<i32>,
+        started: NaiveDateTime,
     },
     /// The screenshot worker finished a shot; `None` when it took none.
     Shot {
@@ -39,12 +42,17 @@ enum Event {
 pub struct Checkpoints(mpsc::Sender<Event>);
 
 impl Checkpoints {
-    pub fn completed(&self, game_id: i32, outcome: &CheckpointOutcome) {
+    /// `started`: before the checkpoint read the saves.
+    pub fn completed(&self, game_id: i32, started: NaiveDateTime, outcome: &CheckpointOutcome) {
         let created = match outcome {
             CheckpointOutcome::Created(version) => Some(version.id),
             CheckpointOutcome::Unchanged(_) | CheckpointOutcome::Empty => None,
         };
-        let _ = self.0.send(Event::Checkpointed { game_id, created });
+        let _ = self.0.send(Event::Checkpointed {
+            game_id,
+            created,
+            started,
+        });
     }
 }
 
@@ -63,6 +71,26 @@ impl Watcher {
         running: RunningGames,
         notifications: mpsc::Sender<Notification>,
     ) -> Self {
+        let shooter = screenshot::supported().then_some(screenshot::shooter as fn() -> Shoot);
+        Self::start_with(
+            target,
+            settings,
+            suppression,
+            running,
+            notifications,
+            shooter,
+        )
+    }
+
+    /// `shooter`: how the screenshot worker takes shots; `None` when it can't.
+    fn start_with(
+        target: Arc<dyn CaptureTarget>,
+        settings: MonitoringSettings,
+        suppression: Suppression,
+        running: RunningGames,
+        notifications: mpsc::Sender<Notification>,
+        shooter: Option<fn() -> Shoot>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel();
         let loop_tx = tx.clone();
         let thread = std::thread::spawn(move || {
@@ -76,6 +104,7 @@ impl Watcher {
                 scheduler: Scheduler::default(),
                 running,
                 shots: Shots::default(),
+                shooter,
                 worker: None,
             }
             .run(rx)
@@ -128,6 +157,7 @@ struct Loop {
     scheduler: Scheduler,
     running: RunningGames,
     shots: Shots,
+    shooter: Option<fn() -> Shoot>,
     /// The screenshot thread, while screenshots are on.
     worker: Option<Worker>,
 }
@@ -177,14 +207,7 @@ impl Loop {
                     }
                     self.set_worker(settings.screenshots_enabled);
                 }
-                Ok(Event::Checkpointed { game_id, created }) => {
-                    let attach = self.shots.checkpointed(game_id, created);
-                    self.attach(game_id, attach);
-                }
-                Ok(Event::Shot { game_id, jpeg }) => {
-                    let attach = self.shots.finished(game_id, jpeg);
-                    self.attach(game_id, attach);
-                }
+                Ok(event @ (Event::Checkpointed { .. } | Event::Shot { .. })) => self.settle(event),
                 Ok(Event::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
                     // Events still buffered in the debouncer are lost with it, so every
                     // game is checked once more; unchanged games are a no-op.
@@ -194,21 +217,11 @@ impl Loop {
                     for game in self.scheduler.drain() {
                         self.capture(game);
                     }
-                    // The shot in progress finishes; then each shot meets the
-                    // checkpoint the flush just completed.
-                    self.set_worker(false);
+                    // The shot in progress finishes (the join); then each shot
+                    // meets the checkpoint the flush just completed.
+                    drop(self.worker.take());
                     for event in rx.try_iter() {
-                        match event {
-                            Event::Checkpointed { game_id, created } => {
-                                let attach = self.shots.checkpointed(game_id, created);
-                                self.attach(game_id, attach);
-                            }
-                            Event::Shot { game_id, jpeg } => {
-                                let attach = self.shots.finished(game_id, jpeg);
-                                self.attach(game_id, attach);
-                            }
-                            _ => {}
-                        }
+                        self.settle(event);
                     }
                     return;
                 }
@@ -316,18 +329,50 @@ impl Loop {
     }
 
     /// Starts the screenshot worker while screenshots are on (and supported),
-    /// and stops it when they're turned off.
+    /// and stops it when they're turned off, without waiting for a shot in
+    /// progress: it still arrives as `Event::Shot`.
     fn set_worker(&mut self, on: bool) {
-        let on = on && screenshot::supported();
-        if on == self.worker.is_some() {
+        let shooter = self.shooter.filter(|_| on);
+        if shooter.is_some() == self.worker.is_some() {
             return;
         }
-        self.worker = on.then(|| {
+        if let Some(shooter) = shooter {
             let tx = self.tx.clone();
-            Worker::start(Box::new(move |game_id, jpeg| {
-                let _ = tx.send(Event::Shot { game_id, jpeg });
-            }))
-        });
+            self.worker = Some(Worker::start(
+                shooter,
+                Box::new(move |game_id, jpeg| {
+                    let _ = tx.send(Event::Shot { game_id, jpeg });
+                }),
+            ));
+        } else if let Some(worker) = self.worker.take() {
+            worker.detach();
+            self.shots.worker_stopped();
+        }
+    }
+
+    /// Pairs shots with checkpoint outcomes and attaches the matches.
+    fn settle(&mut self, event: Event) {
+        let attach = match event {
+            Event::Checkpointed {
+                game_id,
+                created,
+                started,
+            } => {
+                let debounce = Duration::milliseconds(
+                    (self.settings.snapshot_debounce_seconds * 1000.0) as i64,
+                );
+                let attach = self.shots.checkpointed(game_id, created, started, debounce);
+                attach.map(|attach| (game_id, attach))
+            }
+            Event::Shot { game_id, jpeg } => self
+                .shots
+                .finished(game_id, jpeg)
+                .map(|attach| (game_id, attach)),
+            _ => None,
+        };
+        if let Some((game_id, attach)) = attach {
+            self.attach(game_id, attach);
+        }
     }
 
     /// Asks the worker for a shot of the game, if `Shots` allows one.
@@ -347,10 +392,7 @@ impl Loop {
             });
     }
 
-    fn attach(&self, game_id: i32, attach: Option<Attach>) {
-        let Some(Attach { version_id, jpeg }) = attach else {
-            return;
-        };
+    fn attach(&self, game_id: i32, Attach { version_id, jpeg }: Attach) {
         match self.target.attach_screenshot(version_id, &jpeg) {
             Ok(()) => self.notify(Notification::ScreenshotAttached {
                 game_id,
@@ -470,5 +512,114 @@ mod tests {
         }
         watcher.shutdown();
         assert_eq!(target.0.load(Ordering::SeqCst), 2);
+    }
+
+    /// Checkpoints like `Inner::checkpoint`: each creates a version and is
+    /// reported through `Checkpoints`.
+    struct Versioning {
+        dir: String,
+        checkpoints: std::sync::OnceLock<Checkpoints>,
+        created: AtomicUsize,
+        attached: std::sync::Mutex<mpsc::Sender<(i32, Vec<u8>)>>,
+    }
+
+    impl CaptureTarget for Versioning {
+        fn games(&self) -> anyhow::Result<Vec<FullGame>> {
+            let mut games = Counting(AtomicUsize::new(0)).games()?;
+            games[0].tracked_dirs.push(TrackedDir {
+                id: 1,
+                uuid: String::new(),
+                game_id: 1,
+                folder_slug: "saves".into(),
+                path: self.dir.clone(),
+                label: None,
+                exclusions: "[]".into(),
+                retired_at: None,
+            });
+            Ok(games)
+        }
+
+        fn capture(&self, game_id: i32) -> anyhow::Result<CheckpointOutcome> {
+            let started = Utc::now().naive_utc();
+            let n = self.created.fetch_add(1, Ordering::SeqCst) as i32;
+            let outcome = CheckpointOutcome::Created(crate::models::Version {
+                id: 10 + n,
+                uuid: String::new(),
+                slot_id: 1,
+                parent_id: None,
+                version_number: n + 1,
+                folder_slug: format!("v{n}"),
+                reason: "watcher".into(),
+                tag: None,
+                retired: false,
+                created_at: started,
+                origin_device: None,
+            });
+            if let Some(checkpoints) = self.checkpoints.get() {
+                checkpoints.completed(game_id, started, &outcome);
+            }
+            Ok(outcome)
+        }
+
+        fn attach_screenshot(&self, version_id: i32, jpeg: &[u8]) -> anyhow::Result<()> {
+            let _ = self
+                .attached
+                .lock()
+                .unwrap()
+                .send((version_id, jpeg.to_vec()));
+            Ok(())
+        }
+    }
+
+    /// A shot of the PIDs: `[42]` for PID 42.
+    fn fake_shooter() -> Shoot {
+        Box::new(|pids| Some(pids.iter().map(|&pid| pid as u8).collect()))
+    }
+
+    #[test]
+    fn a_save_change_of_a_running_game_attaches_a_shot_to_its_checkpoint() {
+        let saves = tempfile::tempdir().unwrap();
+        let (attached_tx, attached) = mpsc::channel();
+        let target = Arc::new(Versioning {
+            dir: saves.path().to_string_lossy().into_owned(),
+            checkpoints: Default::default(),
+            created: AtomicUsize::new(0),
+            attached: std::sync::Mutex::new(attached_tx),
+        });
+        let running = RunningGames::default();
+        running.set(1, vec![42]);
+        let (notifications_tx, notifications) = mpsc::channel();
+        let mut watcher = Watcher::start_with(
+            target.clone(),
+            MonitoringSettings {
+                version_cooldown_minutes: 0,
+                snapshot_debounce_seconds: 0.2,
+                screenshots_enabled: true,
+                ..MonitoringSettings::default()
+            },
+            Suppression::default(),
+            running,
+            notifications_tx,
+            Some(fake_shooter),
+        );
+        let _ = target.checkpoints.set(watcher.checkpoints());
+        // The startup checkpoint (version 10) predates any shot.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while target.created.load(Ordering::SeqCst) < 1 {
+            assert!(std::time::Instant::now() < deadline, "no startup capture");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        std::fs::write(saves.path().join("save.dat"), "1").unwrap();
+        let (version_id, jpeg) = attached
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a shot was attached");
+        assert!(version_id > 10, "the checkpoint of the change");
+        assert_eq!(jpeg, vec![42]);
+        watcher.shutdown();
+        assert!(notifications.try_iter().any(|notification| matches!(
+            notification,
+            Notification::ScreenshotAttached { game_id: 1, version_id: id } if id == version_id
+        )));
     }
 }

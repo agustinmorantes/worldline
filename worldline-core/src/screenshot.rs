@@ -1,16 +1,16 @@
 //! A screenshot of a running game's window, through Windows.Graphics.Capture
 //! (Windows 11). WGC copies the compositor's frame, so nothing touches the
 //! game process. `Capturer::shot` takes one picture and reports how long each
-//! stage took (for the `screenshot-stress` command); `Worker` is the thread
-//! that takes them for checkpoints.
+//! stage took (for the `screenshot-stress` command); `shooter` takes them on
+//! the checkpoint screenshot worker's thread.
 
 pub use crate::detection::running::pids_under;
+use crate::detection::worker::Shoot;
 use anyhow::{Context, Result};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{ExtendedColorType, ImageBuffer, Rgba};
 use std::sync::{OnceLock, mpsc};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
@@ -69,8 +69,15 @@ pub enum Shot {
     Skipped(&'static str, Timings),
 }
 
-/// Our own D3D11 device, at low GPU priority. Create it on the thread that
-/// takes the shots: it also puts that thread in background mode.
+/// Puts the calling thread in background mode (low CPU and I/O priority), once:
+/// a second call fails with `ERROR_THREAD_MODE_ALREADY_BACKGROUND`.
+pub fn background_thread() -> Result<()> {
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN)? };
+    Ok(())
+}
+
+/// Our own D3D11 device, at low GPU priority. Use it from a thread put in
+/// background mode by `background_thread`.
 pub struct Capturer {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -80,7 +87,6 @@ pub struct Capturer {
 impl Capturer {
     pub fn new() -> Result<Self> {
         unsafe {
-            SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN)?;
             // Already initialized (in either mode) is fine for a free-threaded pool.
             let _ = RoInitialize(RO_INIT_MULTITHREADED);
             let mut device = None;
@@ -142,7 +148,8 @@ impl Capturer {
         let (bgra, width, height) = if width > WIDTH {
             let image = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, bgra)
                 .context("frame size mismatch")?;
-            let new_height = (u64::from(height) * u64::from(WIDTH) / u64::from(width)) as u32;
+            let new_height =
+                ((u64::from(height) * u64::from(WIDTH) / u64::from(width)) as u32).max(1);
             let small = image::imageops::resize(&image, WIDTH, new_height, FilterType::Triangle);
             (small.into_raw(), WIDTH, new_height)
         } else {
@@ -402,64 +409,38 @@ fn windows_build() -> u32 {
         .unwrap_or(0)
 }
 
-/// Receives each requested game's JPEG, or `None` when no shot was taken.
-pub(crate) type Done = Box<dyn Fn(i32, Option<Vec<u8>>) + Send>;
-
-/// The thread that takes checkpoint screenshots, one at a time. It exists
-/// only while screenshots are on, and waits on its channel when idle.
-pub(crate) struct Worker {
-    requests: Option<mpsc::SyncSender<(i32, Vec<u32>)>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl Worker {
-    pub fn start(done: Done) -> Self {
-        let (requests, received) = mpsc::sync_channel::<(i32, Vec<u32>)>(1);
-        let thread = std::thread::spawn(move || {
-            // Created on the first request; it also puts this thread in
-            // background mode. An error drops it, in case the GPU was reset.
-            let mut capturer: Option<Capturer> = None;
-            for (game_id, pids) in received {
-                if capturer.is_none() {
-                    capturer = Capturer::new()
-                        .inspect_err(|error| eprintln!("Screenshots unavailable: {error:#}"))
-                        .ok();
-                }
-                let jpeg = match capturer.as_ref().map(|capturer| capturer.shot(&pids)) {
-                    Some(Ok(Shot::Taken(jpeg, _))) => Some(jpeg),
-                    Some(Ok(Shot::Skipped(..))) | None => None,
-                    Some(Err(error)) => {
-                        eprintln!("Screenshot failed: {error:#}");
-                        capturer = None;
-                        None
-                    }
-                };
-                done(game_id, jpeg);
+/// Takes the checkpoint worker's shots. Called once, at the top of the
+/// worker's thread, which it puts in background mode.
+pub(crate) fn shooter() -> Shoot {
+    if let Err(error) = background_thread() {
+        eprintln!("Screenshot thread not in background mode: {error:#}");
+    }
+    // Created on the first shot. It is taken out while in use, so an error
+    // or a panic drops it, in case the GPU was reset.
+    let mut capturer: Option<Capturer> = None;
+    Box::new(move |pids| {
+        let current = match capturer.take() {
+            Some(current) => current,
+            None => Capturer::new()
+                .inspect_err(|error| eprintln!("Screenshots unavailable: {error:#}"))
+                .ok()?,
+        };
+        let shot = current.shot(pids);
+        match shot {
+            Ok(Shot::Taken(jpeg, _)) => {
+                capturer = Some(current);
+                Some(jpeg)
             }
-        });
-        Self {
-            requests: Some(requests),
-            thread: Some(thread),
+            Ok(Shot::Skipped(..)) => {
+                capturer = Some(current);
+                None
+            }
+            Err(error) => {
+                eprintln!("Screenshot failed: {error:#}");
+                None
+            }
         }
-    }
-
-    /// Hands the worker a shot of the game running as `pids`. `false` when
-    /// it is busy: the request is dropped, never queued.
-    pub fn request(&self, game_id: i32, pids: Vec<u32>) -> bool {
-        self.requests
-            .as_ref()
-            .is_some_and(|requests| requests.try_send((game_id, pids)).is_ok())
-    }
-}
-
-impl Drop for Worker {
-    /// Lets a shot in progress finish, then stops the thread.
-    fn drop(&mut self) {
-        drop(self.requests.take());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
+    })
 }
 
 /// The performance counter, to line shots up with PresentMon's `--qpc_time`.
@@ -481,6 +462,21 @@ mod tests {
         assert!(supported());
         let dir = std::env::var("WORLDLINE_SHOT_DIR").unwrap();
         let pids = pids_under(&dir);
+        let (tx, rx) = mpsc::channel();
+        let worker = crate::detection::worker::Worker::start(
+            shooter,
+            Box::new(move |game_id, jpeg| {
+                let _ = tx.send((game_id, jpeg.is_some()));
+            }),
+        );
+        assert!(worker.request(7, pids.clone()));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), (7, true));
+        // A second shot works too (background mode is set once per thread).
+        assert!(worker.request(8, pids.clone()));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), (8, true));
+        drop(worker);
+
+        background_thread().unwrap();
         let capturer = Capturer::new().unwrap();
         let Shot::Taken(jpeg, t) = capturer.shot(&pids).unwrap() else {
             panic!("skipped");
@@ -489,13 +485,5 @@ mod tests {
         assert_eq!(image.width(), t.source.0.min(WIDTH));
         println!("{t:?}");
         std::fs::write(std::env::temp_dir().join("wl-shot.jpg"), &jpeg).unwrap();
-
-        // The worker hands its shot to the callback.
-        let (tx, rx) = mpsc::channel();
-        let worker = Worker::start(Box::new(move |game_id, jpeg| {
-            let _ = tx.send((game_id, jpeg.is_some()));
-        }));
-        assert!(worker.request(7, pids));
-        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), (7, true));
     }
 }

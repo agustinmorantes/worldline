@@ -358,6 +358,7 @@ fn screenshot_stress(
         bail!("Screenshots need Windows 11");
     }
     let started = std::time::Instant::now();
+    screenshot::background_thread()?;
     let capturer = Capturer::new()?;
     eprintln!("device ready in {:.1} ms", ms(started.elapsed()));
     println!(

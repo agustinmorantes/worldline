@@ -97,12 +97,13 @@ impl Inner {
     /// The one way to capture live saves: a created version queues a push,
     /// and the watcher hears of every outcome (for screenshots).
     fn checkpoint(&self, game: &FullGame, reason: VersionReason) -> Result<CheckpointOutcome> {
+        let started = chrono::Utc::now().naive_utc();
         let outcome = self.history.checkpoint_locked(game, reason)?;
         if matches!(outcome, CheckpointOutcome::Created(_)) {
             let _ = self.sync_trigger.send(Trigger::Push);
         }
         if let Some(checkpoints) = self.checkpoints.get() {
-            checkpoints.completed(game.game.id, &outcome);
+            checkpoints.completed(game.game.id, started, &outcome);
         }
         Ok(outcome)
     }

@@ -114,10 +114,28 @@ impl Shots {
         }
     }
 
-    /// A checkpoint of `game` completed: `created` is the new version, `None`
-    /// when nothing changed. Re-arms the game and returns the shot to attach.
-    pub fn checkpointed(&mut self, game: i32, created: Option<i32>) -> Option<Attach> {
+    /// A checkpoint of `game` that `started` (before reading the saves)
+    /// completed: `created` is the new version, `None` when nothing changed.
+    /// Re-arms the game and returns the shot to attach.
+    ///
+    /// A checkpoint that started before the shot's change was written (the
+    /// change was reported `debounce` after the write) can't contain it: its
+    /// outcome belongs to the previous cycle and leaves the shot pending.
+    pub fn checkpointed(
+        &mut self,
+        game: i32,
+        created: Option<i32>,
+        started: NaiveDateTime,
+        debounce: Duration,
+    ) -> Option<Attach> {
         let state = self.games.get_mut(&game)?;
+        if !matches!(state.phase, Phase::Armed)
+            && state
+                .last_attempt
+                .is_some_and(|requested| started < requested - debounce)
+        {
+            return None;
+        }
         let outcome = created.map_or(Outcome::Discarded, Outcome::Created);
         match std::mem::take(&mut state.phase) {
             Phase::Armed => None,
@@ -131,6 +149,12 @@ impl Shots {
                 Outcome::Discarded => None,
             },
         }
+    }
+
+    /// The worker was stopped: a new one may take a request at once. The
+    /// stopped one still reports its shot in progress, through `finished`.
+    pub fn worker_stopped(&mut self) {
+        self.in_flight = None;
     }
 
     /// The game is gone: its shot is dropped.
@@ -162,6 +186,11 @@ mod tests {
 
     fn jpeg(n: u8) -> Option<Vec<u8>> {
         Some(vec![n])
+    }
+
+    /// A checkpoint started after every change in the test.
+    fn late() -> NaiveDateTime {
+        at(1_000_000)
     }
 
     #[test]
@@ -207,7 +236,7 @@ mod tests {
         assert_eq!(shots.finished(1, jpeg(1)), None);
         assert!(!shots.changed(1, PLAYING, at(100), || true));
         assert_eq!(
-            shots.checkpointed(1, Some(10)),
+            shots.checkpointed(1, Some(10), late(), Duration::zero()),
             Some(Attach {
                 version_id: 10,
                 jpeg: vec![1]
@@ -221,7 +250,7 @@ mod tests {
         let mut shots = Shots::default();
         assert!(shots.changed(1, PLAYING, at(0), || true));
         shots.finished(1, jpeg(1));
-        shots.checkpointed(1, Some(10));
+        shots.checkpointed(1, Some(10), late(), Duration::zero());
         assert!(!shots.changed(1, PLAYING, at(59), || true));
         assert!(shots.changed(1, PLAYING, at(60), || true));
     }
@@ -254,12 +283,12 @@ mod tests {
         let mut shots = Shots::default();
         assert!(shots.changed(1, PLAYING, at(0), || true));
         shots.finished(1, jpeg(1));
-        assert_eq!(shots.checkpointed(1, None), None);
+        assert_eq!(shots.checkpointed(1, None, late(), Duration::zero()), None);
         // Re-armed, and the old shot is gone.
         assert!(shots.changed(1, PLAYING, at(60), || true));
         shots.finished(1, jpeg(2));
         assert_eq!(
-            shots.checkpointed(1, Some(11)),
+            shots.checkpointed(1, Some(11), late(), Duration::zero()),
             Some(Attach {
                 version_id: 11,
                 jpeg: vec![2]
@@ -271,9 +300,15 @@ mod tests {
     fn a_shot_finishing_after_its_checkpoint_still_attaches() {
         let mut shots = Shots::default();
         assert!(shots.changed(1, PLAYING, at(0), || true));
-        assert_eq!(shots.checkpointed(1, Some(10)), None);
+        assert_eq!(
+            shots.checkpointed(1, Some(10), late(), Duration::zero()),
+            None
+        );
         // A later checkpoint belongs to the next shot.
-        assert_eq!(shots.checkpointed(1, Some(11)), None);
+        assert_eq!(
+            shots.checkpointed(1, Some(11), late(), Duration::zero()),
+            None
+        );
         assert_eq!(
             shots.finished(1, jpeg(1)),
             Some(Attach {
@@ -284,9 +319,12 @@ mod tests {
         assert!(shots.changed(1, PLAYING, at(60), || true), "re-armed");
 
         // Discarded before it finished: dropped on arrival.
-        assert_eq!(shots.checkpointed(1, None), None);
+        assert_eq!(shots.checkpointed(1, None, late(), Duration::zero()), None);
         assert_eq!(shots.finished(1, jpeg(2)), None);
-        assert_eq!(shots.checkpointed(1, Some(12)), None);
+        assert_eq!(
+            shots.checkpointed(1, Some(12), late(), Duration::zero()),
+            None
+        );
     }
 
     #[test]
@@ -295,7 +333,10 @@ mod tests {
         assert!(shots.changed(1, PLAYING, at(0), || true));
         assert_eq!(shots.finished(1, None), None);
         assert!(!shots.changed(1, PLAYING, at(100), || true), "no retry");
-        assert_eq!(shots.checkpointed(1, Some(10)), None);
+        assert_eq!(
+            shots.checkpointed(1, Some(10), late(), Duration::zero()),
+            None
+        );
         assert!(shots.changed(1, PLAYING, at(200), || true));
     }
 
@@ -308,5 +349,60 @@ mod tests {
         assert!(shots.games().is_empty());
         // The worker is free again.
         assert!(shots.changed(2, PLAYING, at(1), || true));
+    }
+
+    #[test]
+    fn a_checkpoint_that_started_before_the_change_was_written_leaves_the_shot_pending() {
+        let debounce = Duration::seconds(2);
+        let mut shots = Shots::default();
+        // Save Y written at ~98, reported at 100: the shot shows Y.
+        assert!(shots.changed(1, PLAYING, at(100), || true));
+        // A checkpoint that read the saves at 90 (before Y) completes now.
+        assert_eq!(shots.checkpointed(1, Some(10), at(90), debounce), None);
+        assert_eq!(shots.finished(1, jpeg(1)), None, "still pending");
+        assert_eq!(shots.checkpointed(1, None, at(95), debounce), None);
+        // The checkpoint of Y gets it.
+        assert_eq!(
+            shots.checkpointed(1, Some(11), at(98), debounce),
+            Some(Attach {
+                version_id: 11,
+                jpeg: vec![1]
+            })
+        );
+
+        // Same while the shot is still in flight.
+        assert!(shots.changed(1, PLAYING, at(200), || true));
+        assert_eq!(shots.checkpointed(1, Some(12), at(150), debounce), None);
+        assert_eq!(shots.checkpointed(1, Some(13), at(201), debounce), None);
+        assert_eq!(
+            shots.finished(1, jpeg(2)),
+            Some(Attach {
+                version_id: 13,
+                jpeg: vec![2]
+            })
+        );
+    }
+
+    #[test]
+    fn a_stopped_worker_frees_the_slot_and_its_late_shot_still_settles() {
+        let mut shots = Shots::default();
+        assert!(shots.changed(1, PLAYING, at(0), || true));
+        shots.worker_stopped();
+        assert!(shots.changed(2, PLAYING, at(1), || true), "not stuck");
+        assert!(
+            !shots.changed(1, PLAYING, at(100), || true),
+            "1 awaits its shot"
+        );
+        assert_eq!(shots.finished(1, jpeg(1)), None);
+        assert_eq!(
+            shots.checkpointed(1, Some(10), late(), Duration::zero()),
+            Some(Attach {
+                version_id: 10,
+                jpeg: vec![1]
+            })
+        );
+        // Game 2's own result still frees the slot.
+        assert_eq!(shots.finished(2, None), None);
+        assert!(shots.changed(1, PLAYING, at(200), || true));
     }
 }
