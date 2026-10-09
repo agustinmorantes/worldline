@@ -1,6 +1,6 @@
 // The app's tooltip, in place of the native `title` one: a small inverted label on hover or
 // keyboard focus, portaled so scrolling lists never clip it.
-import type { ReactElement, ReactNode } from 'react';
+import { type ReactElement, type ReactNode, useRef, useState } from 'react';
 import { Tooltip as TooltipPrimitive } from 'radix-ui';
 import { cn } from './utils';
 
@@ -24,11 +24,18 @@ export function Tooltip({ content, label, side = 'top', mono = false, children }
   /** One element that takes a ref and DOM props, such as a button. */
   children: ReactElement;
 }): ReactElement {
+  const [open, setOpen] = useState(false);
+  // Activating the target dismisses it until the pointer leaves or focus moves. Radix does this
+  // too, but skips it when the target's handler prevents default, as in-app navigation does.
+  const dismissedRef = useRef(false);
   if (content === undefined || content === null || content === '') return children;
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root open={open} onOpenChange={(next) => { if (!next || !dismissedRef.current) setOpen(next); }}>
       <TooltipPrimitive.Trigger
         asChild
+        onClickCapture={() => { dismissedRef.current = true; setOpen(false); }}
+        onPointerLeave={() => { dismissedRef.current = false; }}
+        onBlur={() => { dismissedRef.current = false; }}
         // Keyboard focus shows it; focus that follows a click, or that the app moves, does not.
         onFocus={(event) => { if (!event.currentTarget.matches(':focus-visible')) event.preventDefault(); }}
       >
