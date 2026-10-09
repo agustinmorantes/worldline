@@ -31,6 +31,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 tauri-plugin-log = "2"
 
+# The versions Tauri uses, so the WebView2 interface types match.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+
 [features]
 # Test build for WebdriverIO: `WORLDLINE_E2E_DATA_DIR` overrides the data directory and
 # native dialogs are stubbed (pickers return `WORLDLINE_E2E_DIALOG_PATH`, confirms accept).

@@ -6224,6 +6224,8 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-store",
  "uuid",
+ "webview2-com",
+ "windows-core 0.62.2",
  "worldline-core",
 ]
 
