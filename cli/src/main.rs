@@ -64,6 +64,32 @@ enum Commands {
         action: RepoAction,
     },
     Watch,
+    /// Screenshots a running game's window repeatedly and prints one CSV line
+    /// per shot (profiling only).
+    #[cfg(windows)]
+    #[command(hide = true)]
+    ScreenshotStress {
+        #[arg(long)]
+        game: i32,
+        /// Seconds between shots.
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        every: u64,
+        /// How many shots; 0 runs until Ctrl+C.
+        #[arg(long, default_value_t = 0)]
+        count: u32,
+        #[arg(long, value_enum, default_value_t = DownscaleArg::Cpu)]
+        downscale: DownscaleArg,
+        /// Where each shot is written (overwritten every time).
+        #[arg(long, default_value = "screenshot.jpg")]
+        out: PathBuf,
+    },
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum DownscaleArg {
+    Cpu,
+    Gpu,
 }
 
 #[derive(Subcommand)]
@@ -321,6 +347,73 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Takes a shot every `every` seconds on this thread, which `Capturer`
+/// switches to background priority.
+#[cfg(windows)]
+fn screenshot_stress(
+    install_dir: &str,
+    every: u64,
+    count: u32,
+    downscale: DownscaleArg,
+    out: &std::path::Path,
+) -> Result<()> {
+    use worldline_core::screenshot::{self, Capturer, Downscale, Shot};
+    screenshot::check_supported()?;
+    let downscale = match downscale {
+        DownscaleArg::Cpu => Downscale::Cpu,
+        DownscaleArg::Gpu => Downscale::Gpu,
+    };
+    let started = std::time::Instant::now();
+    let capturer = Capturer::new()?;
+    eprintln!("device ready in {:.1} ms", ms(started.elapsed()));
+    println!(
+        "unix_ms,qpc,downscale,status,src_w,src_h,pids_ms,window_ms,session_ms,first_frame_ms,readback_ms,resize_ms,encode_ms,write_ms,total_ms,cpu_ms,bytes,working_set_mb,peak_working_set_mb"
+    );
+    let mut taken = 0;
+    while count == 0 || taken < count {
+        let next = std::time::Instant::now() + std::time::Duration::from_secs(every);
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis();
+        let qpc = screenshot::qpc();
+        let (status, t) = match capturer.shot(install_dir, downscale, out) {
+            Ok(Shot::Saved(t)) => ("saved", t),
+            Ok(Shot::Skipped(reason, t)) => (reason, t),
+            Err(e) => {
+                eprintln!("shot failed: {e:#}");
+                ("error", Default::default())
+            }
+        };
+        let mb = |bytes: usize| bytes as f64 / 1_048_576.0;
+        println!(
+            "{unix_ms},{qpc},{downscale:?},{status},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{:.1},{:.1}",
+            t.source.0,
+            t.source.1,
+            ms(t.pids),
+            ms(t.window),
+            ms(t.session),
+            ms(t.first_frame),
+            ms(t.readback),
+            ms(t.resize),
+            ms(t.encode),
+            ms(t.write),
+            ms(t.total),
+            ms(t.cpu),
+            t.bytes,
+            mb(t.working_set),
+            mb(t.peak_working_set),
+        );
+        taken += 1;
+        std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ms(d: std::time::Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
 }
 
 fn main() -> Result<()> {
@@ -706,6 +799,21 @@ fn main() -> Result<()> {
             }
         },
         Commands::Watch => unreachable!("handled before opening the core"),
+        #[cfg(windows)]
+        Commands::ScreenshotStress {
+            game,
+            every,
+            count,
+            downscale,
+            out,
+        } => {
+            let install_dir = core
+                .get_game(game)?
+                .game
+                .install_dir
+                .ok_or_else(|| anyhow!("game {game} has no install dir"))?;
+            screenshot_stress(&install_dir, every, count, downscale, &out)?;
+        }
     }
 
     Ok(())

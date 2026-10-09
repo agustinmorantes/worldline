@@ -114,6 +114,22 @@ fn running_games(dirs: &[(i32, String)], executables: &[&Path]) -> HashSet<i32> 
         .collect()
 }
 
+/// The processes whose executable lives under `dir`.
+pub(crate) fn pids_under(dir: &str) -> Vec<u32> {
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
+    );
+    system
+        .processes()
+        .iter()
+        .filter(|(_, p)| p.exe().is_some_and(|exe| runs_from(exe, dir)))
+        .map(|(pid, _)| pid.as_u32())
+        .collect()
+}
+
 /// Whether `exe` lives under `dir`; case-insensitive on Windows.
 pub(crate) fn runs_from(exe: &Path, dir: &str) -> bool {
     if cfg!(windows) {
