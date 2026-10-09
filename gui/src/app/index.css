@@ -56,6 +56,13 @@
   to   { transform: translateX(420%); }
 }
 
+/* Typed, so the shell's glow (a gradient) can fade between game colours. */
+@property --acc-glow {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
 @layer base {
   * {
     @apply border-ln outline-acc/50;

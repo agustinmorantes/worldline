@@ -3,7 +3,7 @@
 // the icon, with the rail filtering live behind it.
 import { type KeyboardEvent, type ReactElement, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Search } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { useT } from '@/shared/i18n';
 import { ease, spring } from '@/shared/motion/motion';
 import { cn } from '@/shared/ui/utils';
@@ -78,11 +78,22 @@ export function LibrarySearch({ fold, open, query, empty, onOpen, onQuery, onClo
       value={query}
       onChange={(event) => { onQuery(event.target.value); }}
       onKeyDown={onKeyDown}
-      onBlur={(event) => { if (query === '' && event.relatedTarget !== buttonRef.current) onClose(); }}
+      onBlur={(event) => { if (query === '' && event.relatedTarget !== buttonRef.current && event.currentTarget.parentElement?.contains(event.relatedTarget) !== true) onClose(); }}
       spellCheck={false}
       autoComplete="off"
       className="h-full min-w-0 flex-1 bg-transparent text-[13px] font-medium text-tx outline-none placeholder:text-tx3"
     />
+  );
+  const close = (
+    <button
+      type="button"
+      aria-label={t.shell.closeSearch}
+      title={t.shell.closeSearch}
+      onClick={() => { onClose(); buttonRef.current?.focus(); }}
+      className="flex size-6 shrink-0 items-center justify-center rounded-md text-tx3 transition-[color,background-color,transform] duration-200 ease-spring hover:bg-white/[0.08] hover:text-tx active:scale-90"
+    >
+      <X size={14} strokeWidth={2.4} aria-hidden="true" />
+    </button>
   );
   const instant = { duration: 0 };
   const inline = open && !fold.collapsed;
@@ -108,14 +119,23 @@ export function LibrarySearch({ fold, open, query, empty, onOpen, onQuery, onClo
         {inline && (
           <motion.div
             key="field"
-            className="absolute right-[22px] top-[14px] flex h-7 items-center overflow-hidden rounded-lg bg-white/[0.06] pl-2.5 pr-7"
+            className="absolute right-[22px] top-[14px] flex h-7 items-center gap-1.5 overflow-hidden rounded-lg bg-white/[0.06] pl-2 pr-7"
             initial={{ width: ICON_SIZE, opacity: 0 }}
             animate={{ width: FIELD_WIDTH, opacity: 1 }}
             exit={{ width: ICON_SIZE, opacity: 0, transition: fold.reduced ? instant : { width: { duration: 0.24, ease }, opacity: { duration: 0.12, delay: 0.14 } } }}
             transition={fold.reduced ? instant : { width: { type: 'spring', stiffness: 380, damping: 32 }, opacity: { duration: 0.12 } }}
           >
+            <Search size={13} strokeWidth={2.4} aria-hidden="true" className="shrink-0 text-tx3" />
             {field}
-            <Search size={14} strokeWidth={2.4} aria-hidden="true" className="absolute right-[7px] text-tx2" />
+            {/* The search icon turns into the cross that closes the field, in the same spot. */}
+            <motion.span
+              className="absolute right-0.5 flex"
+              initial={{ rotate: -90, opacity: 0 }}
+              animate={{ rotate: 0, opacity: 1 }}
+              transition={fold.reduced ? instant : { duration: 0.24, ease }}
+            >
+              {close}
+            </motion.span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -129,9 +149,10 @@ export function LibrarySearch({ fold, open, query, empty, onOpen, onQuery, onClo
             exit={{ opacity: 0, x: -14, transition: fold.reduced ? instant : { duration: 0.18, ease } }}
             transition={fold.reduced ? instant : { x: spring, opacity: { duration: 0.18 } }}
           >
-            <div className="flex h-8 items-center gap-2 px-2">
+            <div className="flex h-8 items-center gap-2 pl-2 pr-1">
               <Search size={14} strokeWidth={2.4} aria-hidden="true" className="shrink-0 text-tx2" />
               {field}
+              {close}
             </div>
             <AnimatePresence initial={false}>
               {empty && (

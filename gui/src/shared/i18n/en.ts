@@ -24,6 +24,7 @@ export const en = {
       plural('en', count, { one: '# game in your cloud isn’t on this PC yet', other: '# games in your cloud aren’t on this PC yet' }),
     search: 'Search the library',
     searchPlaceholder: 'Find a game',
+    closeSearch: 'Clear and close the search',
     noMatches: 'No games match',
     help: 'Help and tour',
     minimize: 'Minimize',

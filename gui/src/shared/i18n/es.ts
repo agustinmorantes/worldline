@@ -22,6 +22,7 @@ export const es: Messages = {
       plural('es', count, { one: '# juego de tu nube aún no está en esta PC', other: '# juegos de tu nube aún no están en esta PC' }),
     search: 'Buscar en la biblioteca',
     searchPlaceholder: 'Busca un juego',
+    closeSearch: 'Borrar y cerrar la búsqueda',
     noMatches: 'Ningún juego coincide',
     help: 'Ayuda y recorrido',
     minimize: 'Minimizar',

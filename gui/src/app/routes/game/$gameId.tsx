@@ -185,7 +185,7 @@ export function GameDetail(): ReactElement {
 
   const drawer = search.v !== undefined;
   const selectedId = selected?.id ?? null;
-  const onSelect = (v: number): void => { select(v === activeId ? undefined : v); };
+  const onSelect = (v: number): void => { select(v); };
   const order = graph === null ? navOrder(layout, openForks) : graphNavOrder(graph, versions);
 
   return (
@@ -266,7 +266,7 @@ export function GameDetail(): ReactElement {
             aria-label={t.checkpoint.panel}
             className={cn(
               'w-[336px] shrink-0 overflow-y-auto pb-8',
-              'max-[999px]:fixed max-[999px]:bottom-4 max-[999px]:right-4 max-[999px]:z-20 max-[999px]:max-h-[calc(100%-2rem)] max-[999px]:pb-0',
+              'max-[999px]:fixed max-[999px]:bottom-4 max-[999px]:right-4 max-[999px]:z-20 max-[999px]:max-h-[calc(100%-2rem)] max-[999px]:rounded-[20px] max-[999px]:pb-0 max-[999px]:shadow-[0_24px_60px_oklch(0%_0_0/0.55),0_0_0_1px_oklch(100%_0_0/0.06)]',
               !drawer && 'max-[999px]:hidden',
             )}
           >

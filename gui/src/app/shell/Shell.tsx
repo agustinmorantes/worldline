@@ -16,6 +16,13 @@ const FOLD_MS = 300;
 /** How long the unfold runs after the route changes. */
 const UNFOLD_MS = 620;
 
+/** A blurred ellipse in the accent: the glow behind the top of the app. As a gradient rather
+ * than `filter: blur()` so the browser dithers it; a blur's dim falloff bands into rings. The stops
+ * follow a 90px Gaussian blur of a 760x540 ellipse. */
+const GLOW = `radial-gradient(closest-side, ${[[1, 32], [0.84, 48], [0.5, 64], [0.16, 80], [0.02, 96], [0, 100]]
+  .map(([k, at]) => `color-mix(in oklch, var(--acc-glow) ${(k * 100).toString()}%, transparent) ${at.toString()}%`)
+  .join(', ')})`;
+
 function targetOf(pathname: string): NavTarget | null {
   const game = /^\/game\/(\d+)/.exec(pathname);
   if (game) return { view: 'game', gameId: Number(game[1]) };
@@ -201,9 +208,10 @@ export function Shell({ titleBar, sidebar, children }: {
       >
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-[264px] left-[60px] h-[540px] w-[760px] rounded-full blur-[90px] transition-[background-color,opacity] duration-[800ms,500ms]"
+          className="pointer-events-none absolute -top-[444px] -left-[120px] h-[900px] w-[1120px]"
           style={{
-            backgroundColor: 'var(--acc-glow)',
+            backgroundImage: GLOW,
+            transition: '--acc-glow 800ms, opacity 500ms',
             opacity: `calc(var(--glow-opacity) * ${currentGame ? '1' : '0.45'})`,
           }}
         />
