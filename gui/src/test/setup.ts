@@ -45,3 +45,10 @@ vi.mock('motion/react', () => ({
     start: vi.fn().mockResolvedValue(undefined),
   }),
 }));
+
+// jsdom has no ResizeObserver; Radix measures popovers and tooltips with it.
+globalThis.ResizeObserver = class {
+  observe(): void { /* nothing to measure */ }
+  unobserve(): void { /* nothing to measure */ }
+  disconnect(): void { /* nothing to measure */ }
+};

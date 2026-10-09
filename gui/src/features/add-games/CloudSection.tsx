@@ -14,6 +14,7 @@ import { useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { btn, eyebrow } from '@/shared/ui/classes';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 
 export function CloudSection({ report }: { report: SyncReport }): ReactElement {
@@ -85,11 +86,15 @@ function CloudCard({ game, report }: { game: RemoteGameSummary; report: SyncRepo
     <div className="flex h-[92px] w-full items-center gap-3.5 rounded-[18px] bg-sf px-4">
       <span ref={iconRef} className="shrink-0"><GameIcon title={game.title} size={48} /></span>
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-        <span className="truncate text-[15px] font-bold" title={game.title}>{game.title}</span>
-        <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-tx2" title={t.addGames.fromDevice(game.source_device, game.version_count)}>
-          {game.source_device !== null && <span className="shrink-0 text-deck"><DeviceGlyph kind={kind} /></span>}
-          <span className="truncate">{t.addGames.fromDevice(game.source_device, game.version_count)}</span>
-        </span>
+        <Tooltip content={game.title}>
+          <span className="truncate text-[15px] font-bold">{game.title}</span>
+        </Tooltip>
+        <Tooltip content={t.addGames.fromDevice(game.source_device, game.version_count)}>
+          <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-tx2">
+            {game.source_device !== null && <span className="shrink-0 text-deck"><DeviceGlyph kind={kind} /></span>}
+            <span className="truncate">{t.addGames.fromDevice(game.source_device, game.version_count)}</span>
+          </span>
+        </Tooltip>
         <span className={cn('text-[12.5px]', game.installed ? 'text-live' : 'text-tx3')}>
           {game.installed ? t.addGames.installedHere : t.addGames.notInstalledHere}
         </span>

@@ -9,6 +9,7 @@ import type { CheckpointDevice } from '@/features/game/game-view';
 import { formatTime, useLocale, useT } from '@/shared/i18n';
 import { ease, spring } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { dayLabel, type Fork, playedMs, type SessionsLayout, timeOf, trackPosition, trackWidth } from './sessions';
 import { Diamond, Dot, formatDuration } from './Timeline';
@@ -74,6 +75,7 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
   const locale = useLocale();
   const device = deviceOf(session[0]);
   const elsewhere = !device.here && session.every((v) => !deviceOf(v).here);
+  const playedOn = elsewhere ? t.sessions.playedOn(device.name ?? t.sessions.anotherDevice) : undefined;
   const tagged = session.filter((v) => v.tag !== null && v.tag !== '');
   const width = trackWidth(durationMs);
   const holdsSelection = selectedId !== null && session.some((v) => v.id === selectedId);
@@ -100,9 +102,11 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
         <span className={cn('text-[13px] font-semibold', side ? 'text-tx2' : 'text-tx')}>{formatTime(new Date(timeOf(session[0])), locale)}</span>
         <span className="text-[11.5px] text-tx3">{formatDuration(durationMs, t)}</span>
       </span>
-      <span className="relative flex w-6 shrink-0 text-deck" title={elsewhere ? t.sessions.playedOn(device.name ?? t.sessions.anotherDevice) : undefined}>
-        {elsewhere && <DeviceGlyph kind={device.kind} size={17} />}
-      </span>
+      <Tooltip content={playedOn}>
+        <span role={elsewhere ? 'img' : undefined} aria-label={playedOn} className="relative flex w-6 shrink-0 text-deck">
+          {elsewhere && <DeviceGlyph kind={device.kind} size={17} />}
+        </span>
+      </Tooltip>
       <span
         className={cn('relative h-2 min-w-10 shrink rounded-full transition-[background-color] duration-400', side && 'shadow-[inset_0_0_0_1.5px_var(--ln)]')}
         style={{

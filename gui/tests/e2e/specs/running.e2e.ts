@@ -17,7 +17,7 @@ const dataDir = process.env.WORLDLINE_E2E_DATA_DIR ?? '';
 const TITLE = 'Ember Trail';
 
 const library = () => $('aside[aria-label="Library"]');
-const row = () => library().$(`a[title="${TITLE}"]`);
+const row = () => library().$(`.//a[.//span[text()="${TITLE}"]]`);
 
 // A game counts as running while a process runs from its install dir, which the install
 // scan found. A copy of a harmless system program stands in for the game.

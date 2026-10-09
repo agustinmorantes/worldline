@@ -4,6 +4,7 @@ import { Cloud, CloudAlert, CloudOff, Monitor } from 'lucide-react';
 import { reportError } from '@/shared/errors/report';
 import { formatRelative, useLocale, useT } from '@/shared/i18n';
 import { ease, spring } from '@/shared/motion/motion';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { fadeLabel, type Fold } from './fold';
 import { useSyncReport, useSyncSettings } from './queries';
@@ -71,52 +72,53 @@ export function SyncCard({ fold }: { fold: Fold }): ReactElement | null {
   };
 
   return (
-    <button
-      type="button"
-      title={state === 'unavailable' ? t.sync.unavailableHint : state === 'failed' ? t.sync.failedHint : t.sync.syncNow}
-      aria-label={`${t.sync.syncNow}. ${status}`}
-      aria-busy={syncing}
-      data-state={state}
-      className={`${card} px-3.5 py-3`}
-      onClick={syncNow}
-    >
-      <span className="flex items-center justify-end gap-2 text-xs font-semibold text-tx2">
-        <span className={cn('flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap', fadeLabel(fold, 'hidden'))}>
-          <Monitor size={15} aria-hidden="true" className="shrink-0" />
-          <span>{t.sync.thisPc}</span>
-          <span className="relative h-0.5 flex-1 rounded-sm bg-ln">
+    <Tooltip side="right" content={state === 'unavailable' ? t.sync.unavailableHint : state === 'failed' ? t.sync.failedHint : t.sync.syncNow}>
+      <button
+        type="button"
+        aria-label={`${t.sync.syncNow}. ${status}`}
+        aria-busy={syncing}
+        data-state={state}
+        className={`${card} px-3.5 py-3`}
+        onClick={syncNow}
+      >
+        <span className="flex items-center justify-end gap-2 text-xs font-semibold text-tx2">
+          <span className={cn('flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap', fadeLabel(fold, 'hidden'))}>
+            <Monitor size={15} aria-hidden="true" className="shrink-0" />
+            <span>{t.sync.thisPc}</span>
+            <span className="relative h-0.5 flex-1 rounded-sm bg-ln">
+              {syncing && (
+                <span className="absolute -top-0.5 size-1.5 rounded-full bg-tx shadow-[0_0_8px_var(--tx2)] [animation:travel_650ms_ease-in-out_infinite_alternate]" />
+              )}
+            </span>
+            <span className="text-tx">{t.sync.cloud}</span>
+          </span>
+          <span className={cn('relative flex shrink-0', glide, fold.collapsed && '-translate-x-0.5')}>
+            <SyncIcon state={state} reduced={fold.reduced} />
+            {/* The rail hides the line, so the icon carries the travelling dot's blink. */}
             {syncing && (
-              <span className="absolute -top-0.5 size-1.5 rounded-full bg-tx shadow-[0_0_8px_var(--tx2)] [animation:travel_650ms_ease-in-out_infinite_alternate]" />
+              <span className={cn('absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-tx transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
             )}
           </span>
-          <span className="text-tx">{t.sync.cloud}</span>
         </span>
-        <span className={cn('relative flex shrink-0', glide, fold.collapsed && '-translate-x-0.5')}>
-          <SyncIcon state={state} reduced={fold.reduced} />
-          {/* The rail hides the line, so the icon carries the travelling dot's blink. */}
-          {syncing && (
-            <span className={cn('absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-tx transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
-          )}
-        </span>
-      </span>
-      <Unfold fold={fold}>
-        <span className="relative block pt-2">
-          <AnimatePresence initial={false} mode="popLayout">
-            {/* Keyed by state, not text: the clock ticking "Synced 2 min ago" doesn't slide. */}
-            <motion.span
-              key={state}
-              className={cn('block truncate text-left text-xs transition-colors duration-300', warn ? 'text-warn' : 'text-tx3')}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={fold.reduced ? { duration: 0 } : { duration: 0.28, ease }}
-            >
-              {status}
-            </motion.span>
-          </AnimatePresence>
-        </span>
-      </Unfold>
-    </button>
+        <Unfold fold={fold}>
+          <span className="relative block pt-2">
+            <AnimatePresence initial={false} mode="popLayout">
+              {/* Keyed by state, not text: the clock ticking "Synced 2 min ago" doesn't slide. */}
+              <motion.span
+                key={state}
+                className={cn('block truncate text-left text-xs transition-colors duration-300', warn ? 'text-warn' : 'text-tx3')}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={fold.reduced ? { duration: 0 } : { duration: 0.28, ease }}
+              >
+                {status}
+              </motion.span>
+            </AnimatePresence>
+          </span>
+        </Unfold>
+      </button>
+    </Tooltip>
   );
 }
 

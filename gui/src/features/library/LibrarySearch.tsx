@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { Search, X } from 'lucide-react';
 import { useT } from '@/shared/i18n';
 import { ease, spring } from '@/shared/motion/motion';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import type { Fold } from './fold';
 
@@ -85,36 +86,38 @@ export function LibrarySearch({ fold, open, query, empty, onOpen, onQuery, onClo
     />
   );
   const close = (
-    <button
-      type="button"
-      aria-label={t.shell.closeSearch}
-      title={t.shell.closeSearch}
-      onClick={() => { onClose(); buttonRef.current?.focus(); }}
-      className="flex size-6 shrink-0 items-center justify-center rounded-md text-tx3 transition-[color,background-color,transform] duration-200 ease-spring hover:bg-white/[0.08] hover:text-tx active:scale-90"
-    >
-      <X size={14} strokeWidth={2.4} aria-hidden="true" />
-    </button>
+    <Tooltip content={t.shell.closeSearch}>
+      <button
+        type="button"
+        aria-label={t.shell.closeSearch}
+        onClick={() => { onClose(); buttonRef.current?.focus(); }}
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-tx3 transition-[color,background-color,transform] duration-200 ease-spring hover:bg-white/[0.08] hover:text-tx active:scale-90"
+      >
+        <X size={14} strokeWidth={2.4} aria-hidden="true" />
+      </button>
+    </Tooltip>
   );
   const instant = { duration: 0 };
   const inline = open && !fold.collapsed;
 
   return (
     <>
-      <button
-        ref={buttonRef}
-        type="button"
-        aria-label={t.shell.search}
-        aria-expanded={open}
-        title={t.shell.search}
-        onClick={() => { if (open) onClose(); else onOpen(); }}
-        className={cn(
-          'absolute right-[22px] top-[14px] flex size-7 items-center justify-center rounded-lg text-tx3 transition-[color,background-color,opacity] duration-200 hover:bg-white/[0.05] hover:text-tx',
-          // The wide field takes over the icon's spot; its own glyph stands where this one was.
-          inline && 'pointer-events-none opacity-0',
-        )}
-      >
-        <Search size={14} strokeWidth={2.4} aria-hidden="true" />
-      </button>
+      <Tooltip content={t.shell.search}>
+        <button
+          ref={buttonRef}
+          type="button"
+          aria-label={t.shell.search}
+          aria-expanded={open}
+          onClick={() => { if (open) onClose(); else onOpen(); }}
+          className={cn(
+            'absolute right-[22px] top-[14px] flex size-7 items-center justify-center rounded-lg text-tx3 transition-[color,background-color,opacity] duration-200 hover:bg-white/[0.05] hover:text-tx',
+            // The wide field takes over the icon's spot; its own glyph stands where this one was.
+            inline && 'pointer-events-none opacity-0',
+          )}
+        >
+          <Search size={14} strokeWidth={2.4} aria-hidden="true" />
+        </button>
+      </Tooltip>
       <AnimatePresence>
         {inline && (
           <motion.div

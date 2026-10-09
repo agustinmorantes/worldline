@@ -8,6 +8,7 @@ import { setTrayLabels } from '@/ipc/commands'
 import { useLocale, useT } from '@/shared/i18n'
 import { reducedMotionConfig } from '@/shared/motion/motion'
 import { usePrefs } from '@/shared/prefs/prefs'
+import { TooltipProvider } from '@/shared/ui/Tooltip'
 
 /** Any CSS color (`--bg` is oklch) as sRGB bytes, by painting one canvas pixel. */
 function cssColorToRgb(color: string): [number, number, number] {
@@ -58,7 +59,7 @@ export function AppProviders({ children }: { children: ReactNode }): ReactElemen
     <QueryClientProvider client={queryClient}>
       <MotionConfig reducedMotion={reducedMotionConfig(motion)}>
         <DocumentPrefs />
-        {children}
+        <TooltipProvider>{children}</TooltipProvider>
       </MotionConfig>
     </QueryClientProvider>
   )

@@ -5,6 +5,7 @@ import { type ShellNav, ShellNavContext } from './shell-nav';
 import { setSyncOutcome } from './sync-activity';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { makeGame } from '@/ipc/builders';
+import { TooltipProvider } from '@/shared/ui/Tooltip';
 
 vi.mock('@/features/library/queries', () => ({
   useGames: vi.fn(),
@@ -46,7 +47,7 @@ function mockSync(remotePath: string | null, unadopted = 0) {
 
 function renderSidebar(nav: Partial<ShellNav> = {}): void {
   const value: ShellNav = { current: null, pending: null, go: vi.fn(), land: vi.fn(), flying: { home: null, out: null, landing: [] }, ...nav };
-  render(<ShellNavContext value={value}><Sidebar /></ShellNavContext>);
+  render(<TooltipProvider><ShellNavContext value={value}><Sidebar /></ShellNavContext></TooltipProvider>);
 }
 
 beforeEach(() => {
@@ -147,11 +148,12 @@ describe('the sync card', () => {
     expect(card.querySelector('svg.lucide-cloud-off')).not.toBeNull();
   });
 
-  it('hints at retrying when a sync failed', () => {
+  it('hints at retrying when a sync failed', async () => {
     mockGames([]);
     mockReport({ isError: true });
     renderSidebar();
-    expect(screen.getByRole('button', { name: /sync now/i })).toHaveAttribute('title', 'Something went wrong. Click to try again.');
+    fireEvent.pointerMove(screen.getByRole('button', { name: /sync now/i }));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Something went wrong. Click to try again.');
   });
 });
 

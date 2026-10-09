@@ -14,6 +14,7 @@ import { reportError } from '@/shared/errors/report';
 import { useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { btn, btnQuiet, eyebrow, field } from '@/shared/ui/classes';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { dirsToMap, folderName } from './add-games';
 
@@ -103,7 +104,9 @@ export function ManualSection({ library }: { library: FullGame[] }): ReactElemen
                     onChange={(e) => { setDraft({ ...draft, title: e.target.value }); }}
                   />
                 </label>
-                <span className="truncate font-mono text-xs text-tx3" title={draft.path}>{draft.path}</span>
+                <Tooltip mono content={draft.path}>
+                  <span className="truncate font-mono text-xs text-tx3">{draft.path}</span>
+                </Tooltip>
                 <Actions
                   confirm={t.addGames.addGame}
                   disabled={busy || draft.title.trim() === ''}
@@ -163,10 +166,14 @@ function BundleForm({ draft, library, busy, onChange, onCancel, onImport }: {
             return (
               <div key={dir.uuid} className="flex items-center gap-3 rounded-xl bg-el px-3 py-2.5">
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className={cn('truncate text-sm font-semibold', chosen === undefined ? 'text-tx2' : 'font-mono text-xs text-tx')} title={chosen}>
-                    {chosen ?? name}
-                  </span>
-                  <span className="truncate text-xs text-tx3" title={dir.source_path_hint}>{t.addGames.wasAt(dir.source_path_hint)}</span>
+                  <Tooltip mono content={chosen}>
+                    <span className={cn('truncate text-sm font-semibold', chosen === undefined ? 'text-tx2' : 'font-mono text-xs text-tx')}>
+                      {chosen ?? name}
+                    </span>
+                  </Tooltip>
+                  <Tooltip mono content={dir.source_path_hint}>
+                    <span className="truncate text-xs text-tx3">{t.addGames.wasAt(dir.source_path_hint)}</span>
+                  </Tooltip>
                 </span>
                 <button
                   type="button"
