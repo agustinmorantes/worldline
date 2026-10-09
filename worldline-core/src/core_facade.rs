@@ -85,13 +85,27 @@ fn heal_window() -> chrono::Duration {
 struct Inner {
     history: History,
     suppression: Suppression,
+    /// Where writes to live saves keep their transactions (ADR 0008).
+    txn_root: PathBuf,
     /// Asks the sync loop to push; ignored when no loop runs.
     sync_trigger: mpsc::Sender<Trigger>,
 }
 
 impl Inner {
     /// The one way to capture live saves: a created version queues a push.
+    /// First it finishes putting back saves a failed write left half
+    /// written; while that can't finish, the game isn't captured, so the
+    /// half-written folder is never recorded, and the watcher retries.
     fn checkpoint(&self, game: &FullGame, reason: VersionReason) -> Result<CheckpointOutcome> {
+        let recovery = restore::recover(&self.txn_root)?;
+        if recovery.pending.iter().any(|root| {
+            game.tracked_dirs
+                .iter()
+                .any(|dir| Path::new(&dir.path) == root)
+        }) {
+            return Err(anyhow::Error::new(ErrorKind::RestoreIncomplete)
+                .context("The saves are still being put back"));
+        }
         let outcome = self.history.checkpoint_locked(game, reason)?;
         if matches!(outcome, CheckpointOutcome::Created(_)) {
             let _ = self.sync_trigger.send(Trigger::Push);
@@ -184,14 +198,17 @@ impl WorldlineCore {
             device.device_uuid,
             &data_dir.join("untracked_games.json"),
         )?;
-        // Before the watcher starts, so it never captures a half-written folder.
+        // Before the watcher starts. What can't be put back yet is retried
+        // before each capture.
         let recovered_restores =
             store::with_lock(history.root(), || restore::recover(&data_dir.join("txn")))
-                .context("Failed to settle an interrupted restore")?;
+                .context("Failed to settle an interrupted restore")?
+                .rolled_back;
         let (sync_trigger, triggers) = mpsc::channel();
         let inner = Arc::new(Inner {
             history,
             suppression: Suppression::default(),
+            txn_root: data_dir.join("txn"),
             sync_trigger,
         });
         let (tx, rx) = mpsc::channel();
@@ -246,9 +263,8 @@ impl WorldlineCore {
         self.recovered_restores
     }
 
-    /// Where writes to live saves keep their transactions (ADR 0008).
-    fn txn_root(&self) -> PathBuf {
-        self.data_dir.join("txn")
+    fn txn_root(&self) -> &Path {
+        &self.inner.txn_root
     }
 
     fn history(&self) -> &History {
@@ -493,7 +509,7 @@ impl WorldlineCore {
             &meta,
             version.version.retired,
         )?;
-        restore::apply(&history.store, prepared, &self.txn_root())?;
+        restore::apply(&history.store, prepared, self.txn_root())?;
         history
             .index
             .set_active_version(version.slot.id, Some(version.version.id))?;
@@ -524,7 +540,7 @@ impl WorldlineCore {
         self.guarded(game_id, VersionReason::PreSlotCreate, None, |game| {
             let slot = self.history().create_slot(game_id, name)?;
             let prepared = restore::clear_only(&game.tracked_dirs)?;
-            restore::apply(&self.history().store, prepared, &self.txn_root())?;
+            restore::apply(&self.history().store, prepared, self.txn_root())?;
             self.history().index.set_active_slot(game_id, slot.id)?;
             let game = self.get_game(game_id)?;
             if !game.tracked_dirs.is_empty() {
@@ -562,7 +578,7 @@ impl WorldlineCore {
                 restore::apply(
                     &self.history().store,
                     restore::clear_only(&game.tracked_dirs)?,
-                    &self.txn_root(),
+                    self.txn_root(),
                 )?;
                 self.history().index.set_active_slot(game.game.id, slot_id)
             }

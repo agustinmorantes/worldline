@@ -100,8 +100,7 @@ export const es: Messages = {
       `Se exportaron ${plural('es', count, { one: '# punto de control', other: '# puntos de control' })} de ${title}`,
     closeAndRetry: (title) => `No se cambió nada. Cierra ${title} y vuelve a intentarlo.`,
     closeIfOpen: 'No se cambió nada. Si el juego está abierto, ciérralo y vuelve a intentarlo.',
-    restoreIncomplete: 'Worldline no pudo terminar ni deshacerlo por completo.',
-    restoreIncompleteHint: 'Tus partidas están a salvo en el punto de control creado justo antes. Cierra el juego y vuelve a él.',
+    puttingBack: 'Tus partidas están a salvo. Worldline las está restaurando por su cuenta; vuelve a intentarlo en un momento.',
     failed: {
       rewind: 'No se pudo volver atrás.',
       name: 'No se pudo poner nombre al punto de control.',

@@ -105,8 +105,8 @@ pub fn clear_only(live_dirs: &[TrackedDir]) -> Result<PreparedRestore> {
     })
 }
 
-/// One transaction's journal, `<txn>/<id>.json`, so a crash mid-write is
-/// rolled back on the next open. Its folder `<txn>/<id>/` holds `new/<n>`
+/// One transaction's journal, `<txn>/<id>.json`, so a crash or a rollback
+/// that couldn't finish is rolled back later, without the user. Its folder `<txn>/<id>/` holds `new/<n>`
 /// (the staged files) and `old/<n>` (the live files moved aside), `n` being
 /// the root's index.
 #[derive(Serialize, Deserialize)]
@@ -126,16 +126,27 @@ enum Phase {
     Swapping,
     /// Done; only leftovers remain.
     Committed,
-    /// A rollback couldn't finish: `old/` is kept for the user.
-    Incomplete,
+}
+
+/// Where a rollback keeps a moved-aside file it found replaced (the game
+/// wrote one in its place): `<txn>/kept/<id>/<n>/`. Never deleted by us.
+const KEPT: &str = "kept";
+
+/// What `recover` settled.
+pub struct Recovery {
+    /// Transactions rolled back.
+    pub rolled_back: usize,
+    /// The roots of transactions whose rollback can't finish yet (a file is
+    /// still held); they're retried on the next `recover`.
+    pub pending: Vec<PathBuf>,
 }
 
 /// Replaces the live roots' content (except exclusions) with `prepared`'s
 /// files, all or nothing. The transaction lives in `txn_root`, so nothing
 /// but save files ever goes into a game's folders. A live file the game
 /// holds fails the move with `SavesInUse`, and everything is put back. A
-/// rollback that can't finish fails with `RestoreIncomplete`; the files it
-/// couldn't put back stay in the folder the message names.
+/// rollback that can't finish fails with `RestoreIncomplete` and stays
+/// journaled: `recover` finishes it once the files are free.
 pub fn apply(store: &Store, prepared: PreparedRestore, txn_root: &Path) -> Result<()> {
     let (roots, exclusions): (Vec<PathBuf>, Vec<Vec<glob::Pattern>>) =
         prepared.roots.into_iter().unzip();
@@ -176,11 +187,9 @@ pub fn apply(store: &Store, prepared: PreparedRestore, txn_root: &Path) -> Resul
                 let _ = fs::remove_file(&journal_path);
                 return Err(error.context("Nothing was changed"));
             }
-            journal.phase = Phase::Incomplete;
-            let _ = store::write_json(&journal_path, &journal);
             return Err(error
                 .context(format!(
-                    "Couldn't put every save back; the rest are in {}",
+                    "Couldn't put every save back yet; the rest wait in {}",
                     dir.join("old").display()
                 ))
                 .context(ErrorKind::RestoreIncomplete));
@@ -285,12 +294,17 @@ fn roll_back(dir: &Path, journal: &Journal, placed: &[(usize, PathBuf)]) -> bool
             if fs::symlink_metadata(&live).is_ok() {
                 // A copy to another drive deletes the original last: one cut
                 // short left the original in place, and the copy is a prefix
-                // of it. Anything else at the live path (the game wrote it
-                // since) leaves both for the user.
-                if is_prefix_of(&aside, &live) && fs::remove_file(&aside).is_ok() {
-                    continue;
+                // of it. Anything else at the live path, the game wrote since:
+                // its file stays, and ours is kept out of the way.
+                let settled = if is_prefix_of(&aside, &live) {
+                    fs::remove_file(&aside).is_ok()
+                } else {
+                    let kept = txn_root(dir).join(KEPT).join(id(dir)).join(n.to_string());
+                    move_entry(&aside, &kept.join(&relative)).is_ok()
+                };
+                if !settled {
+                    complete = false;
                 }
-                complete = false;
             } else if move_entry(&aside, &live).is_err() {
                 complete = false;
             }
@@ -300,38 +314,40 @@ fn roll_back(dir: &Path, journal: &Journal, placed: &[(usize, PathBuf)]) -> bool
     complete
 }
 
-/// Settles the transactions a crash or a killed process left in `txn_root`:
-/// each is rolled back to the saves before it and its leftovers removed.
-/// One whose rollback can't finish is kept, with its moved files, for the
-/// user. Returns how many were rolled back. Run it under the repository lock.
-pub fn recover(txn_root: &Path) -> Result<usize> {
+/// Settles the transactions left in `txn_root` by a crash, a killed process
+/// or a rollback that couldn't finish: each is rolled back to the saves
+/// before it and its leftovers removed. One whose rollback still can't finish
+/// stays for the next call. Run it under the repository lock.
+pub fn recover(txn_root: &Path) -> Result<Recovery> {
+    let mut recovery = Recovery {
+        rolled_back: 0,
+        pending: Vec::new(),
+    };
     let listing = match fs::read_dir(txn_root) {
         Ok(listing) => listing,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(recovery),
         Err(error) => return Err(error).context("Failed to read the transaction folder"),
     };
     let paths: Vec<PathBuf> = listing
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.file_name().is_none_or(|name| name != KEPT))
         .collect();
-    let mut rolled_back = 0;
     for path in paths
         .iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
     {
         let dir = path.with_extension("");
-        let Ok(mut journal) = store::read_json::<Journal>(path) else {
+        let Ok(journal) = store::read_json::<Journal>(path) else {
             continue;
         };
         match journal.phase {
-            Phase::Incomplete => continue,
             Phase::Committed => {}
             Phase::MovingAside | Phase::Swapping => {
                 if !roll_back(&dir, &journal, &journal.targets) {
-                    journal.phase = Phase::Incomplete;
-                    store::write_json(path, &journal)?;
+                    recovery.pending.extend(journal.roots);
                     continue;
                 }
-                rolled_back += 1;
+                recovery.rolled_back += 1;
             }
         }
         let _ = fs::remove_dir_all(&dir);
@@ -348,7 +364,15 @@ pub fn recover(txn_root: &Path) -> Result<usize> {
             };
         }
     }
-    Ok(rolled_back)
+    Ok(recovery)
+}
+
+fn txn_root(dir: &Path) -> &Path {
+    dir.parent().expect("a transaction folder is in the transaction root")
+}
+
+fn id(dir: &Path) -> &std::ffi::OsStr {
+    dir.file_name().expect("a transaction folder has a name")
 }
 
 /// The files and links below `root`, outside `exclusions`, as paths below it.
@@ -741,7 +765,7 @@ mod tests {
         };
         store::write_json(&dir.with_extension("json"), &journal).unwrap();
 
-        assert_eq!(recover(&fx.txn).unwrap(), 1);
+        assert_eq!(recover(&fx.txn).unwrap().rolled_back, 1);
         assert_eq!(fx.live(), before);
         assert!(fx.txn_is_empty());
     }
@@ -760,11 +784,12 @@ mod tests {
         };
         store::write_json(&dir.with_extension("json"), &journal).unwrap();
 
-        assert_eq!(recover(&fx.txn).unwrap(), 0);
-        assert_eq!(fx.live(), before);
-        assert_eq!(fs::read_to_string(aside.join("save1.dat")).unwrap(), "moved aside");
-        let kept: Journal = store::read_json(&dir.with_extension("json")).unwrap();
-        assert!(kept.phase == Phase::Incomplete);
+        let recovery = recover(&fx.txn).unwrap();
+        assert_eq!((recovery.rolled_back, recovery.pending.len()), (1, 0));
+        assert_eq!(fx.live(), before, "the game's file stays");
+        let kept = fx.txn.join(KEPT).join("raced").join("0").join("save1.dat");
+        assert_eq!(fs::read_to_string(kept).unwrap(), "moved aside");
+        assert!(!dir.exists() && !dir.with_extension("json").exists());
     }
 
     #[test]
@@ -780,13 +805,13 @@ mod tests {
         };
         store::write_json(&dir.with_extension("json"), &journal).unwrap();
 
-        assert_eq!(recover(&fx.txn).unwrap(), 0);
+        assert_eq!(recover(&fx.txn).unwrap().rolled_back, 0);
         assert_eq!(fx.live(), before);
         assert!(fx.txn_is_empty());
     }
 
     #[test]
-    fn a_rollback_that_fails_keeps_the_moved_saves() {
+    fn a_rollback_that_fails_is_finished_later() {
         // Fail while placing the last target, after everything was moved aside.
         let (_, ops) = with_hooks(Hooks::default(), || {
             let fx = Fixture::new();
@@ -815,8 +840,21 @@ mod tests {
         let old = journals[0].with_extension("").join("old").join("0");
         assert_eq!(fs::read_to_string(old.join("save1.dat")).unwrap(), "old 1");
 
-        // The next open leaves it for the user.
-        assert_eq!(recover(&fx.txn).unwrap(), 0);
+        let before = with_hooks(
+            Hooks {
+                fail_rollback: true,
+                ..Hooks::default()
+            },
+            || recover(&fx.txn).unwrap(),
+        )
+        .0;
+        assert_eq!(before.pending.len(), 2, "still held: kept for the next try");
         assert!(old.join("save1.dat").exists());
+
+        // Once the files are free, the next try puts everything back.
+        let recovery = recover(&fx.txn).unwrap();
+        assert_eq!((recovery.rolled_back, recovery.pending.len()), (1, 0));
+        assert_eq!(fx.live(), Fixture::new().live());
+        assert!(fx.txn_is_empty());
     }
 }

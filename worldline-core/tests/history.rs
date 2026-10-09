@@ -473,3 +473,41 @@ fn opening_clears_what_an_interrupted_restore_left() {
     assert!(!data.path().join("txn").join("cut").exists());
     assert_eq!(core.recovered_restores(), 0, "nothing live was touched");
 }
+
+#[cfg(windows)]
+#[test]
+fn a_rollback_held_up_by_the_game_finishes_by_itself_and_blocks_capture_until_then() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use worldline_core::error::{ErrorKind, error_kind};
+    let device = Device::new();
+    device.write("a.dat", "mine");
+    let game = device.add_game("Silksong");
+    let versions = device.game(game.game.id).versions.len();
+    // A write was undone except for a.dat, which the game still holds aside.
+    let txn = device.data.path().join("txn");
+    let aside = txn.join("stuck").join("old").join("0");
+    fs::create_dir_all(&aside).unwrap();
+    fs::rename(device.save_dir().join("a.dat"), aside.join("a.dat")).unwrap();
+    let journal = serde_json::json!({
+        "phase": "moving_aside",
+        "roots": [game.tracked_dirs[0].path],
+        "targets": [],
+    });
+    fs::write(txn.join("stuck.json"), journal.to_string()).unwrap();
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(aside.join("a.dat"))
+        .unwrap();
+
+    let error = device.core.checkpoint(game.game.id).unwrap_err();
+    assert_eq!(error_kind(&error), Some(ErrorKind::RestoreIncomplete));
+    assert_eq!(device.game(game.game.id).versions.len(), versions, "the half-written folder isn't recorded");
+
+    drop(held);
+    device.core.checkpoint(game.game.id).unwrap();
+
+    assert_eq!(device.read("a.dat").as_deref(), Some("mine"));
+    assert_eq!(device.game(game.game.id).versions.len(), versions);
+    assert!(fs::read_dir(&txn).unwrap().next().is_none());
+}

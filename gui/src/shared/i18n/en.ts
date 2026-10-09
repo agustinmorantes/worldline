@@ -102,8 +102,7 @@ export const en = {
       `Exported ${plural('en', count, { one: '# checkpoint', other: '# checkpoints' })} of ${title}`,
     closeAndRetry: (title: string): string => `Nothing was changed. Close ${title} and try again.`,
     closeIfOpen: 'Nothing was changed. If the game is open, close it and try again.',
-    restoreIncomplete: 'Worldline couldn’t finish and couldn’t fully undo it.',
-    restoreIncompleteHint: 'Your saves are safe in the checkpoint taken just before. Close the game, then rewind to it.',
+    puttingBack: 'Your saves are safe. Worldline is putting them back by itself; try again in a moment.',
     failed: {
       rewind: 'Couldn’t rewind.',
       name: 'Couldn’t name the checkpoint.',

@@ -14,8 +14,9 @@ pub enum ErrorKind {
     GameRunning,
     /// The game holds a save file; nothing was changed.
     SavesInUse,
-    /// A write to live saves failed and couldn't be fully undone; the
-    /// checkpoint taken before it holds the saves.
+    /// A write to live saves failed and couldn't be fully undone yet; the
+    /// core finishes undoing it by itself, and the checkpoint taken before
+    /// it holds the saves meanwhile.
     RestoreIncomplete,
 }
 

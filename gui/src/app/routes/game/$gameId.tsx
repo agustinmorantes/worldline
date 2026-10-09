@@ -95,7 +95,7 @@ export function GameDetail(): ReactElement {
   const writeFailed = (message: string, err: unknown): void => {
     const kind = typeof err === 'object' && err !== null ? (err as Partial<Failure>).kind : undefined;
     if (kind === 'restore_incomplete') {
-      reportError(t.game.restoreIncomplete, err, t.game.restoreIncompleteHint);
+      reportError(message, err, t.game.puttingBack);
       return;
     }
     const held = gameRunning || kind === 'game_running' || kind === 'saves_in_use';
