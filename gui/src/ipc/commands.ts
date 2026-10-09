@@ -17,6 +17,8 @@ import type { RetentionSettings } from './bindings/RetentionSettings';
 import type { SyncReport } from './bindings/SyncReport';
 import type { SyncSettings } from './bindings/SyncSettings';
 import type { Version } from './bindings/Version';
+import type { Locale } from '@/shared/i18n/locale';
+import type { OverlayPrefs } from '@/shared/prefs/schema';
 
 // Games and playthroughs
 
@@ -94,6 +96,14 @@ export interface TrayLabels {
 
 export const setTrayLabels = (labels: TrayLabels): Promise<void> =>
   invoke('set_tray_labels', { labels });
+/** The in-game popup's preferences, with the motion and language the GUI resolved. */
+export interface OverlayConfig extends OverlayPrefs {
+  motion: 'full' | 'reduced';
+  language: Locale;
+}
+
+export const setOverlayConfig = (config: OverlayConfig): Promise<void> =>
+  invoke('set_overlay_config', { config });
 /** Absolute path of the GUI preferences file. */
 export const getPrefsPath = (): Promise<string> => invoke('get_prefs_path');
 

@@ -8,6 +8,7 @@ use worldline_core::{OpenOptions, WorldlineCore};
 
 pub mod commands;
 mod dialogs;
+mod overlay;
 mod tray;
 mod webview_memory;
 
@@ -64,6 +65,7 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     app.manage(core);
     tray::setup_tray(app)?;
+    overlay::setup(app);
 
     let notif_app = app.handle().clone();
     std::thread::spawn(move || {
@@ -79,6 +81,7 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     notif_app
                         .emit("version-created", (game_id, version_number))
                         .ok();
+                    overlay::version_created(&notif_app, game_id, version_number);
                 }
                 detection::Notification::ScreenshotAttached {
                     game_id,
@@ -107,9 +110,11 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     notif_app.emit("pruning-error", error).ok();
                 }
                 detection::Notification::GameStarted { game_id } => {
+                    overlay::game_started(&notif_app, game_id);
                     notif_app.emit("game-started", game_id).ok();
                 }
                 detection::Notification::GameStopped { game_id } => {
+                    overlay::game_stopped(&notif_app, game_id);
                     notif_app.emit("game-stopped", game_id).ok();
                 }
             }

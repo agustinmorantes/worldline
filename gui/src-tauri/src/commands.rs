@@ -377,6 +377,15 @@ fn set_tray_labels(labels: crate::tray::TrayLabels, app: tauri::AppHandle) -> Re
     crate::tray::set_labels(&app, labels).map_err(|e| e.to_string())
 }
 
+/// The overlay preferences, pushed after the GUI loads its preferences and on every change.
+#[tauri::command]
+fn set_overlay_config(
+    config: crate::overlay::OverlayConfig,
+    overlay: State<crate::overlay::Overlay>,
+) {
+    overlay.set_config(config);
+}
+
 /// The GUI preferences file, kept with the rest of the app data.
 #[tauri::command]
 fn get_prefs_path(data_dir: State<crate::DataDir>) -> String {
@@ -431,6 +440,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         crate::dialogs::pick_save_path,
         crate::dialogs::confirm,
         set_tray_labels,
+        set_overlay_config,
         #[cfg(feature = "e2e")]
         crate::tray::e2e_tray_labels,
     ])

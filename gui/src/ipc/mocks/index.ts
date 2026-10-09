@@ -152,6 +152,8 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       return null;
     case 'get_prefs_path':
       return 'mock://prefs.json';
+    case 'set_overlay_config':
+      return null;
     case 'get_startup_notice':
       return null;
     case 'get_recovered_restores':
