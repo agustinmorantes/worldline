@@ -79,7 +79,8 @@ export function Sidebar(): ReactElement {
       onAnimationComplete={() => { setFolded(collapsed); }}
       onKeyDown={typeToSearch}
     >
-      <div className="relative px-6 pb-2 pt-5">
+      {/* The open search field is taller than the label, so the list steps down to clear it. */}
+      <div className={cn('relative px-6 pb-2 pt-5 transition-[padding] duration-200 ease-ez', searching && !collapsed && 'pb-4')}>
         <div className={cn('whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.12em] text-tx3', fadeLabel({ ...fold, collapsed: collapsed || searching, hidden: false }), fold.hidden && 'invisible')}>
           {t.shell.library}
         </div>

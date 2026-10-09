@@ -26,8 +26,17 @@ export function GameIcon({ title, hue, size = 36, iconPath, className, style, ..
   };
 
   if (iconPath !== undefined) {
+    // A dark tile in the game's hue, so icons with transparent corners still read as a tile.
+    const h = hue ?? titleHue(title);
     return (
-      <span {...data} className={cn('block shrink-0 overflow-hidden', className)} style={box}>
+      <span
+        {...data}
+        className={cn('block shrink-0 overflow-hidden', className)}
+        style={{
+          background: `linear-gradient(145deg, oklch(34% 0.06 ${h.toString()}), oklch(24% 0.05 ${((h + 30) % 360).toString()}))`,
+          ...box,
+        }}
+      >
         <img src={convertFileSrc(iconPath)} alt="" className="size-full object-cover" draggable={false} />
       </span>
     );

@@ -76,6 +76,7 @@ export function Shell({ titleBar, sidebar, children }: {
   const reduced = useMotionReduced();
   const stage = useAnimationControls();
   const mainRef = useRef<HTMLElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const timersRef = useRef<number[]>([]);
   const navigatingRef = useRef(false);
   const foldingRef = useRef(false);
@@ -102,14 +103,18 @@ export function Shell({ titleBar, sidebar, children }: {
     const key = ++counterRef.current;
     // One flight home and one out at a time; several games can land together.
     setFlights((all) => [...all.filter((f) => kind === 'land' || f.kind !== kind), { key, game, from, to, kind }]);
-    later(kind === 'home' ? 400 : 560, () => { setFlights((all) => all.filter((f) => f.key !== key)); });
+    later(kind === 'home' ? 400 : 620, () => { setFlights((all) => all.filter((f) => f.key !== key)); });
   }, [later]);
 
   /** Flies a game's icon from its sidebar row into the header once the header has rendered. */
   const flyOut = useCallback((game: FlyingGame): void => {
     const from = anchorRect({ view: 'game', gameId: game.id });
     if (from === null) return;
-    whenRendered(() => dockRect(game.id), (to) => { fly(game, boxOf(from), boxOf(to), 'out'); });
+    whenRendered(() => dockRect(game.id), (to) => {
+      // The pane is still slid out at the start of its entrance; aim where the header settles.
+      const shift = stageRef.current === null ? 0 : new DOMMatrix(getComputedStyle(stageRef.current).transform).m41;
+      fly(game, boxOf(from), { ...boxOf(to), left: to.left - shift }, 'out');
+    });
   }, [fly]);
 
   const land = useCallback((game: FlyingGame, from: DOMRect): void => {
@@ -215,6 +220,7 @@ export function Shell({ titleBar, sidebar, children }: {
           </div>
           <main ref={mainRef} className="relative z-[6] min-w-0 flex-1 overflow-hidden rounded-tl-[12px]">
             <motion.div
+              ref={stageRef}
               animate={stage}
               initial={false}
               className="size-full"

@@ -145,7 +145,7 @@ export function Dot({ game, version, left, top, side, elsewhere, graph = false, 
             hue={game.accent_hue}
             iconPath={game.icon_path ?? undefined}
             size={30}
-            className="relative shadow-[0_0_0_3px_var(--bg),0_6px_18px_oklch(0%_0_0/0.5)] [&]:rounded-[10px] text-[11px]"
+            className="relative shadow-[0_6px_18px_oklch(0%_0_0/0.5)] [&]:rounded-[10px] text-[11px]"
           />
           {landed && <span className="absolute inset-0 rounded-full border-2 border-acc [animation:burst_760ms_var(--ez)_both]" />}
         </motion.span>
