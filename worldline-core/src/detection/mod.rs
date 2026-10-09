@@ -1,9 +1,11 @@
 //! Automatic capture. The notify watcher only reports "game changed"; the
 //! scheduler decides when to capture; captures go through `CaptureTarget`.
-//! `running` reports which games are running.
+//! `running` reports which games are running; `shots` decides when one is
+//! screenshotted.
 
 pub(crate) mod running;
 pub mod scheduler;
+pub mod shots;
 mod watcher;
 
 use crate::error::Failure;
@@ -15,21 +17,34 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
-pub use watcher::Watcher;
+pub use running::RunningGames;
+pub use watcher::{Checkpoints, Watcher};
 
 /// What the watcher needs from the core.
 pub trait CaptureTarget: Send + Sync + 'static {
     /// The games to watch.
     fn games(&self) -> Result<Vec<FullGame>>;
     fn capture(&self, game_id: i32) -> Result<CheckpointOutcome>;
+    /// Stores a screenshot as the version's.
+    fn attach_screenshot(&self, version_id: i32, jpeg: &[u8]) -> Result<()>;
 }
 
 pub type NotificationReceiver = mpsc::Receiver<Notification>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Notification {
-    ChangeDetected { game_id: i32 },
-    VersionCreated { game_id: i32, version_number: i32 },
+    ChangeDetected {
+        game_id: i32,
+    },
+    VersionCreated {
+        game_id: i32,
+        version_number: i32,
+    },
+    /// A version got its screenshot, usually a little after it was created.
+    ScreenshotAttached {
+        game_id: i32,
+        version_id: i32,
+    },
     Error(String),
     SyncStarted,
     SyncCompleted(SyncReport),
@@ -37,8 +52,12 @@ pub enum Notification {
     HistoryPruned,
     PruningFailed(Failure),
     // A process runs from the game's install dir, and when its last one exits.
-    GameStarted { game_id: i32 },
-    GameStopped { game_id: i32 },
+    GameStarted {
+        game_id: i32,
+    },
+    GameStopped {
+        game_id: i32,
+    },
 }
 
 /// A nesting suppression counter: while any guard is alive, nothing is

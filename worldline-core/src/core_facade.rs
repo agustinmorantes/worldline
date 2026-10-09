@@ -1,6 +1,9 @@
 use crate::bundle::{HistoryBundleSummary, HistoryTransferReport};
 use crate::detection::running::RunningMonitor;
-use crate::detection::{CaptureTarget, Notification, NotificationReceiver, Suppression, Watcher};
+use crate::detection::{
+    CaptureTarget, Checkpoints, Notification, NotificationReceiver, RunningGames, Suppression,
+    Watcher,
+};
 use crate::history::{CheckpointOutcome, History, game_uuid};
 use crate::index::{DbPool, Index};
 use crate::install_scanner::InstallScannerItem;
@@ -21,7 +24,7 @@ use diesel_migrations::MigrationHarness;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use uuid::Uuid;
 
 /// Automatic pruning runs at most this often.
@@ -86,14 +89,20 @@ struct Inner {
     suppression: Suppression,
     /// Asks the sync loop to push; ignored when no loop runs.
     sync_trigger: mpsc::Sender<Trigger>,
+    /// Tells the watcher, when it runs, that a checkpoint completed.
+    checkpoints: OnceLock<Checkpoints>,
 }
 
 impl Inner {
-    /// The one way to capture live saves: a created version queues a push.
+    /// The one way to capture live saves: a created version queues a push,
+    /// and the watcher hears of every outcome (for screenshots).
     fn checkpoint(&self, game: &FullGame, reason: VersionReason) -> Result<CheckpointOutcome> {
         let outcome = self.history.checkpoint_locked(game, reason)?;
         if matches!(outcome, CheckpointOutcome::Created(_)) {
             let _ = self.sync_trigger.send(Trigger::Push);
+        }
+        if let Some(checkpoints) = self.checkpoints.get() {
+            checkpoints.completed(game.game.id, &outcome);
         }
         Ok(outcome)
     }
@@ -114,6 +123,12 @@ impl CaptureTarget for Inner {
             self.checkpoint(&game, VersionReason::Watcher)
         })
     }
+
+    fn attach_screenshot(&self, version_id: i32, jpeg: &[u8]) -> Result<()> {
+        store::with_lock(self.history.root(), || {
+            self.history.write_screenshot(version_id, jpeg)
+        })
+    }
 }
 
 pub struct WorldlineCore {
@@ -121,6 +136,8 @@ pub struct WorldlineCore {
     watcher: Mutex<Option<Watcher>>,
     sync_loop: Mutex<Option<SyncLoop>>,
     running: Mutex<Option<RunningMonitor>>,
+    /// What `running` last saw.
+    running_games: RunningGames,
     pub data_dir: PathBuf,
     device: RwLock<DeviceMetadata>,
     sync_lock: Mutex<()>,
@@ -186,6 +203,7 @@ impl WorldlineCore {
             history,
             suppression: Suppression::default(),
             sync_trigger,
+            checkpoints: OnceLock::new(),
         });
         let (tx, rx) = mpsc::channel();
         let core = Self {
@@ -193,6 +211,7 @@ impl WorldlineCore {
             watcher: Mutex::new(None),
             sync_loop: Mutex::new(None),
             running: Mutex::new(None),
+            running_games: RunningGames::default(),
             data_dir: data_dir.to_path_buf(),
             device: RwLock::new(device),
             sync_lock: Mutex::new(()),
@@ -207,12 +226,15 @@ impl WorldlineCore {
                 settings.snapshot_debounce_seconds = seconds;
             }
             let target: Arc<dyn CaptureTarget> = core.inner.clone();
-            *core.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watcher::start(
+            let watcher = Watcher::start(
                 target,
                 settings,
                 core.inner.suppression.clone(),
+                core.running_games.clone(),
                 tx.clone(),
-            ));
+            );
+            let _ = core.inner.checkpoints.set(watcher.checkpoints());
+            *core.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
             let index = core.history().index.clone();
             *core.running.lock().unwrap_or_else(|e| e.into_inner()) = Some(RunningMonitor::start(
                 Box::new(move || {
@@ -222,6 +244,7 @@ impl WorldlineCore {
                         .filter_map(|(id, _, dir)| Some((id, dir?)))
                         .collect())
                 }),
+                core.running_games.clone(),
                 tx.clone(),
             ));
         }
@@ -282,12 +305,18 @@ impl WorldlineCore {
     /// The games running on this device as of the last check; empty unless
     /// opened with `watch`. Starts and stops are also notified.
     pub fn running_games(&self) -> Vec<i32> {
-        self.running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(RunningMonitor::running)
-            .unwrap_or_default()
+        self.running_games.ids()
+    }
+
+    /// Whether screenshots can be taken on this device (Windows 11 or later).
+    /// Front ends hide the screenshot settings when they can't.
+    pub fn screenshots_supported() -> bool {
+        crate::screenshot::supported()
+    }
+
+    /// The version's screenshot, when it has one.
+    pub fn screenshot_path(&self, version_id: i32) -> Result<Option<PathBuf>> {
+        self.history().screenshot_path(version_id)
     }
 
     // ---- games, slots, versions ------------------------------------------------
@@ -938,7 +967,8 @@ impl WorldlineCore {
         // retired before this one pulled the retirement.
         let mut markers = remote.store.markers()?;
         markers.extend(history.store.markers()?);
-        let mut transfer = Transfer::new(&history.store, &remote.store, Completeness::Partial);
+        let mut transfer = Transfer::new(&history.store, &remote.store, Completeness::Partial)
+            .screenshots(self.get_monitoring_settings()?.sync_screenshots);
         let mut problems = Vec::new();
         for game in history.store.catalog()? {
             if let Err(error) = transfer.copy_game(&game, &markers, heal) {
@@ -960,8 +990,10 @@ impl WorldlineCore {
     fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
         let history = self.history();
         let markers = remote.store.markers()?;
+        let screenshots = self.get_monitoring_settings()?.sync_screenshots;
         let copy = || {
-            let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial);
+            let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial)
+                .screenshots(screenshots);
             transfer.copy_game(game, &markers, Heal::None)?;
             Ok(transfer.report)
         };
@@ -1494,6 +1526,19 @@ impl WorldlineCore {
                     history
                         .store
                         .publish_version(&slug, &slot.meta.folder_slug, &version)?;
+                    let screenshot = history.store.screenshot_path(
+                        &old.meta.folder_slug,
+                        &slot.meta.folder_slug,
+                        &version.folder_slug,
+                    );
+                    if screenshot.exists() {
+                        history.store.write_screenshot(
+                            &slug,
+                            &slot.meta.folder_slug,
+                            &version.folder_slug,
+                            &std::fs::read(&screenshot)?,
+                        )?;
+                    }
                     if let Some(marker) = markers.get(&version.uuid) {
                         history.store.replace_marker(&store::RetirementMarker {
                             game_uuid: new_uuid,

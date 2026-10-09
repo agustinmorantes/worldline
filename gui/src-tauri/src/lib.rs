@@ -75,6 +75,14 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                         .emit("version-created", (game_id, version_number))
                         .ok();
                 }
+                detection::Notification::ScreenshotAttached {
+                    game_id,
+                    version_id,
+                } => {
+                    notif_app
+                        .emit("screenshot-attached", (game_id, version_id))
+                        .ok();
+                }
                 detection::Notification::Error(err) => {
                     notif_app.emit("detection-error", err).ok();
                 }

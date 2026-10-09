@@ -1,7 +1,10 @@
+use super::RunningGames;
 use super::scheduler::Scheduler;
+use super::shots::{Attach, Change, Shots};
 use super::{CaptureTarget, Notification, Suppression};
 use crate::history::CheckpointOutcome;
 use crate::models::{FullGame, MonitoringSettings};
+use crate::screenshot::{self, Worker};
 use chrono::{Duration, NaiveDateTime, Utc};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
@@ -17,7 +20,32 @@ enum Event {
     Fs(DebounceEventResult),
     Reload,
     Settings(MonitoringSettings),
+    /// A checkpoint completed: `created` is the new version's id.
+    Checkpointed {
+        game_id: i32,
+        created: Option<i32>,
+    },
+    /// The screenshot worker finished a shot; `None` when it took none.
+    Shot {
+        game_id: i32,
+        jpeg: Option<Vec<u8>>,
+    },
     Shutdown,
+}
+
+/// Tells the watcher about every completed checkpoint, however it was
+/// taken, so a screenshot finds its version.
+#[derive(Clone)]
+pub struct Checkpoints(mpsc::Sender<Event>);
+
+impl Checkpoints {
+    pub fn completed(&self, game_id: i32, outcome: &CheckpointOutcome) {
+        let created = match outcome {
+            CheckpointOutcome::Created(version) => Some(version.id),
+            CheckpointOutcome::Unchanged(_) | CheckpointOutcome::Empty => None,
+        };
+        let _ = self.0.send(Event::Checkpointed { game_id, created });
+    }
 }
 
 /// Handle to the watcher thread. Dropping it flushes pending captures.
@@ -27,10 +55,12 @@ pub struct Watcher {
 }
 
 impl Watcher {
+    /// `running` is read to screenshot running games.
     pub fn start(
         target: Arc<dyn CaptureTarget>,
         settings: MonitoringSettings,
         suppression: Suppression,
+        running: RunningGames,
         notifications: mpsc::Sender<Notification>,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
@@ -44,6 +74,9 @@ impl Watcher {
                 tx: loop_tx,
                 games: Vec::new(),
                 scheduler: Scheduler::default(),
+                running,
+                shots: Shots::default(),
+                worker: None,
             }
             .run(rx)
         });
@@ -58,6 +91,10 @@ impl Watcher {
         if self.tx.send(Event::Reload).is_err() {
             eprintln!("Watcher is not running; tracked directories were not re-registered");
         }
+    }
+
+    pub fn checkpoints(&self) -> Checkpoints {
+        Checkpoints(self.tx.clone())
     }
 
     pub fn update_settings(&self, settings: MonitoringSettings) {
@@ -89,12 +126,17 @@ struct Loop {
     tx: mpsc::Sender<Event>,
     games: Vec<FullGame>,
     scheduler: Scheduler,
+    running: RunningGames,
+    shots: Shots,
+    /// The screenshot thread, while screenshots are on.
+    worker: Option<Worker>,
 }
 
 impl Loop {
     fn run(mut self, rx: mpsc::Receiver<Event>) {
         let mut debouncer = self.debouncer();
         self.reload(&mut debouncer, false);
+        self.set_worker(self.settings.screenshots_enabled);
         // One checkpoint per game on startup catches edits made while closed;
         // it is a no-op when nothing changed.
         for game in &self.games {
@@ -133,6 +175,15 @@ impl Loop {
                         debouncer = self.debouncer();
                         self.reload(&mut debouncer, false);
                     }
+                    self.set_worker(settings.screenshots_enabled);
+                }
+                Ok(Event::Checkpointed { game_id, created }) => {
+                    let attach = self.shots.checkpointed(game_id, created);
+                    self.attach(game_id, attach);
+                }
+                Ok(Event::Shot { game_id, jpeg }) => {
+                    let attach = self.shots.finished(game_id, jpeg);
+                    self.attach(game_id, attach);
                 }
                 Ok(Event::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
                     // Events still buffered in the debouncer are lost with it, so every
@@ -142,6 +193,22 @@ impl Loop {
                     }
                     for game in self.scheduler.drain() {
                         self.capture(game);
+                    }
+                    // The shot in progress finishes; then each shot meets the
+                    // checkpoint the flush just completed.
+                    self.set_worker(false);
+                    for event in rx.try_iter() {
+                        match event {
+                            Event::Checkpointed { game_id, created } => {
+                                let attach = self.shots.checkpointed(game_id, created);
+                                self.attach(game_id, attach);
+                            }
+                            Event::Shot { game_id, jpeg } => {
+                                let attach = self.shots.finished(game_id, jpeg);
+                                self.attach(game_id, attach);
+                            }
+                            _ => {}
+                        }
                     }
                     return;
                 }
@@ -203,6 +270,11 @@ impl Loop {
                 "Failed to load games: {error:#}"
             ))),
         }
+        for id in self.shots.games() {
+            if !self.games.iter().any(|game| game.game.id == id) {
+                self.shots.forget(id);
+            }
+        }
         if let Some(debouncer) = debouncer.as_mut() {
             for dir in self.games.iter().flat_map(|game| &game.tracked_dirs) {
                 if let Err(error) = debouncer
@@ -239,6 +311,54 @@ impl Loop {
         for game_id in changed {
             self.scheduler.changed(game_id);
             self.notify(Notification::ChangeDetected { game_id });
+            self.request_shot(game_id, !rescan);
+        }
+    }
+
+    /// Starts the screenshot worker while screenshots are on (and supported),
+    /// and stops it when they're turned off.
+    fn set_worker(&mut self, on: bool) {
+        let on = on && screenshot::supported();
+        if on == self.worker.is_some() {
+            return;
+        }
+        self.worker = on.then(|| {
+            let tx = self.tx.clone();
+            Worker::start(Box::new(move |game_id, jpeg| {
+                let _ = tx.send(Event::Shot { game_id, jpeg });
+            }))
+        });
+    }
+
+    /// Asks the worker for a shot of the game, if `Shots` allows one.
+    fn request_shot(&mut self, game_id: i32, file_event: bool) {
+        let Some(worker) = &self.worker else {
+            return;
+        };
+        let pids = self.running.pids(game_id);
+        let change = Change {
+            running: !pids.is_empty(),
+            suppressed: self.suppression.is_active(),
+            file_event,
+        };
+        self.shots
+            .changed(game_id, change, Utc::now().naive_utc(), || {
+                worker.request(game_id, pids)
+            });
+    }
+
+    fn attach(&self, game_id: i32, attach: Option<Attach>) {
+        let Some(Attach { version_id, jpeg }) = attach else {
+            return;
+        };
+        match self.target.attach_screenshot(version_id, &jpeg) {
+            Ok(()) => self.notify(Notification::ScreenshotAttached {
+                game_id,
+                version_id,
+            }),
+            Err(error) => self.notify(Notification::Error(format!(
+                "Failed to save a screenshot: {error:#}"
+            ))),
         }
     }
 
@@ -324,6 +444,10 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(CheckpointOutcome::Empty)
         }
+
+        fn attach_screenshot(&self, _version_id: i32, _jpeg: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     /// Events still inside the debouncer never reach the scheduler, so
@@ -335,6 +459,7 @@ mod tests {
             target.clone(),
             MonitoringSettings::default(),
             Suppression::default(),
+            RunningGames::default(),
             mpsc::channel().0,
         );
         // The startup checkpoint has run once the scheduler is drained.
