@@ -15,6 +15,7 @@ import { useT } from '@/shared/i18n';
 import { ease, spring, springEase, useMotionReduced } from '@/shared/motion/motion';
 import { setPref, usePrefs } from '@/shared/prefs/prefs';
 import { btn, btnQuiet, chip, eyebrow, field } from '@/shared/ui/classes';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { newScanResults, scanRevealDelay } from './add-games';
 import { useInstalledScan, useScanRoots } from './queries';
@@ -297,7 +298,9 @@ function ScanRoots(): ReactElement {
       <span className="mr-1 text-[13px] text-tx3">{t.addGames.yourFolders}</span>
       {roots.map((root) => (
         <span key={root} className={cn(chip, 'max-w-[320px] pr-1.5 hover:bg-el active:scale-100')}>
-          <span className="truncate font-mono text-xs" title={root}>{root}</span>
+          <Tooltip mono content={root}>
+            <span className="truncate font-mono text-xs">{root}</span>
+          </Tooltip>
           <button
             type="button"
             aria-label={t.addGames.stopLooking(root)}

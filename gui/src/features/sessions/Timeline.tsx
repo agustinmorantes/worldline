@@ -1,8 +1,9 @@
 // What the Sessions and Graph views share: the scrolling frame with arrow-key navigation, the
 // checkpoint dots and the "You are here" token (one layout id each, so they fly between the
 // views), another device's ghost row, and the empty state.
-import type { KeyboardEvent, ReactElement, ReactNode } from 'react';
+import { type KeyboardEvent, type ReactElement, type ReactNode, useState } from 'react';
 import { motion } from 'motion/react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { Version } from '@/ipc/bindings/Version';
 import { GameIcon } from '@/features/library/GameIcon';
@@ -10,7 +11,9 @@ import type { CheckpointDevice } from '@/features/game/game-view';
 import { formatRelative, formatTime, type Messages, useLocale, useT } from '@/shared/i18n';
 import { ease, spring } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
+import { useScreenshotPreview } from './queries';
 import { dayLabel, durationParts, timeOf } from './sessions';
 
 export function formatDuration(ms: number, t: Messages): string {
@@ -97,39 +100,39 @@ export function Dot({ game, version, left, top, side, elsewhere, graph = false, 
       ? (graph && elsewhere ? 'oklch(80% 0.11 205 / 0.75)' : 'var(--tx3)')
       : elsewhere ? 'var(--deck)' : 'var(--acc)';
   const place = { left, top: top ?? '50%' };
+  const label = `${formatTime(date, locale)} · ${name}`;
 
   return (
     <>
-      <motion.button
-        id={dotId(version.id)}
-        layoutId={`dot-${version.id.toString()}`}
-        type="button"
-        tabIndex={-1}
-        disabled={version.retired}
-        aria-pressed={selected}
-        aria-label={t.sessions.dotLabel(name, `${dayLabel(date, now, locale, t.sessions)} ${formatTime(date, locale)}`)}
-        onClick={() => { onSelect(version.id); }}
-        initial={{ scale: 0 }}
-        animate={{ scale: 1 }}
-        transition={{ scale: spring, layout: { duration: 0.48, ease } }}
-        className="group absolute z-[2] -mt-[11px] -ml-[11px] flex size-[22px] items-center justify-center rounded-full"
-        style={place}
-      >
-        <span
-          className="block shrink-0 border-2 transition-[transform,width,height,border-radius,background-color,border-color] duration-[260ms] ease-spring group-enabled:group-hover:scale-[1.7]"
-          style={{
-            width: size,
-            height: size,
-            borderRadius: tagged ? 2 : '50%',
-            rotate: tagged ? '45deg' : '0deg',
-            backgroundColor: fill,
-            borderColor: version.retired ? 'var(--tx3)' : selected && !active ? 'var(--tx)' : 'transparent',
-          }}
-        />
-        <span aria-hidden="true" className="pointer-events-none absolute bottom-full mb-1.5 whitespace-nowrap rounded-lg bg-tx px-2 py-1 font-mono text-xs font-semibold text-bg opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-          {formatTime(date, locale)} · {name}
-        </span>
-      </motion.button>
+      <Tooltip mono label={label} content={version.retired ? label : <DotPreview versionId={version.id} label={label} />}>
+        <motion.button
+          id={dotId(version.id)}
+          layoutId={`dot-${version.id.toString()}`}
+          type="button"
+          tabIndex={-1}
+          disabled={version.retired}
+          aria-pressed={selected}
+          aria-label={t.sessions.dotLabel(name, `${dayLabel(date, now, locale, t.sessions)} ${formatTime(date, locale)}`)}
+          onClick={() => { onSelect(version.id); }}
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          transition={{ scale: spring, layout: { duration: 0.48, ease } }}
+          className="group absolute z-[2] -mt-[11px] -ml-[11px] flex size-[22px] items-center justify-center rounded-full"
+          style={place}
+        >
+          <span
+            className="block shrink-0 border-2 transition-[transform,width,height,border-radius,background-color,border-color] duration-[260ms] ease-spring group-enabled:group-hover:scale-[1.7]"
+            style={{
+              width: size,
+              height: size,
+              borderRadius: tagged ? 2 : '50%',
+              rotate: tagged ? '45deg' : '0deg',
+              backgroundColor: fill,
+              borderColor: version.retired ? 'var(--tx3)' : selected && !active ? 'var(--tx)' : 'transparent',
+            }}
+          />
+        </motion.button>
+      </Tooltip>
       {active && (
         <motion.span
           layoutId={`here-${game.id.toString()}`}
@@ -150,6 +153,34 @@ export function Dot({ game, version, left, top, side, elsewhere, graph = false, 
           {landed && <span className="absolute inset-0 rounded-full border-2 border-acc [animation:burst_760ms_var(--ez)_both]" />}
         </motion.span>
       )}
+    </>
+  );
+}
+
+/**
+ * A dot's tooltip: its time and name, under the checkpoint's screenshot once that has loaded.
+ * Mounted only while the tooltip is open, so a long history asks for one screenshot per hover.
+ */
+function DotPreview({ versionId, label }: { versionId: number; label: string }): ReactElement {
+  const { data: path } = useScreenshotPreview(versionId);
+  const src = typeof path === 'string' ? convertFileSrc(path) : null;
+  /** The source that finished loading; until then, and for a broken file, only the text shows. */
+  const [loaded, setLoaded] = useState<string | null>(null);
+  return (
+    <>
+      {src !== null && (
+        <img
+          src={src}
+          alt=""
+          width={240}
+          height={135}
+          decoding="async"
+          draggable={false}
+          onLoad={() => { setLoaded(src); }}
+          className={cn('mb-1.5 mt-1 aspect-video w-[240px] rounded-md object-cover', loaded === src ? 'block animate-in fade-in-0 duration-200' : 'hidden')}
+        />
+      )}
+      {label}
     </>
   );
 }

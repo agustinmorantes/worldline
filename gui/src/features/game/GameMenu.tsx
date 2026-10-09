@@ -15,6 +15,7 @@ import { accentVars } from '@/shared/tokens/accent';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog';
 import { HoldButton } from '@/shared/ui/HoldButton';
 import { btn, btnQuiet, chip, field, popover, row } from '@/shared/ui/classes';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 
 const HUES = Array.from({ length: 12 }, (_, i) => i * 30);
@@ -186,7 +187,9 @@ export function GameMenu({ game, inCloud }: {
             {dirs.length === 0 && <li className="text-sm text-tx3">{t.game.noFolders}</li>}
             {dirs.map((path) => (
               <li key={path} className="flex items-center gap-2 rounded-xl bg-el py-2 pl-3 pr-1.5">
-                <span className="min-w-0 flex-1 truncate font-mono text-xs" title={path}>{path}</span>
+                <Tooltip mono content={path}>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{path}</span>
+                </Tooltip>
                 <button
                   type="button"
                   aria-label={t.game.stopWatching(path)}

@@ -17,3 +17,15 @@ export const useScreenshot = (versionId: number): UseQueryResult<string | null> 
     queryFn: () => getScreenshotPath(versionId),
     meta: { errorMessage: (t) => t.checkpoint.screenshotFailed },
   });
+
+/**
+ * The screenshot in a dot's hover preview. Its own entry, so a failure stays quiet (hovering
+ * along the timeline must not toast once per dot) without quieting the panel's.
+ */
+export const useScreenshotPreview = (versionId: number): UseQueryResult<string | null> =>
+  useQuery({
+    queryKey: ['screenshot', versionId, 'preview'],
+    queryFn: () => getScreenshotPath(versionId),
+    meta: { quiet: true },
+    retry: false,
+  });

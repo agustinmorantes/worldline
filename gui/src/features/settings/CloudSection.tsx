@@ -15,6 +15,7 @@ import { formatRelative, useLocale, useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { btn, btnQuiet, chip, eyebrow, field } from '@/shared/ui/classes';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { Card } from './controls';
 import { useDevice } from './queries';
@@ -56,7 +57,9 @@ function StoredIn({ path, action }: { path: string; action?: ReactElement }): Re
       <FolderClosed size={20} strokeWidth={1.8} aria-hidden="true" className="shrink-0" />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="text-xs text-tx3">{t.settings.storedIn}</span>
-        <span className="truncate font-mono text-[12.5px]" title={path}>{path}</span>
+        <Tooltip mono content={path}>
+          <span className="truncate font-mono text-[12.5px]">{path}</span>
+        </Tooltip>
       </span>
       {action}
     </div>
@@ -287,9 +290,11 @@ function ThisDevice({ device, onSaved }: { device: DeviceMetadata; onSaved: () =
             <span className="truncate text-sm font-semibold">{device.name}</span>
             <span className="text-xs text-tx3">{t.settings.thisDeviceMeta(osName(device.platform))}</span>
           </span>
-          <button type="button" className={cn(chip, 'w-[30px] justify-center px-0')} aria-label={t.settings.editDevice} title={t.settings.editDevice} onClick={() => { setEditing(true); }}>
-            <Pencil size={14} aria-hidden="true" />
-          </button>
+          <Tooltip content={t.settings.editDevice}>
+            <button type="button" className={cn(chip, 'w-[30px] justify-center px-0')} aria-label={t.settings.editDevice} onClick={() => { setEditing(true); }}>
+              <Pencil size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
       )}
     </div>
@@ -309,15 +314,16 @@ function OtherDevice({ device, onRemove }: { device: DeviceMetadata; onRemove: (
           {t.settings.seen(osName(device.platform), formatRelative(new Date(device.last_seen), locale, now))}
         </span>
       </span>
-      <button
-        type="button"
-        className={cn(chip, 'w-[30px] justify-center bg-transparent px-0 hover:text-err')}
-        aria-label={t.settings.removeDevice(device.name)}
-        title={t.settings.removeDevice(device.name)}
-        onClick={onRemove}
-      >
-        <Trash2 size={14} aria-hidden="true" />
-      </button>
+      <Tooltip content={t.settings.removeDevice(device.name)}>
+        <button
+          type="button"
+          className={cn(chip, 'w-[30px] justify-center bg-transparent px-0 hover:text-err')}
+          aria-label={t.settings.removeDevice(device.name)}
+          onClick={onRemove}
+        >
+          <Trash2 size={14} aria-hidden="true" />
+        </button>
+      </Tooltip>
     </div>
   );
 }

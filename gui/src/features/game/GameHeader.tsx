@@ -10,6 +10,7 @@ import { useT } from '@/shared/i18n';
 import { spring } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { chip } from '@/shared/ui/classes';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import type { SyncChip } from './game-view';
 import { GameMenu } from './GameMenu';
@@ -113,17 +114,21 @@ function ViewToggle({ view, onView }: { view: GameView; onView: (view: GameView)
         animate={{ left: view === 'sessions' ? 3 : 37 }}
         transition={spring}
       />
-      <button type="button" aria-pressed={view === 'sessions'} aria-label={t.game.sessionsView} title={t.game.sessionsView} className={button} onClick={() => { onView('sessions'); }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M4 6h9M4 12h16M4 18h6" /></svg>
-      </button>
-      <button type="button" aria-pressed={view === 'graph'} aria-label={t.game.graphView} title={t.game.graphView} className={button} onClick={() => { onView('graph'); }}>
-        <svg width="17" height="17" viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" aria-hidden="true" style={{ rotate: '-90deg' }}>
-          <path d="M10 32 L26 32 M26 32 C 36 32 40 18 52 18 M26 32 C 36 32 40 46 52 46" />
-          <circle cx="52" cy="18" r="3.4" fill="currentColor" stroke="none" />
-          <circle cx="52" cy="46" r="3.4" fill="currentColor" stroke="none" />
-          <circle cx="26" cy="32" r="6" fill="currentColor" stroke="none" />
-        </svg>
-      </button>
+      <Tooltip content={t.game.sessionsView}>
+        <button type="button" aria-pressed={view === 'sessions'} aria-label={t.game.sessionsView} className={button} onClick={() => { onView('sessions'); }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M4 6h9M4 12h16M4 18h6" /></svg>
+        </button>
+      </Tooltip>
+      <Tooltip content={t.game.graphView}>
+        <button type="button" aria-pressed={view === 'graph'} aria-label={t.game.graphView} className={button} onClick={() => { onView('graph'); }}>
+          <svg width="17" height="17" viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" aria-hidden="true" style={{ rotate: '-90deg' }}>
+            <path d="M10 32 L26 32 M26 32 C 36 32 40 18 52 18 M26 32 C 36 32 40 46 52 46" />
+            <circle cx="52" cy="18" r="3.4" fill="currentColor" stroke="none" />
+            <circle cx="52" cy="46" r="3.4" fill="currentColor" stroke="none" />
+            <circle cx="26" cy="32" r="6" fill="currentColor" stroke="none" />
+          </svg>
+        </button>
+      </Tooltip>
     </div>
   );
 }

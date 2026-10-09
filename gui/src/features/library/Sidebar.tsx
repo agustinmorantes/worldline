@@ -7,6 +7,7 @@ import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
 import { formatRelative, type Messages, useLocale, useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { accentVars } from '@/shared/tokens/accent';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { fadeLabel, type Fold, useNarrow } from './fold';
@@ -198,41 +199,42 @@ function GameRow({ game, status, fold }: { game: FullGame; status: GameStatus; f
   const away = selected || flying.home === game.id || flying.landing.includes(game.id);
 
   return (
-    <Link
-      to="/game/$gameId"
-      params={{ gameId: game.id.toString() }}
-      onClick={onClick}
-      aria-current={selected ? 'page' : undefined}
-      title={game.title}
-      className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04]`}
-    >
-      {selected && <SelectionPill hidden={pending !== null} />}
-      {/* Left-anchored, the icon holds still as the rail narrows, then glides the last 4 px to centre. */}
-      <span className={cn('relative size-9 shrink-0 transition-[translate] duration-[350ms] ease-ez', fold.collapsed && '-translate-x-1')} data-nav-anchor={anchorKey(target)}>
-        {away ? (
-          <span
-            aria-hidden="true"
-            className="absolute inset-0 rounded-[11px] border-[1.5px] border-dashed transition-colors duration-300"
-            style={{ borderColor: accentVars(game.accent_hue)['--acc-line'] }}
-          />
-        ) : (
-          <GameIcon
-            title={game.title}
-            hue={game.accent_hue}
-            iconPath={game.icon_path ?? undefined}
-            className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
-          />
-        )}
-        {/* The narrow rail hides the status line, so the icon carries the live dot. */}
-        {status.kind === 'recording' && (
-          <span aria-hidden="true" className={cn('absolute -right-0.5 -top-0.5 size-2 rounded-full bg-live transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
-        )}
-      </span>
-      <span className={cn('relative flex min-w-0 flex-col gap-[3px]', fadeLabel(fold))}>
-        <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
-        <StatusLine status={status} />
-      </span>
-    </Link>
+    <Tooltip side="right" content={game.title}>
+      <Link
+        to="/game/$gameId"
+        params={{ gameId: game.id.toString() }}
+        onClick={onClick}
+        aria-current={selected ? 'page' : undefined}
+        className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04]`}
+      >
+        {selected && <SelectionPill hidden={pending !== null} />}
+        {/* Left-anchored, the icon holds still as the rail narrows, then glides the last 4 px to centre. */}
+        <span className={cn('relative size-9 shrink-0 transition-[translate] duration-[350ms] ease-ez', fold.collapsed && '-translate-x-1')} data-nav-anchor={anchorKey(target)}>
+          {away ? (
+            <span
+              aria-hidden="true"
+              className="absolute inset-0 rounded-[11px] border-[1.5px] border-dashed transition-colors duration-300"
+              style={{ borderColor: accentVars(game.accent_hue)['--acc-line'] }}
+            />
+          ) : (
+            <GameIcon
+              title={game.title}
+              hue={game.accent_hue}
+              iconPath={game.icon_path ?? undefined}
+              className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
+            />
+          )}
+          {/* The narrow rail hides the status line, so the icon carries the live dot. */}
+          {status.kind === 'recording' && (
+            <span aria-hidden="true" className={cn('absolute -right-0.5 -top-0.5 size-2 rounded-full bg-live transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
+          )}
+        </span>
+        <span className={cn('relative flex min-w-0 flex-col gap-[3px]', fadeLabel(fold))}>
+          <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
+          <StatusLine status={status} />
+        </span>
+      </Link>
+    </Tooltip>
   );
 }
 
@@ -290,33 +292,33 @@ function NavRow({ target, to, label, icon, className, badge, fold }: {
   const selected = current !== null && anchorKey(current) === anchorKey(target);
 
   return (
-    <Link
-      to={to}
-      onClick={onClick}
-      aria-current={selected ? 'page' : undefined}
-      title={label}
-      className={cn(
-        `group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-semibold transition-colors duration-200 hover:bg-white/[0.05] hover:text-tx`,
-        className,
-        selected ? 'text-tx outline-transparent' : 'text-tx2',
-      )}
-    >
-      {selected && <SelectionPill hidden={pending !== null} />}
-      <span className={cn('relative flex transition-[translate] duration-[350ms] ease-ez', fold.collapsed && 'translate-x-0.5')} data-nav-anchor={anchorKey(target)}>{icon}</span>
-      <span className={cn('relative min-w-0 flex-1 overflow-hidden whitespace-nowrap', fadeLabel(fold))}>{label}</span>
-      {badge !== undefined && (
-        <span
-          title={badge.label}
-          // Pinned to the row's right edge, it rides in with the rail, then shrinks into the corner.
-          className={cn(
-            'absolute right-3.5 top-3 flex h-5 min-w-5 origin-top-right items-center justify-center rounded-full bg-tx2 px-1.5 text-xs font-bold text-bg transition-[translate,scale] duration-[350ms] ease-ez',
-            fold.collapsed && 'translate-x-2.5 -translate-y-2 scale-[0.8]',
-          )}
-        >
-          <span aria-hidden="true">{badge.count}</span>
-          <span className="sr-only">{badge.label}</span>
-        </span>
-      )}
-    </Link>
+    <Tooltip side="right" content={badge === undefined ? label : <>{label}<span className="block font-medium opacity-70">{badge.label}</span></>}>
+      <Link
+        to={to}
+        onClick={onClick}
+        aria-current={selected ? 'page' : undefined}
+        className={cn(
+          `group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-semibold transition-colors duration-200 hover:bg-white/[0.05] hover:text-tx`,
+          className,
+          selected ? 'text-tx outline-transparent' : 'text-tx2',
+        )}
+      >
+        {selected && <SelectionPill hidden={pending !== null} />}
+        <span className={cn('relative flex transition-[translate] duration-[350ms] ease-ez', fold.collapsed && 'translate-x-0.5')} data-nav-anchor={anchorKey(target)}>{icon}</span>
+        <span className={cn('relative min-w-0 flex-1 overflow-hidden whitespace-nowrap', fadeLabel(fold))}>{label}</span>
+        {badge !== undefined && (
+          <span
+            // Pinned to the row's right edge, it rides in with the rail, then shrinks into the corner.
+            className={cn(
+              'absolute right-3.5 top-3 flex h-5 min-w-5 origin-top-right items-center justify-center rounded-full bg-tx2 px-1.5 text-xs font-bold text-bg transition-[translate,scale] duration-[350ms] ease-ez',
+              fold.collapsed && 'translate-x-2.5 -translate-y-2 scale-[0.8]',
+            )}
+          >
+            <span aria-hidden="true">{badge.count}</span>
+            <span className="sr-only">{badge.label}</span>
+          </span>
+        )}
+      </Link>
+    </Tooltip>
   );
 }

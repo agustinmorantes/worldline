@@ -61,7 +61,7 @@ describe('Add games', () => {
     await $('button=Add game').click();
 
     await expect($('h1=Hades')).toBeDisplayed();
-    await expect(library().$('a[title="Hades"]')).toBeDisplayed();
+    await expect(library().$('.//a[.//span[text()="Hades"]]')).toBeDisplayed();
   });
 
   it('exports the history', async () => {
@@ -79,7 +79,7 @@ describe('Add games', () => {
     await expect(remove).not.toHaveAttribute('data-disabled');
     await remove.click();
 
-    await expect(library().$('a[title="Hades"]')).not.toBeExisting();
+    await expect(library().$('.//a[.//span[text()="Hades"]]')).not.toBeExisting();
     await library().$('a*=Add games').click();
     await expect($('section[aria-labelledby="add-cloud"]').$('span=Hades')).toBeDisplayed();
   });
@@ -92,6 +92,6 @@ describe('Add games', () => {
     await $('button=Import').click();
 
     await expect($('h1=Hades')).toBeDisplayed();
-    await expect(library().$('a[title="Hades"]')).toBeDisplayed();
+    await expect(library().$('.//a[.//span[text()="Hades"]]')).toBeDisplayed();
   });
 });

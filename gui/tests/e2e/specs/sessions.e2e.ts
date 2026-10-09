@@ -32,7 +32,7 @@ describe('Sessions', () => {
     expect(readFileSync(save, 'utf8')).toBe('second');
 
     await browser.refresh();
-    await $('aside[aria-label="Library"]').$('a[title="Hades"]').click();
+    await $('aside[aria-label="Library"]').$('.//a[.//span[text()="Hades"]]').click();
     await expect($('h1=Hades')).toBeDisplayed();
   });
 

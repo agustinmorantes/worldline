@@ -9,10 +9,16 @@ test.describe('sessions list', () => {
     const list = page.getByLabel('Timeline. Arrow keys move between checkpoints.');
     await expect(list.getByRole('heading', { name: 'Today' })).toBeVisible();
     await expect(list.getByText('Elysium', { exact: true })).toBeVisible();
-    await expect(list.getByTitle('Played on Steam Deck')).toBeVisible();
+    await expect(list.getByRole('img', { name: 'Played on Steam Deck' })).toBeVisible();
     await expect(page.getByRole('main').getByText('In the cloud')).toBeVisible();
     // Played time sums the gaps within sessions.
     await expect(page.getByText(/^~\dh \d\dm$/)).toBeVisible();
+  });
+
+  test('labels a checkpoint dot on hover', async ({ page }) => {
+    await page.goto('/game/1');
+    await page.getByRole('button', { name: /^Elysium/ }).hover();
+    await expect(page.getByRole('tooltip')).toContainText('Elysium');
   });
 
   test('selects checkpoints with the arrow keys', async ({ page }) => {

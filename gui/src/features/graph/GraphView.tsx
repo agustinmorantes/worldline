@@ -11,6 +11,7 @@ import { Diamond, Dot, formatDuration } from '@/features/sessions/Timeline';
 import { formatTime, useLocale, useT } from '@/shared/i18n';
 import { ease } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import type { GraphLayout } from './graph';
 
@@ -59,14 +60,17 @@ export function GraphView({ game, graph, versions, activeId, selectedId, onSelec
         const oldest = cluster.versions[cluster.versions.length - 1];
         const deck = elsewhere(cluster.versions);
         const device = deviceOf(oldest);
+        const playedOn = t.sessions.playedOn(device.name ?? t.sessions.anotherDevice);
         return (
           <motion.div key={newest.id} {...appear} className="absolute left-3.5 flex flex-col gap-[3px] font-mono" style={{ top: cluster.y }}>
             <span className={cn('flex items-center gap-1.5 text-[13px] font-semibold leading-4', cluster.versions.some((v) => graph.points.get(v.id)?.lane === 0) ? 'text-tx' : 'text-tx3')}>
               {formatTime(new Date(timeOf(oldest)), locale)}
               {deck && (
-                <span className="flex text-deck" title={t.sessions.playedOn(device.name ?? t.sessions.anotherDevice)}>
-                  <DeviceGlyph kind={device.kind} size={14} />
-                </span>
+                <Tooltip content={playedOn}>
+                  <span role="img" aria-label={playedOn} className="flex text-deck">
+                    <DeviceGlyph kind={device.kind} size={14} />
+                  </span>
+                </Tooltip>
               )}
             </span>
             <span className="text-[11.5px] leading-[14px] text-tx3">{formatDuration(timeOf(newest) - timeOf(oldest), t)}</span>

@@ -23,7 +23,7 @@ describe('Capture', () => {
     await invoke('update_monitoring_settings', { monitoringSettings: { version_cooldown_minutes: 1, snapshot_debounce_seconds: 1 } });
     await invoke('save_game', { game: { id: null, title: 'Celeste' }, dirs: [saves] });
     await browser.refresh();
-    await $('aside[aria-label="Library"]').$('a[title="Celeste"]').click();
+    await $('aside[aria-label="Library"]').$('.//a[.//span[text()="Celeste"]]').click();
     await expect($('h1=Celeste')).toBeDisplayed();
   });
 

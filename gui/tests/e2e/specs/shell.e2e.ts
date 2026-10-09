@@ -17,7 +17,7 @@ describe('Shell', () => {
 
   it('switches between games from the sidebar', async () => {
     const library = $('aside[aria-label="Library"]');
-    const row = (title: string) => library.$(`a[title="${title}"]`);
+    const row = (title: string) => library.$(`.//a[.//span[text()="${title}"]]`);
 
     await row('Celeste').click();
     await expect($('h1=Celeste')).toBeDisplayed();

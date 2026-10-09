@@ -79,7 +79,7 @@ describe('Screenshots', () => {
     if (game.active_slot === null || version === undefined) throw new Error('No first checkpoint');
 
     await browser.refresh();
-    await library().$('a[title="Celeste"]').click();
+    await library().$('.//a[.//span[text()="Celeste"]]').click();
     await expect(panel().$('span=You are here')).toBeDisplayed();
     await expect(shot()).not.toBeExisting();
 
