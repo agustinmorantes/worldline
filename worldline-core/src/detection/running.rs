@@ -1,11 +1,12 @@
 //! Which games are running: a game runs while some process's executable lives
 //! under its install dir. A thread enumerates processes every few seconds,
 //! only while some game has an install dir that exists, and reports each
-//! start and stop, so front ends never poll.
+//! start and stop, so front ends never poll. It keeps each running game's
+//! processes, for screenshots.
 
 use super::Notification;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -16,36 +17,45 @@ const INTERVAL: Duration = Duration::from_secs(3);
 /// The install dir of every game that has one, by game id.
 pub type InstallDirs = Box<dyn Fn() -> Result<Vec<(i32, String)>> + Send>;
 
+/// The games running as of the last check, with the PIDs running from each
+/// one's install dir. Shared with the watcher, which screenshots them.
+#[derive(Clone, Default)]
+pub struct RunningGames(Arc<Mutex<HashMap<i32, Vec<u32>>>>);
+
+impl RunningGames {
+    pub fn ids(&self) -> Vec<i32> {
+        let mut ids: Vec<i32> = self.lock().keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The game's processes; empty when it isn't running.
+    pub fn pids(&self, game_id: i32) -> Vec<u32> {
+        self.lock().get(&game_id).cloned().unwrap_or_default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<i32, Vec<u32>>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 pub struct RunningMonitor {
     stop: mpsc::Sender<()>,
     thread: Option<JoinHandle<()>>,
-    running: Arc<Mutex<HashSet<i32>>>,
 }
 
 impl RunningMonitor {
-    pub fn start(installs: InstallDirs, notifications: mpsc::Sender<Notification>) -> Self {
+    pub fn start(
+        installs: InstallDirs,
+        running: RunningGames,
+        notifications: mpsc::Sender<Notification>,
+    ) -> Self {
         let (stop, stopped) = mpsc::channel();
-        let running = Arc::new(Mutex::new(HashSet::new()));
-        let shared = running.clone();
-        let thread = std::thread::spawn(move || run(&installs, &notifications, &shared, &stopped));
+        let thread = std::thread::spawn(move || run(&installs, &notifications, &running, &stopped));
         Self {
             stop,
             thread: Some(thread),
-            running,
         }
-    }
-
-    /// The games running as of the last check.
-    pub fn running(&self) -> Vec<i32> {
-        let mut ids: Vec<i32> = self
-            .running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .copied()
-            .collect();
-        ids.sort_unstable();
-        ids
     }
 }
 
@@ -61,7 +71,7 @@ impl Drop for RunningMonitor {
 fn run(
     installs: &InstallDirs,
     notifications: &mpsc::Sender<Notification>,
-    running: &Mutex<HashSet<i32>>,
+    running: &RunningGames,
     stopped: &mpsc::Receiver<()>,
 ) {
     let mut system = sysinfo::System::new();
@@ -73,7 +83,7 @@ fn run(
                 .filter(|(_, dir)| Path::new(dir).is_dir())
                 .collect();
             let now = if dirs.is_empty() {
-                Some(HashSet::new())
+                Some(HashMap::new())
             } else {
                 system.refresh_processes_specifics(
                     sysinfo::ProcessesToUpdate::All,
@@ -81,19 +91,19 @@ fn run(
                     sysinfo::ProcessRefreshKind::nothing()
                         .with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
                 );
-                let executables: Vec<&Path> = system
+                let executables: Vec<(u32, &Path)> = system
                     .processes()
-                    .values()
-                    .filter_map(|p| p.exe())
+                    .iter()
+                    .filter_map(|(pid, p)| Some((pid.as_u32(), p.exe()?)))
                     .collect();
                 (!executables.is_empty()).then(|| running_games(&dirs, &executables))
             };
             if let Some(now) = now {
-                let mut running = running.lock().unwrap_or_else(|e| e.into_inner());
-                for &game_id in now.difference(&running) {
+                let mut running = running.lock();
+                for &game_id in now.keys().filter(|id| !running.contains_key(id)) {
                     let _ = notifications.send(Notification::GameStarted { game_id });
                 }
-                for &game_id in running.difference(&now) {
+                for &game_id in running.keys().filter(|id| !now.contains_key(id)) {
                     let _ = notifications.send(Notification::GameStopped { game_id });
                 }
                 *running = now;
@@ -106,16 +116,23 @@ fn run(
     }
 }
 
-/// The games with an executable under their install dir.
-fn running_games(dirs: &[(i32, String)], executables: &[&Path]) -> HashSet<i32> {
+/// The games with an executable under their install dir, with the PIDs of
+/// those executables.
+fn running_games(dirs: &[(i32, String)], executables: &[(u32, &Path)]) -> HashMap<i32, Vec<u32>> {
     dirs.iter()
-        .filter(|(_, dir)| executables.iter().any(|exe| runs_from(exe, dir)))
-        .map(|(id, _)| *id)
+        .filter_map(|(id, dir)| {
+            let pids: Vec<u32> = executables
+                .iter()
+                .filter(|(_, exe)| runs_from(exe, dir))
+                .map(|(pid, _)| *pid)
+                .collect();
+            (!pids.is_empty()).then_some((*id, pids))
+        })
         .collect()
 }
 
 /// The processes whose executable lives under `dir`.
-pub(crate) fn pids_under(dir: &str) -> Vec<u32> {
+pub fn pids_under(dir: &str) -> Vec<u32> {
     let mut system = sysinfo::System::new();
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
@@ -158,12 +175,15 @@ mod tests {
         } else {
             Path::new("/games/Hollow/bin/game")
         };
-        assert_eq!(running_games(&dirs, &[exe]), HashSet::from([1]));
+        assert_eq!(
+            running_games(&dirs, &[(10, exe), (11, exe)]),
+            HashMap::from([(1, vec![10, 11])])
+        );
         let other = if cfg!(windows) {
             Path::new(r"C:\Games\Hollow.exe")
         } else {
             Path::new("/games/Hollow.sh")
         };
-        assert!(running_games(&dirs, &[other]).is_empty());
+        assert!(running_games(&dirs, &[(12, other)]).is_empty());
     }
 }

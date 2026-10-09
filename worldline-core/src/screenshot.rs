@@ -1,15 +1,16 @@
 //! A screenshot of a running game's window, through Windows.Graphics.Capture
 //! (Windows 11). WGC copies the compositor's frame, so nothing touches the
-//! game process. Phase 1 prototype: `Capturer::shot` takes one picture and
-//! reports how long each stage took, for the `screenshot-stress` command.
+//! game process. `Capturer::shot` takes one picture and reports how long each
+//! stage took (for the `screenshot-stress` command); `Worker` is the thread
+//! that takes them for checkpoints.
 
-use crate::detection::running::pids_under;
-use anyhow::{Context, Result, bail};
+pub use crate::detection::running::pids_under;
+use anyhow::{Context, Result};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{ExtendedColorType, ImageBuffer, Rgba};
-use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
@@ -40,31 +41,19 @@ const TIMEOUT: Duration = Duration::from_millis(500);
 const WIDTH: u32 = 1280;
 const QUALITY: u8 = 80;
 
-/// Where the frame is shrunk to `WIDTH`.
-#[derive(Clone, Copy, Debug)]
-pub enum Downscale {
-    /// Read back the full frame and resize it on the CPU.
-    Cpu,
-    /// Halve it on the GPU (mipmaps) down to the smallest size at least
-    /// `WIDTH` wide, read back that, and resize the rest on the CPU.
-    Gpu,
-}
-
 /// Wall time per stage of one shot, the thread's CPU time and the process's
 /// memory afterwards.
 #[derive(Debug, Default)]
 pub struct Timings {
-    pub pids: Duration,
     pub window: Duration,
     /// Capture item, frame pool and session creation.
     pub session: Duration,
     /// Session start until the first frame arrived.
     pub first_frame: Duration,
-    /// GPU downscale (if any), copy to a staging texture, map and copy out.
+    /// GPU downscale, copy to a staging texture, map and copy out.
     pub readback: Duration,
     pub resize: Duration,
     pub encode: Duration,
-    pub write: Duration,
     pub total: Duration,
     pub cpu: Duration,
     pub source: (u32, u32),
@@ -74,7 +63,8 @@ pub struct Timings {
 }
 
 pub enum Shot {
-    Saved(Timings),
+    /// The JPEG.
+    Taken(Vec<u8>, Timings),
     /// Why no picture was taken.
     Skipped(&'static str, Timings),
 }
@@ -119,9 +109,9 @@ impl Capturer {
         }
     }
 
-    /// Takes one screenshot of the game installed under `install_dir` and
-    /// writes it to `out` as JPEG.
-    pub fn shot(&self, install_dir: &str, downscale: Downscale, out: &Path) -> Result<Shot> {
+    /// Takes one screenshot of the main window of the game running as `pids`,
+    /// downscaled to `WIDTH` and encoded as JPEG.
+    pub fn shot(&self, pids: &[u32]) -> Result<Shot> {
         let start = Instant::now();
         let cpu_start = thread_cpu();
         let mut t = Timings::default();
@@ -131,13 +121,11 @@ impl Capturer {
             Ok(Shot::Skipped(reason, t))
         };
 
-        let pids = pids_under(install_dir);
-        t.pids = start.elapsed();
         if pids.is_empty() {
             return skipped("not running", t);
         }
         let stage = Instant::now();
-        let window = main_window(&pids);
+        let window = main_window(pids);
         t.window = stage.elapsed();
         let Some(hwnd) = window else {
             return skipped("no window", t);
@@ -146,7 +134,7 @@ impl Capturer {
             return skipped("minimized", t);
         }
 
-        let Some((bgra, width, height)) = self.grab(hwnd, downscale, &mut t)? else {
+        let Some((bgra, width, height)) = self.grab(hwnd, &mut t)? else {
             return skipped("no frame", t);
         };
 
@@ -180,26 +168,15 @@ impl Capturer {
         t.encode = stage.elapsed();
         t.bytes = jpeg.len();
 
-        let stage = Instant::now();
-        let temp = out.with_extension("jpg.tmp");
-        std::fs::write(&temp, &jpeg)?;
-        std::fs::rename(&temp, out)?;
-        t.write = stage.elapsed();
-
         t.total = start.elapsed();
         t.cpu = thread_cpu().saturating_sub(cpu_start);
         (t.working_set, t.peak_working_set) = memory();
-        Ok(Shot::Saved(t))
+        Ok(Shot::Taken(jpeg, t))
     }
 
     /// The window's next frame as tightly packed BGRA, or `None` if none
     /// arrived in time. The capture session lives only for this call.
-    fn grab(
-        &self,
-        hwnd: HWND,
-        downscale: Downscale,
-        t: &mut Timings,
-    ) -> Result<Option<(Vec<u8>, u32, u32)>> {
+    fn grab(&self, hwnd: HWND, t: &mut Timings) -> Result<Option<(Vec<u8>, u32, u32)>> {
         let stage = Instant::now();
         let item: GraphicsCaptureItem = unsafe {
             factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?.CreateForWindow(hwnd)?
@@ -242,10 +219,7 @@ impl Capturer {
             let width = (content.Width as u32).min(desc.Width);
             let height = (content.Height as u32).min(desc.Height);
             t.source = (width, height);
-            let pixels = match downscale {
-                Downscale::Gpu => self.read_halved(&texture, &desc, width, height)?,
-                Downscale::Cpu => self.read(&texture, &desc, 0, width, height)?,
-            };
+            let pixels = self.read_halved(&texture, &desc, width, height)?;
             let _ = frame.Close();
             t.readback = stage.elapsed();
             Ok(Some(pixels))
@@ -255,8 +229,8 @@ impl Capturer {
         result
     }
 
-    /// Halves the frame on the GPU while it stays at least `WIDTH` wide, then
-    /// reads back that level.
+    /// Halves the frame on the GPU (mipmaps) while it stays at least `WIDTH`
+    /// wide, then reads back that level; `shot` resizes the rest on the CPU.
     fn read_halved(
         &self,
         texture: &ID3D11Texture2D,
@@ -407,12 +381,85 @@ fn memory() -> (usize, usize) {
     }
 }
 
-/// Fails early, with a clear message, below Windows 11.
-pub fn check_supported() -> Result<()> {
-    if !windows::Graphics::Capture::GraphicsCaptureSession::IsSupported()? {
-        bail!("Windows.Graphics.Capture isn't supported here");
+/// Whether screenshots can be taken here: Windows 11 (build 22000), the
+/// first that captures a window without the yellow border.
+pub fn supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        windows_build() >= 22000
+            && windows::Graphics::Capture::GraphicsCaptureSession::IsSupported().unwrap_or(false)
+    })
+}
+
+fn windows_build() -> u32 {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        .and_then(|key| key.get_value::<String, _>("CurrentBuildNumber"))
+        .ok()
+        .and_then(|build| build.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Receives each requested game's JPEG, or `None` when no shot was taken.
+pub(crate) type Done = Box<dyn Fn(i32, Option<Vec<u8>>) + Send>;
+
+/// The thread that takes checkpoint screenshots, one at a time. It exists
+/// only while screenshots are on, and waits on its channel when idle.
+pub(crate) struct Worker {
+    requests: Option<mpsc::SyncSender<(i32, Vec<u32>)>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Worker {
+    pub fn start(done: Done) -> Self {
+        let (requests, received) = mpsc::sync_channel::<(i32, Vec<u32>)>(1);
+        let thread = std::thread::spawn(move || {
+            // Created on the first request; it also puts this thread in
+            // background mode. An error drops it, in case the GPU was reset.
+            let mut capturer: Option<Capturer> = None;
+            for (game_id, pids) in received {
+                if capturer.is_none() {
+                    capturer = Capturer::new()
+                        .inspect_err(|error| eprintln!("Screenshots unavailable: {error:#}"))
+                        .ok();
+                }
+                let jpeg = match capturer.as_ref().map(|capturer| capturer.shot(&pids)) {
+                    Some(Ok(Shot::Taken(jpeg, _))) => Some(jpeg),
+                    Some(Ok(Shot::Skipped(..))) | None => None,
+                    Some(Err(error)) => {
+                        eprintln!("Screenshot failed: {error:#}");
+                        capturer = None;
+                        None
+                    }
+                };
+                done(game_id, jpeg);
+            }
+        });
+        Self {
+            requests: Some(requests),
+            thread: Some(thread),
+        }
     }
-    Ok(())
+
+    /// Hands the worker a shot of the game running as `pids`. `false` when
+    /// it is busy: the request is dropped, never queued.
+    pub fn request(&self, game_id: i32, pids: Vec<u32>) -> bool {
+        self.requests
+            .as_ref()
+            .is_some_and(|requests| requests.try_send((game_id, pids)).is_ok())
+    }
+}
+
+impl Drop for Worker {
+    /// Lets a shot in progress finish, then stops the thread.
+    fn drop(&mut self) {
+        drop(self.requests.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// The performance counter, to line shots up with PresentMon's `--qpc_time`.
@@ -431,22 +478,24 @@ mod tests {
     #[test]
     #[ignore]
     fn shoots_a_running_window() {
+        assert!(supported());
         let dir = std::env::var("WORLDLINE_SHOT_DIR").unwrap();
-        let out = tempfile::tempdir().unwrap();
+        let pids = pids_under(&dir);
         let capturer = Capturer::new().unwrap();
-        for downscale in [Downscale::Cpu, Downscale::Gpu] {
-            let path = out.path().join(format!("{downscale:?}.jpg"));
-            let Shot::Saved(t) = capturer.shot(&dir, downscale, &path).unwrap() else {
-                panic!("skipped");
-            };
-            let image = image::open(&path).unwrap();
-            assert_eq!(image.width(), t.source.0.min(WIDTH));
-            println!("{downscale:?}: {t:?}");
-            std::fs::copy(
-                &path,
-                std::env::temp_dir().join(format!("wl-{downscale:?}.jpg")),
-            )
-            .unwrap();
-        }
+        let Shot::Taken(jpeg, t) = capturer.shot(&pids).unwrap() else {
+            panic!("skipped");
+        };
+        let image = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!(image.width(), t.source.0.min(WIDTH));
+        println!("{t:?}");
+        std::fs::write(std::env::temp_dir().join("wl-shot.jpg"), &jpeg).unwrap();
+
+        // The worker hands its shot to the callback.
+        let (tx, rx) = mpsc::channel();
+        let worker = Worker::start(Box::new(move |game_id, jpeg| {
+            let _ = tx.send((game_id, jpeg.is_some()));
+        }));
+        assert!(worker.request(7, pids));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), (7, true));
     }
 }
