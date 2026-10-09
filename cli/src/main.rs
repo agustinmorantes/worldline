@@ -323,12 +323,15 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
             Notification::VersionCreated {
                 game_id,
                 version_number,
+                ..
             } => println!("Version {version_number} created for game {game_id}"),
             Notification::ScreenshotAttached {
                 game_id,
                 version_id,
             } => println!("Screenshot saved for version id {version_id} of game {game_id}"),
             Notification::Error(err) => eprintln!("Error: {err}"),
+            // Already reported with its details as `Error`.
+            Notification::CheckpointFailed { .. } => {}
             Notification::SyncStarted => {}
             Notification::SyncCompleted(report) => {
                 println!("Synced.");
