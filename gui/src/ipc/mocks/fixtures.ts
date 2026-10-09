@@ -77,7 +77,7 @@ function base(games: FullGame[]): Fixture {
       kind: 'desktop',
     },
     syncSettings: { remote_path: null },
-    monitoringSettings: { version_cooldown_minutes: 5, snapshot_debounce_seconds: 3 },
+    monitoringSettings: { version_cooldown_minutes: 5, snapshot_debounce_seconds: 3, screenshots_enabled: false, sync_screenshots: true },
     retentionSettings: {
       automatic: true,
       keep_all_hours: 1,

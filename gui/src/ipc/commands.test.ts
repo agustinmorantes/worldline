@@ -5,7 +5,7 @@ import * as commands from './commands';
 // Tauri maps camelCase argument names to the Rust parameter names; a wrong name
 // fails only at runtime, so the ones that have broken before are pinned here.
 describe('ipc commands', () => {
-  const monitoring = { version_cooldown_minutes: 5, snapshot_debounce_seconds: 3 };
+  const monitoring = { version_cooldown_minutes: 5, snapshot_debounce_seconds: 3, screenshots_enabled: false, sync_screenshots: true };
 
   beforeEach(() => {
     vi.mocked(invoke).mockReset().mockResolvedValue(null);

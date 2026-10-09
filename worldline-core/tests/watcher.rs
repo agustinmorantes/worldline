@@ -34,6 +34,7 @@ fn changes_are_captured_and_restores_do_not_create_versions() {
         &MonitoringSettings {
             version_cooldown_minutes: 0,
             snapshot_debounce_seconds: 0.2,
+            ..MonitoringSettings::default()
         },
     )
     .unwrap();
@@ -104,6 +105,7 @@ fn imported_history_is_not_snapshotted_until_a_version_is_chosen() {
         &MonitoringSettings {
             version_cooldown_minutes: 0,
             snapshot_debounce_seconds: 0.2,
+            ..MonitoringSettings::default()
         },
     )
     .unwrap();

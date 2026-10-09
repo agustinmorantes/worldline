@@ -16,6 +16,9 @@ pub const FORMAT_VERSION: u32 = 3;
 const METADATA: &str = "metadata.json";
 /// The game's icon, normalized to 256 px PNG (ADR 0005).
 const ICON: &str = "icon.png";
+/// A version's screenshot, in the version's folder. It usually arrives after
+/// the version is published, so it isn't part of the (immutable) metadata.
+const SCREENSHOT: &str = "screenshot.jpg";
 const RESERVED_WINDOWS_NAMES: &[&str] = &[
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -474,6 +477,32 @@ impl Store {
     pub fn write_icon(&self, game_slug: &str, png: &[u8]) -> Result<()> {
         ensure_slug(game_slug)?;
         write_bytes(&self.icon_path(game_slug), png)
+    }
+
+    pub fn screenshot_path(&self, game_slug: &str, slot_slug: &str, version_slug: &str) -> PathBuf {
+        self.slot_dir(game_slug, slot_slug)
+            .join("versions")
+            .join(version_slug)
+            .join(SCREENSHOT)
+    }
+
+    /// Atomically stores the screenshot of a published version.
+    pub fn write_screenshot(
+        &self,
+        game_slug: &str,
+        slot_slug: &str,
+        version_slug: &str,
+        jpeg: &[u8],
+    ) -> Result<()> {
+        ensure_slug(game_slug)?;
+        ensure_slug(slot_slug)?;
+        ensure_slug(version_slug)?;
+        let path = self.screenshot_path(game_slug, slot_slug, version_slug);
+        // Writing into a missing folder would leave a half-arrived version.
+        if !path.parent().is_some_and(Path::is_dir) {
+            bail!("version {version_slug} is not published");
+        }
+        write_bytes(&path, jpeg)
     }
 
     pub fn write_tracked_dir(&self, game_slug: &str, meta: &TrackedDirMeta) -> Result<()> {

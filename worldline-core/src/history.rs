@@ -124,6 +124,27 @@ impl History {
         )
     }
 
+    pub fn write_screenshot(&self, version_id: i32, jpeg: &[u8]) -> Result<()> {
+        let version = self.index.get_version(version_id)?;
+        self.store.write_screenshot(
+            &version.game.folder_slug,
+            &version.slot.folder_slug,
+            &version.version.folder_slug,
+            jpeg,
+        )
+    }
+
+    /// The version's screenshot, if it has one; a retired version has none.
+    pub fn screenshot_path(&self, version_id: i32) -> Result<Option<PathBuf>> {
+        let version = self.index.get_version(version_id)?;
+        let path = self.store.screenshot_path(
+            &version.game.folder_slug,
+            &version.slot.folder_slug,
+            &version.version.folder_slug,
+        );
+        Ok((!version.version.retired && path.is_file()).then_some(path))
+    }
+
     pub fn create_game(&self, title: &str, dirs: &[String]) -> Result<FullGame> {
         let title = self.validate_title(title, None)?;
         let now = Utc::now();
