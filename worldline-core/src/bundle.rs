@@ -62,7 +62,7 @@ struct Bundle {
     game: GameRecord,
     retired: HashMap<Uuid, crate::store::RetirementMarker>,
     // Dropped last, after `store` lets go of the files.
-    _unpacked: Unpacked,
+    _unpacked: Option<Unpacked>,
 }
 
 /// A temporary directory holding an unzipped bundle, removed on drop.
@@ -120,7 +120,13 @@ fn unpack(path: &Path) -> Result<Unpacked> {
 
 fn open(path: &Path) -> Result<Bundle> {
     let unpacked = unpack(path)?;
-    let root = unpacked.0.as_path();
+    let mut bundle = load(&unpacked.0, path)?;
+    bundle._unpacked = Some(unpacked);
+    Ok(bundle)
+}
+
+/// Opens the unzipped bundle at `root`; `path` names it in errors.
+fn load(root: &Path, path: &Path) -> Result<Bundle> {
     let store = Store::open_existing(root)
         .with_context(|| format!("{} is not a history bundle", path.display()))?;
     let manifest: ExportManifest =
@@ -146,7 +152,7 @@ fn open(path: &Path) -> Result<Bundle> {
         store,
         game,
         retired,
-        _unpacked: unpacked,
+        _unpacked: None,
     })
 }
 
@@ -223,7 +229,7 @@ pub fn export(
 
     let staging = parent.join(format!(".export-{}", crate::store::short_random()));
     let staging_zip = staging.with_extension("zip");
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<HistoryBundleSummary> {
         let bundle = Store::open(&staging)?;
         Transfer::new(&history.store, &bundle, Completeness::Complete).copy_game(
             &record,
@@ -238,16 +244,18 @@ pub fn export(
                 exported_at: Utc::now(),
             },
         )?;
+        let summary = summary(&load(&staging, destination)?);
         pack(&staging, &staging_zip)?;
-        rename_no_replace(&staging_zip, destination)
-            .with_context(|| format!("Failed to publish the bundle at {}", destination.display()))
+        rename_no_replace(&staging_zip, destination).with_context(|| {
+            format!("Failed to publish the bundle at {}", destination.display())
+        })?;
+        Ok(summary)
     })();
     let _ = std::fs::remove_dir_all(&staging);
     if result.is_err() {
         let _ = std::fs::remove_file(&staging_zip);
     }
-    result?;
-    inspect(destination).map(report)
+    result.map(report)
 }
 
 /// Adds a bundle's history to the local store without restoring anything.
