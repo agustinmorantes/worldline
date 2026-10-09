@@ -1,16 +1,21 @@
 //! The overlay's Win32 side, as S0 measured it: the foreground gate, the client area and DPI,
-//! and showing the window without activating it, directly above the game in the z-order.
+//! and showing the window without activating it, directly above the game in the z-order. Also
+//! the hook that reports each new foreground window.
 
 use super::decide::Rect;
+use std::cell::RefCell;
 use std::os::windows::ffi::OsStringExt;
 use tauri::WebviewWindow;
+use tauri_plugin_log::log::warn;
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     ClientToScreen, MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -22,8 +27,75 @@ pub fn foreground() -> isize {
     unsafe { GetForegroundWindow() as isize }
 }
 
+type Changed = Box<dyn Fn(isize)>;
+
+thread_local! {
+    /// The hook thread's callback: the hook procedure gets no user data.
+    static CHANGED: RefCell<Option<Changed>> = const { RefCell::new(None) };
+}
+
+/// The foreground hook's thread. Dropping it ends the thread and unhooks.
+pub struct ForegroundHook(u32);
+
+impl Drop for ForegroundHook {
+    fn drop(&mut self) {
+        unsafe { PostThreadMessageW(self.0, WM_QUIT, 0, 0) };
+    }
+}
+
+/// Calls `changed` with every new foreground window, on a thread of its own with a message loop.
+/// The hook is out of context: Windows calls it in our process, nothing goes into the game's.
+pub fn on_foreground(changed: impl Fn(isize) + Send + 'static) -> ForegroundHook {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        CHANGED.with(|cell| *cell.borrow_mut() = Some(Box::new(changed)));
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            // Creates the thread's queue, so the quit can't be posted before it exists.
+            PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+            let _ = tx.send(GetCurrentThreadId());
+            let hook = SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                std::ptr::null_mut(),
+                Some(foreground_changed),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            );
+            if hook.is_null() {
+                warn!("overlay: couldn't watch the foreground window");
+                return;
+            }
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                DispatchMessageW(&msg);
+            }
+            UnhookWinEvent(hook);
+        }
+    });
+    ForegroundHook(rx.recv().unwrap_or(0))
+}
+
+unsafe extern "system" fn foreground_changed(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    object: i32,
+    child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if object == OBJID_WINDOW && child == CHILDID_SELF as i32 {
+        CHANGED.with(|cell| {
+            if let Some(changed) = cell.borrow().as_ref() {
+                changed(hwnd as isize);
+            }
+        });
+    }
+}
+
 /// The executable of the process that owns `hwnd`, or `None` if it's no longer a window.
-fn exe_of(hwnd: isize) -> Option<String> {
+pub fn exe_of(hwnd: isize) -> Option<String> {
     let mut pid = 0u32;
     if unsafe { GetWindowThreadProcessId(hwnd as HWND, &mut pid) } == 0 {
         return None;

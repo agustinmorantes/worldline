@@ -21,7 +21,7 @@ function emit<K extends keyof Events>(event: K, payload: Events[K]): void {
 const show = (over: Partial<OverlayShow> = {}): OverlayShow => ({
   id: 1, swap: false, kind: 'checkpoint', title: 'Lantern Knight', accentHue: 28, version: 42,
   corner: 'br', quiet: false, motion: 'full', language: 'en', durationMs: 3200, ...over,
-});
+}) as OverlayShow;
 
 async function mount(): Promise<void> {
   render(<Overlay />);
@@ -53,6 +53,72 @@ describe('Overlay', () => {
     expect(popup()).toHaveClass('ov', 'c-tl', 'enter');
     expect(popup()).toHaveTextContent('Checkpoint#41#42Lantern Knight');
     expect(popup().style.getPropertyValue('--dur')).toBe('3200ms');
+  });
+
+  it('shows a new timeline in the branch colour, with what it branched off', async () => {
+    await mount();
+    emit('overlay-show', show({ kind: 'newTimeline', version: 43, from: { version_number: 40, tag: 'Before the bridge' } }));
+    expect(popup()).toHaveClass('k-timeline');
+    expect(popup()).toHaveTextContent('New timeline#42#43Branched off “Before the bridge”');
+    expect(popup().style.getPropertyValue('--lane')).toBe('oklch(80% 0.13 183)');
+    expect(popup().querySelector('.burst')).not.toBeNull();
+    emit('overlay-show', show({ id: 2, kind: 'newTimeline', version: 43, from: { version_number: 40, tag: null } }));
+    expect(popup()).toHaveTextContent('Branched off #40');
+  });
+
+  it('shows the session start with the last checkpoint, or none yet', async () => {
+    await mount();
+    emit('overlay-show', show({ kind: 'sessionStart', lastAt: Date.now() - 2 * 86_400_000 }));
+    expect(popup()).toHaveClass('k-recording');
+    expect(popup()).toHaveTextContent('Worldline is recordingLast checkpoint 2 days ago');
+    expect(popup().querySelector('.num')).toBeNull();
+    emit('overlay-show', show({ id: 2, kind: 'sessionStart', lastAt: null }));
+    expect(popup()).toHaveTextContent('No checkpoints yet');
+  });
+
+  it('warns that another device is ahead, with a badge', async () => {
+    await mount();
+    emit('overlay-show', show({ kind: 'deviceAhead', device: 'Steam Deck', count: 3, durationMs: 8000 }));
+    expect(popup()).toHaveClass('k-ahead');
+    expect(popup()).toHaveTextContent('Steam Deck is ahead3 newer checkpoints · quit and sync first');
+    expect(popup().querySelector('.badge path')).toHaveAttribute('d', 'M7 3.2v4.6M7 10.6v.2');
+    emit('overlay-show', show({ id: 2, kind: 'deviceAhead', device: 'Steam Deck', count: 1, language: 'es' }));
+    expect(popup()).toHaveTextContent('Steam Deck va por delante1 punto de control más nuevo · sal y sincroniza primero');
+  });
+
+  it('says a failed checkpoint left the game save untouched, with why', async () => {
+    await mount();
+    emit('overlay-show', show({ kind: 'captureFailed', reason: 'disk_full' }));
+    expect(popup()).toHaveClass('k-failed');
+    expect(popup()).toHaveTextContent('Checkpoint not savedDisk full · your game save is untouched');
+    expect(popup().querySelector('.badge path')).toHaveAttribute('d', 'M4.5 4.5l5 5M9.5 4.5l-5 5');
+    emit('overlay-show', show({ id: 2, kind: 'captureFailed', reason: 'other', language: 'es' }));
+    expect(popup()).toHaveTextContent('No se guardó el punto de controlNo se pudo escribir · tu partida está intacta');
+  });
+
+  it('shows a kept checkpoint as a diamond, its number still', async () => {
+    await mount();
+    emit('overlay-show', show({ kind: 'kept', version: 42, name: null }));
+    expect(popup()).toHaveClass('k-pinned');
+    expect(popup()).toHaveTextContent('Kept forever#42Rename it later in Worldline');
+    expect(popup().querySelector('.roll')).toBeNull();
+    emit('overlay-show', show({ id: 2, kind: 'kept', version: 42, name: 'Boss door' }));
+    expect(popup()).toHaveTextContent('“Boss door”');
+  });
+
+  it('only checkpoints and warnings get their badge or number', async () => {
+    await mount();
+    emit('overlay-show', show());
+    expect(popup()).toHaveClass('k-checkpoint');
+    expect(popup().querySelector('.badge')).toBeNull();
+  });
+
+  it('a swap from a popup without a number rolls from the number before', async () => {
+    await mount();
+    emit('overlay-show', show({ kind: 'sessionStart', lastAt: null }));
+    emit('overlay-show', show({ id: 2, swap: true, version: 43 }));
+    expect(popup()).toHaveClass('swap', 'k-checkpoint');
+    expect(popup()).toHaveTextContent('Checkpoint#42#43');
   });
 
   it('speaks the language it is sent', async () => {

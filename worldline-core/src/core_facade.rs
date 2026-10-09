@@ -1412,6 +1412,30 @@ impl WorldlineCore {
         self.sync_report(&remote, &HashSet::new(), &installed, Vec::new())
     }
 
+    /// One game's sync status as it is now (like `sync_status`, without pulling or applying
+    /// anything), with the parents of its versions on the remote, so the distance to another
+    /// device's tip can be told even before that tip is pulled. `None` when the remote has no
+    /// status for the game.
+    pub fn game_sync_status(
+        &self,
+        game_uuid: Uuid,
+    ) -> Result<Option<(sync::GameSyncStatus, sync::Parents)>> {
+        let remote = self.require_remote()?;
+        let installed = self
+            .last_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let report = self.sync_report(&remote, &HashSet::new(), &installed, Vec::new())?;
+        let Some(status) = report.games.into_iter().find(|s| s.game_uuid == game_uuid) else {
+            return Ok(None);
+        };
+        let Some(game) = remote.store.game(game_uuid)? else {
+            return Ok(None);
+        };
+        Ok(Some((status, sync::parents(&game))))
+    }
+
     /// Adopts the remote game `uuid` on this device.
     pub fn adopt_remote_game(&self, uuid: Uuid) -> Result<FullGame> {
         let remote = self.require_remote()?;

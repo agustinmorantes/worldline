@@ -1,4 +1,4 @@
-/* The checkpoint popup, from `docs/design/mocks/overlay-main.dc.html` and the handoff's
+/* The popup, from `docs/design/mocks/overlay-main.dc.html` and the handoff's
    "Anatomy" and "Motion". The window is the popup plus a 16px margin on every side, flush with
    the game's client corner, so the popup sits at the handoff's 16px inset. */
 @import "@fontsource/figtree/latin-500.css";
@@ -9,6 +9,9 @@
   --tx: oklch(96.5% .004 265);
   --ez: cubic-bezier(.2, .9, .25, 1);
   --spring: cubic-bezier(.34, 1.5, .5, 1);
+  --live: oklch(82% .17 150);
+  --warn: oklch(84% .14 75);
+  --err: oklch(72% .17 25);
 }
 
 html, body {
@@ -52,10 +55,42 @@ html, body {
 }
 .tile svg { display: block; overflow: visible; }
 .mk path { fill: none; stroke-linecap: round; stroke-width: 5.8; stroke: var(--acc); stroke-dasharray: 1; stroke-dashoffset: 0; }
-.mk circle { transform-box: fill-box; transform-origin: center; }
+.mk circle, .mk .dia { transform-box: fill-box; transform-origin: center; }
 .mk .end { fill: var(--acc); }
 .mk .node { fill: var(--acc); stroke: color-mix(in oklch, var(--acc) 22%, oklch(18% .02 265)); stroke-width: 4.35; }
+.mk .dia { display: none; fill: var(--acc); stroke: color-mix(in oklch, var(--acc) 22%, oklch(18% .02 265)); stroke-width: 3.5; stroke-linejoin: round; }
+.mk .lvr, .mk .burst { display: none; fill: none; stroke-width: 2.5; }
 .ring { position: absolute; inset: 0; border-radius: 9px; border: 2px solid var(--tone); opacity: 0; pointer-events: none; }
+
+.badge {
+  position: absolute;
+  right: -6px;
+  top: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: oklch(18% .03 265);
+  box-shadow: 0 0 0 2px oklch(13% .015 265);
+}
+.badge svg { display: block; }
+
+/* Each kind's look and tone (the mock's "event looks"). */
+.k-recording { --tone: var(--live); }
+.k-recording .node { fill: var(--live); }
+.k-recording .lvr { display: inline; stroke: var(--live); animation: halo 1.6s ease-out infinite; }
+.k-timeline { --tone: var(--lane); }
+.k-timeline .up { stroke: var(--lane); }
+.k-timeline .eu { fill: var(--lane); }
+.k-timeline .burst { display: inline; stroke: var(--lane); opacity: 0; }
+.k-pinned .node { display: none; }
+.k-pinned .dia { display: inline; }
+.k-ahead { --tone: var(--warn); }
+.k-ahead .badge { background: var(--warn); }
+.k-failed { --tone: var(--err); }
+.k-failed .badge { background: var(--err); }
 
 .txt { overflow: hidden; white-space: nowrap; transition: width 440ms var(--ez); }
 .lines {
@@ -104,11 +139,16 @@ html, body {
 .ov.enter:not(.swap) .txt { animation: open 520ms var(--ez) 380ms backwards; }
 .ov.enter:not(.swap) .lines { animation: slide 420ms var(--ez) 500ms backwards; }
 .ov.enter:not(.swap) .ring { animation: ring 900ms var(--ez) 600ms both; }
-/* Swap (a checkpoint over a checkpoint): the lines fade up, the tile bumps, the halo replays;
-   the width follows the new text. */
+.ov.enter .dia { animation: pop 460ms var(--spring) 420ms backwards; }
+.ov.enter .burst { animation: burst 900ms var(--ez) 640ms both; }
+.ov.enter .badge { animation: pop 420ms var(--spring) 700ms backwards; }
+/* Swap (a new event over the one showing): the lines fade up, the tile bumps, the halo and the
+   kind's accent replay; the width follows the new text. */
 .ov.swap .lines { animation: lift 380ms var(--ez) backwards; }
 .ov.swap .tile { animation: bump 420ms var(--spring); }
 .ov.swap .ring { animation: ring 900ms var(--ez) 120ms both; }
+.ov.swap .burst { animation-delay: 120ms; }
+.ov.swap .dia, .ov.swap .badge { animation-delay: 80ms; }
 .roll { animation: roll 560ms var(--spring) backwards; }
 .roll.late { animation-delay: 720ms; }
 .life { animation: life var(--dur) linear both; }
@@ -132,6 +172,8 @@ html, body {
 @keyframes pop { 0% { transform: scale(0); } 60% { transform: scale(1.4); } 100% { transform: scale(1); } }
 @keyframes open { from { width: 0; } }
 @keyframes slide { from { opacity: 0; transform: translateX(-10px); } }
+@keyframes burst { from { opacity: 1; transform: scale(.6); } to { opacity: 0; transform: scale(3.4); } }
+@keyframes halo { 0% { transform: scale(1); opacity: .9; } 100% { transform: scale(2.4); opacity: 0; } }
 @keyframes ring { from { opacity: .9; transform: scale(1); } to { opacity: 0; transform: scale(1.7); } }
 @keyframes roll { from { transform: translateY(0); } }
 @keyframes life { from { transform: scaleX(1); } to { transform: scaleX(0); } }

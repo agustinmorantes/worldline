@@ -297,6 +297,22 @@ export const en = {
   /** The in-game popup (`gui/overlay.html`) and its settings. */
   overlay: {
     checkpoint: 'Checkpoint',
+    sessionStart: 'Worldline is recording',
+    lastCheckpoint: (rel: string): string => `Last checkpoint ${rel}`,
+    noCheckpointsYet: 'No checkpoints yet',
+    newTimeline: 'New timeline',
+    branchedOffNamed: (tag: string): string => `Branched off “${tag}”`,
+    branchedOffNumber: (n: number): string => `Branched off #${n.toString()}`,
+    kept: 'Kept forever',
+    renameLater: 'Rename it later in Worldline',
+    keptNamed: (name: string): string => `“${name}”`,
+    ahead: (device: string): string => `${device} is ahead`,
+    aheadDetail: (count: number): string =>
+      `${plural('en', count, { one: '# newer checkpoint', other: '# newer checkpoints' })} · quit and sync first`,
+    notSaved: 'Checkpoint not saved',
+    diskFull: 'Disk full',
+    couldntWrite: 'Couldn’t write it',
+    untouched: 'your game save is untouched',
     section: 'In-game popup',
     sound: 'Play a sound',
     soundHint: 'A soft sound with each popup, and when a hotkey keeps a checkpoint',

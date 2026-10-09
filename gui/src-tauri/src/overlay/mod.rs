@@ -3,11 +3,11 @@
 //! placement and sound. The overlay webview (`gui/overlay.html`) only renders what it's sent,
 //! and says when its exit animation has ended.
 //!
-//! Windows only; elsewhere every entry point is a no-op. O1 shows checkpoints; the other events
-//! (O2) and the hotkeys (O3, O4) build on the same popup.
+//! Windows only; elsewhere every entry point is a no-op. The hotkeys (O3, O4) build on the same
+//! popup and on the game in front.
 //!
-//! Never take `games` or `popup` on the main thread: window calls from other threads wait for
-//! the main thread, so a lock held there would deadlock them.
+//! Never take `front`, `games` or `popup` on the main thread: window calls from other threads
+//! wait for the main thread, so a lock held there would deadlock them. Take them in that order.
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod decide;
@@ -20,6 +20,7 @@ use decide::{Corner, GameCorner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
+use worldline_core::detection::{BranchFrom, CaptureFailure};
 
 /// The overlay preferences the GUI pushes (`set_overlay_config`), with the motion and language
 /// it resolved. The GUI owns the schema (`gui/src/shared/prefs/schema.ts`).
@@ -33,9 +34,8 @@ pub struct OverlayConfig {
     /// By game `uuid`.
     per_game: HashMap<String, GameCorner>,
     quiet: bool,
-    /// The device-ahead warning (O2) and the hotkeys (O3, O4).
-    #[allow(dead_code)]
     warn_ahead: bool,
+    /// The hotkeys (O3, O4).
     #[allow(dead_code)]
     quick_keep_key: String,
     #[allow(dead_code)]
@@ -56,11 +56,17 @@ pub enum Motion {
 pub struct Overlay {
     /// `None` until the GUI pushes it; no popup shows before that.
     config: Mutex<Option<OverlayConfig>>,
-    /// Also the lifecycle lock: the window is only created or destroyed while it's held.
+    /// The running game whose window is in front, if any.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    front: Mutex<Option<i32>>,
+    /// Also the lifecycle lock: the window and the foreground hook are only created or destroyed
+    /// while it's held.
     #[cfg_attr(not(windows), allow(dead_code))]
     games: Mutex<decide::Games>,
     #[cfg_attr(not(windows), allow(dead_code))]
     popup: Mutex<decide::Popup>,
+    #[cfg(windows)]
+    hook: Mutex<Option<win::ForegroundHook>>,
 }
 
 impl Overlay {
@@ -74,7 +80,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[cfg(windows)]
-pub use windows::{game_started, game_stopped, setup, version_created};
+pub use windows::{checkpoint_failed, game_started, game_stopped, setup, version_created};
 
 #[cfg(not(windows))]
 pub fn setup(app: &tauri::App) {
@@ -89,12 +95,21 @@ pub fn game_started(_app: &tauri::AppHandle, _game_id: i32) {}
 pub fn game_stopped(_app: &tauri::AppHandle, _game_id: i32) {}
 
 #[cfg(not(windows))]
-pub fn version_created(_app: &tauri::AppHandle, _game_id: i32, _version_number: i32) {}
+pub fn version_created(
+    _app: &tauri::AppHandle,
+    _game_id: i32,
+    _version_number: i32,
+    _branch_from: Option<BranchFrom>,
+) {
+}
+
+#[cfg(not(windows))]
+pub fn checkpoint_failed(_app: &tauri::AppHandle, _game_id: i32, _reason: CaptureFailure) {}
 
 #[cfg(windows)]
 mod windows {
     use super::decide::{self, Kind, Outcome, Rect, Watch};
-    use super::{lock, sound, win, Corner, Motion, Overlay};
+    use super::{lock, sound, win, BranchFrom, CaptureFailure, Corner, Motion, Overlay};
     use crate::webview_memory::set_low_memory;
     use serde::Serialize;
     use std::sync::Arc;
@@ -103,6 +118,7 @@ mod windows {
         AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     };
     use tauri_plugin_log::log::{info, warn};
+    use worldline_core::models::Game;
     use worldline_core::WorldlineCore;
 
     const LABEL: &str = "overlay";
@@ -110,6 +126,8 @@ mod windows {
     const POLL: Duration = Duration::from_millis(200);
     /// The longest exit animation is 620 ms; hide the window anyway if "done" never comes.
     const LEAVE_LIMIT: Duration = Duration::from_millis(1500);
+    /// After the game first comes to the front, past splash screens (handoff, "Events").
+    const SESSION_DELAY: Duration = Duration::from_secs(2);
 
     /// What the webview renders (`OverlayShow`, `gui/src/ipc/events.ts`).
     #[derive(Serialize, Clone)]
@@ -117,15 +135,56 @@ mod windows {
     struct Show {
         id: u64,
         swap: bool,
-        kind: Kind,
+        #[serde(flatten)]
+        detail: Detail,
         title: String,
         accent_hue: i32,
-        version: i32,
         corner: Corner,
+        /// Only the mark. Never for warnings and errors.
         quiet: bool,
         motion: Motion,
         language: String,
         duration_ms: u64,
+    }
+
+    /// What the popup says, by kind.
+    #[derive(Serialize, Clone)]
+    #[serde(
+        tag = "kind",
+        rename_all = "camelCase",
+        rename_all_fields = "camelCase"
+    )]
+    enum Detail {
+        Checkpoint {
+            version: i32,
+        },
+        NewTimeline {
+            version: i32,
+            from: BranchFrom,
+        },
+        SessionStart {
+            /// The game's latest version, Unix ms; `None` when it has none.
+            last_at: Option<i64>,
+        },
+        DeviceAhead {
+            device: String,
+            count: u32,
+        },
+        CaptureFailed {
+            reason: CaptureFailure,
+        },
+    }
+
+    impl Detail {
+        fn kind(&self) -> Kind {
+            match self {
+                Detail::Checkpoint { .. } => Kind::Checkpoint,
+                Detail::NewTimeline { .. } => Kind::NewTimeline,
+                Detail::SessionStart { .. } => Kind::SessionStart,
+                Detail::DeviceAhead { .. } => Kind::DeviceAhead,
+                Detail::CaptureFailed { .. } => Kind::CaptureFailed,
+            }
+        }
     }
 
     #[derive(Serialize, Clone)]
@@ -153,25 +212,42 @@ mod windows {
         });
     }
 
-    /// Creates the overlay window, hidden, when a game with an install dir starts.
+    /// Creates the overlay window, hidden, and starts watching the foreground window when a game
+    /// with an install dir starts. The game may already be in front.
     pub fn game_started(app: &AppHandle, game_id: i32) {
-        let has_install_dir = app
+        let install_dir = app
             .state::<Arc<WorldlineCore>>()
             .get_game(game_id)
-            .is_ok_and(|game| game.game.install_dir.is_some());
+            .ok()
+            .and_then(|game| game.game.install_dir);
         let overlay = app.state::<Overlay>();
         let mut games = lock(&overlay.games);
-        if games.started(game_id, has_install_dir) && app.get_webview_window(LABEL).is_none() {
+        if !games.started(game_id, install_dir.as_deref()) {
+            return;
+        }
+        if app.get_webview_window(LABEL).is_none() {
             lock(&overlay.popup).reset();
             create(app);
         }
+        let mut hook = lock(&overlay.hook);
+        if hook.is_none() {
+            let handle = app.clone();
+            *hook = Some(win::on_foreground(move |hwnd| {
+                foreground_changed(&handle, hwnd)
+            }));
+        }
+        drop(hook);
+        drop(games);
+        foreground_changed(app, win::foreground());
     }
 
-    /// Destroys the overlay window when the last game with an install dir stops.
+    /// Destroys the overlay window and stops watching the foreground window when the last game
+    /// with an install dir stops.
     pub fn game_stopped(app: &AppHandle, game_id: i32) {
         let overlay = app.state::<Overlay>();
         let mut games = lock(&overlay.games);
         if games.stopped(game_id) {
+            *lock(&overlay.hook) = None;
             lock(&overlay.popup).reset();
             if let Some(window) = app.get_webview_window(LABEL) {
                 if let Err(err) = window.destroy() {
@@ -179,6 +255,83 @@ mod windows {
                 }
             }
         }
+        drop(games);
+        foreground_changed(app, win::foreground());
+    }
+
+    /// A new window is in front: records which running game it belongs to, if any. A game's
+    /// first time in front after it starts brings its session start.
+    fn foreground_changed(app: &AppHandle, hwnd: isize) {
+        let overlay = app.state::<Overlay>();
+        let mut front = lock(&overlay.front);
+        let exe = win::exe_of(hwnd);
+        let mut games = lock(&overlay.games);
+        let game = exe.and_then(|exe| games.running_from(&exe));
+        if *front == game {
+            return;
+        }
+        *front = game;
+        // The hotkeys (O3, O4) follow the game in front from here.
+        let Some(game_id) = game else {
+            return;
+        };
+        if let Some(run) = games.take_session(game_id) {
+            let app = app.clone();
+            std::thread::spawn(move || session_start(&app, game_id, run));
+        }
+    }
+
+    /// The session start of the game's run `run`, or the device-ahead warning in its place. Not
+    /// if the run ended meanwhile: checked early, and again when the popup is offered.
+    fn session_start(app: &AppHandle, game_id: i32, run: u64) {
+        std::thread::sleep(SESSION_DELAY);
+        let overlay = app.state::<Overlay>();
+        if lock(&overlay.games).install_dir(game_id, run).is_none() {
+            return;
+        }
+        let warn_ahead = lock(&overlay.config)
+            .as_ref()
+            .is_some_and(|config| config.warn_ahead);
+        let core = app.state::<Arc<WorldlineCore>>();
+        let cloud_on = core
+            .get_sync_settings()
+            .is_ok_and(|settings| settings.remote_path.is_some());
+        // The sync status as it is now, read from the remote without any lock held. Unreadable
+        // counts as unknown: the plain session start.
+        let synced = if warn_ahead && cloud_on {
+            core.get_game(game_id)
+                .ok()
+                .and_then(|full| uuid::Uuid::parse_str(&full.game.uuid).ok())
+                .and_then(|uuid| core.game_sync_status(uuid).ok().flatten())
+        } else {
+            None
+        };
+        // After the status, so the count runs from where this device is now.
+        let Ok(full) = core.get_game(game_id) else {
+            return;
+        };
+        let ahead = synced.as_ref().and_then(|(status, parents)| {
+            let local = full
+                .last_version
+                .as_ref()
+                .and_then(|version| uuid::Uuid::parse_str(&version.uuid).ok());
+            decide::device_ahead(warn_ahead, cloud_on, Some(status), parents, local)
+        });
+        let detail = match ahead {
+            Some(ahead) => Detail::DeviceAhead {
+                device: ahead.device,
+                count: ahead.count,
+            },
+            None => Detail::SessionStart {
+                last_at: full
+                    .versions
+                    .iter()
+                    .map(|version| version.created_at)
+                    .max()
+                    .map(|at| at.and_utc().timestamp_millis()),
+            },
+        };
+        present(app, full.game, detail, Some(run));
     }
 
     fn create(app: &AppHandle) {
@@ -214,16 +367,43 @@ mod windows {
         set_low_memory(&window, true);
     }
 
-    /// Shows the checkpoint popup if the game that saved is the window in front.
-    pub fn version_created(app: &AppHandle, game_id: i32, version_number: i32) {
+    /// The checkpoint popup, or the new-timeline one when the version starts a new timeline.
+    pub fn version_created(
+        app: &AppHandle,
+        game_id: i32,
+        version_number: i32,
+        branch_from: Option<BranchFrom>,
+    ) {
+        let Ok(full) = app.state::<Arc<WorldlineCore>>().get_game(game_id) else {
+            return;
+        };
+        let detail = match branch_from {
+            Some(from) => Detail::NewTimeline {
+                version: version_number,
+                from,
+            },
+            None => Detail::Checkpoint {
+                version: version_number,
+            },
+        };
+        present(app, full.game, detail, None);
+    }
+
+    /// An automatic capture failed: nothing was saved.
+    pub fn checkpoint_failed(app: &AppHandle, game_id: i32, reason: CaptureFailure) {
+        let Ok(full) = app.state::<Arc<WorldlineCore>>().get_game(game_id) else {
+            return;
+        };
+        present(app, full.game, Detail::CaptureFailed { reason }, None);
+    }
+
+    /// Shows the popup if `game` is the window in front; otherwise it's dropped, not queued.
+    /// `run` names the run a session start belongs to; it's dropped if that run has ended.
+    fn present(app: &AppHandle, game: Game, detail: Detail, run: Option<u64>) {
         let overlay = app.state::<Overlay>();
         let Some(config) = lock(&overlay.config).clone() else {
             return;
         };
-        let Ok(full) = app.state::<Arc<WorldlineCore>>().get_game(game_id) else {
-            return;
-        };
-        let game = full.game;
         let Some(install_dir) = game.install_dir.as_deref() else {
             return;
         };
@@ -237,7 +417,7 @@ mod windows {
         };
         // Only over the game, only while it's in front; dropped otherwise, not queued.
         let Some(hwnd) = win::foreground_from(install_dir) else {
-            info!("overlay: game {game_id} isn't in front; no popup");
+            info!("overlay: game {} isn't in front; no popup", game.id);
             return;
         };
         let Some(client) = win::client_rect(hwnd) else {
@@ -245,13 +425,16 @@ mod windows {
         };
         let rect = decide::place(client, decide::POPUP, win::scale(hwnd), corner);
 
-        let kind = Kind::Checkpoint;
+        let kind = detail.kind();
+        // The lifecycle lock, held until the popup shows: no stop or restart in between.
+        let games = lock(&overlay.games);
         let mut popup = lock(&overlay.popup);
         let Some(window) = app.get_webview_window(LABEL) else {
             return;
         };
-        let (outcome, id) = popup.offer(kind);
-        if outcome == Outcome::Drop {
+        let session = run.map(|run| (game.id, run));
+        let (outcome, id) = decide::admit(&games, &mut popup, kind, session, config.quiet);
+        if !matches!(outcome, Outcome::Show | Outcome::Swap) {
             return;
         }
         let duration = kind.duration(config.quiet);
@@ -259,12 +442,11 @@ mod windows {
         let show = Show {
             id,
             swap: outcome == Outcome::Swap,
-            kind,
+            detail,
             title: game.title,
             accent_hue: game.accent_hue,
-            version: version_number,
             corner,
-            quiet: config.quiet,
+            quiet: config.quiet && !kind.urgent(),
             motion: config.motion,
             language: config.language,
             duration_ms: duration.as_millis() as u64,
@@ -279,6 +461,7 @@ mod windows {
             }
         }
         drop(popup);
+        drop(games);
 
         let app = app.clone();
         std::thread::spawn(move || watch(&app, id, hwnd, client, duration));

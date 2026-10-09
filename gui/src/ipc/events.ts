@@ -34,21 +34,33 @@ export interface Events {
 }
 
 /** A popup for the overlay webview to render; Rust has decided everything else. */
-export interface OverlayShow {
+export type OverlayShow = OverlayBase & OverlayDetail;
+
+interface OverlayBase {
   /** Every show or swap gets a new id; "done" names the one that ended. */
   id: number;
   /** A popup is showing: change it in place instead of rising again. */
   swap: boolean;
-  kind: 'checkpoint';
   title: string;
   accentHue: number;
-  version: number;
   corner: Corner;
+  /** Only the mark; never for warnings and errors. */
   quiet: boolean;
   motion: 'full' | 'reduced';
   language: Locale;
   durationMs: number;
 }
+
+/** What the popup says, by kind. */
+export type OverlayDetail =
+  | { kind: 'checkpoint'; version: number }
+  | { kind: 'newTimeline'; version: number; from: BranchFrom }
+  /** The hotkeys' (O3, O4); `name` once it's named. */
+  | { kind: 'kept'; version: number; name: string | null }
+  /** `lastAt`: the game's latest checkpoint, Unix ms. */
+  | { kind: 'sessionStart'; lastAt: number | null }
+  | { kind: 'deviceAhead'; device: string; count: number }
+  | { kind: 'captureFailed'; reason: CaptureFailure };
 
 /** What the overlay webview tells Rust: it listens now, and a popup's exit animation ended. */
 export interface OverlaySignals {

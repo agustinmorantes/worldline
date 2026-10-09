@@ -1244,3 +1244,60 @@ fn pulled_versions_are_remembered_for_push_healing_and_old_entries_forgotten() {
     assert!(pulls.contains_key(&version.uuid), "{state}");
     assert!(!pulls.contains_key(&stale.to_string()), "{state}");
 }
+
+#[test]
+fn one_games_status_is_read_as_it_is_now_without_pulling() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let game_a = a.add_game("Now");
+    let uuid = uuid_of(&game_a);
+    a.core.refresh_sync().unwrap();
+    let b = Device::synced(remote.path());
+    let game_b = b.core.adopt_remote_game(uuid).unwrap();
+    let v1 = game_b.versions[0].id;
+    let local = |b: &Device| Uuid::parse_str(&b.active_version(game_b.game.id).uuid).unwrap();
+
+    // A plays on and publishes. B hasn't pulled: its index lacks the tip, the remote line has it.
+    a.write("save.dat", "2");
+    let v2 = Uuid::parse_str(&a.checkpoint(game_a.game.id).uuid).unwrap();
+    a.core.push_sync().unwrap();
+    a.write("save.dat", "1"); // B's machine still holds version 1
+    let (status, parents) = b.core.game_sync_status(uuid).unwrap().unwrap();
+    assert_eq!(status.relation, Divergence::FastForward);
+    assert_eq!(status.remote_version_uuid, Some(v2));
+    assert_eq!(status.remote_version_id, None, "not pulled yet");
+    assert!(status.remote_device.is_some());
+    assert!(worldline_core::sync::is_ancestor(local(&b), v2, &parents));
+
+    // Applied: in sync at once, with no new report.
+    let (_, target) = relation(&b, uuid);
+    b.core.apply_remote_version(target.unwrap()).unwrap();
+    let (status, _) = b.core.game_sync_status(uuid).unwrap().unwrap();
+    assert_eq!(status.relation, Divergence::InSync);
+
+    // Restoring the older version after that puts B behind again, at once.
+    b.core.restore_version(v1).unwrap();
+    let (status, _) = b.core.game_sync_status(uuid).unwrap().unwrap();
+    assert_eq!(status.relation, Divergence::FastForward);
+    assert_eq!(status.remote_version_uuid, Some(v2));
+
+    // A capture of its own there makes it a new line: no longer just behind.
+    a.write("save.dat", "B3");
+    b.checkpoint(game_b.game.id);
+    let (status, _) = b.core.game_sync_status(uuid).unwrap().unwrap();
+    assert_ne!(status.relation, Divergence::FastForward);
+
+    // Another remote without the game has no status for it; no remote is an error.
+    let other = tempfile::tempdir().unwrap();
+    b.core
+        .update_sync_settings(SyncSettings {
+            remote_path: Some(other.path().to_string_lossy().into_owned()),
+        })
+        .unwrap();
+    assert!(b.core.game_sync_status(uuid).unwrap().is_none());
+    b.core
+        .update_sync_settings(SyncSettings { remote_path: None })
+        .unwrap();
+    assert!(b.core.game_sync_status(uuid).is_err());
+}
