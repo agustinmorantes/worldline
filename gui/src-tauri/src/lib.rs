@@ -9,6 +9,7 @@ use worldline_core::{OpenOptions, WorldlineCore};
 pub mod commands;
 mod dialogs;
 mod tray;
+mod webview_memory;
 
 /// Where the app keeps its data: the index, history, icons and GUI preferences.
 pub struct DataDir(pub PathBuf);

@@ -9,6 +9,8 @@ use tauri::{
 };
 use tauri_plugin_notification::NotificationExt;
 
+use crate::webview_memory::set_low_memory;
+
 /// The tray's text, in the language the GUI shows (ADR 0007).
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "e2e", derive(serde::Serialize))]
@@ -100,6 +102,7 @@ pub fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
             }
             api.prevent_close();
             let _ = win.hide();
+            set_low_memory(&win, true);
             if !state.has_shown_hint.swap(true, Ordering::Relaxed) {
                 let labels = state
                     .labels
@@ -149,6 +152,7 @@ pub fn e2e_tray_labels(app: AppHandle) -> Result<TrayLabels, String> {
 
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        set_low_memory(&window, false);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
