@@ -15,6 +15,12 @@ test.describe('sessions list', () => {
     await expect(page.getByText(/^~\dh \d\dm$/)).toBeVisible();
   });
 
+  test('labels a checkpoint dot on hover', async ({ page }) => {
+    await page.goto('/game/1');
+    await page.getByRole('button', { name: /^Elysium/ }).hover();
+    await expect(page.getByRole('tooltip')).toContainText('Elysium');
+  });
+
   test('selects checkpoints with the arrow keys', async ({ page }) => {
     await page.goto('/game/1');
     const panel = page.getByRole('complementary', { name: 'Selected checkpoint' });

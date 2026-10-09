@@ -6,6 +6,8 @@ import { isFolderUnreachable } from '@/features/library/sync-activity'
 /** Per query/mutation: the localized message shown when it fails. */
 interface ErrorMeta extends Record<string, unknown> {
   errorMessage?: (t: Messages) => string
+  /** Failures are not reported; the UI falls back on its own. */
+  quiet?: boolean
 }
 
 declare module '@tanstack/react-query' {
@@ -20,6 +22,7 @@ export const queryClient = new QueryClient({
     onError: (error, query) => {
       // An unreachable cloud folder is shown in the sync card and settings, not as a toast.
       if (isFolderUnreachable(error)) return
+      if (query.meta?.quiet === true) return
       const t = getT()
       reportError(query.meta?.errorMessage?.(t) ?? t.errors.loadFailed, error)
     },
