@@ -2,7 +2,7 @@ use super::RunningGames;
 use super::scheduler::Scheduler;
 use super::shots::{Attach, Change, Shots};
 use super::worker::{Shoot, Worker};
-use super::{CaptureTarget, Notification, Suppression};
+use super::{CaptureFailure, CaptureTarget, Notification, Suppression};
 use crate::history::CheckpointOutcome;
 use crate::models::{FullGame, MonitoringSettings};
 use crate::screenshot;
@@ -407,21 +407,26 @@ impl Loop {
     /// Returns whether the capture succeeded.
     fn capture(&mut self, game_id: i32) -> bool {
         match self.target.capture(game_id) {
-            Ok(CheckpointOutcome::Created(version)) => {
+            Ok((CheckpointOutcome::Created(version), branch_from)) => {
                 self.notify(Notification::VersionCreated {
                     game_id,
                     version_number: version.version_number,
+                    branch_from,
                 });
                 if let Ok(games) = self.target.games() {
                     self.games = games;
                 }
                 true
             }
-            Ok(CheckpointOutcome::Unchanged(_) | CheckpointOutcome::Empty) => true,
+            Ok((CheckpointOutcome::Unchanged(_) | CheckpointOutcome::Empty, _)) => true,
             Err(error) => {
                 self.notify(Notification::Error(format!(
                     "Automatic checkpoint failed: {error:#}"
                 )));
+                self.notify(Notification::CheckpointFailed {
+                    game_id,
+                    reason: CaptureFailure::from(&error),
+                });
                 false
             }
         }
@@ -482,9 +487,12 @@ mod tests {
             }])
         }
 
-        fn capture(&self, _game_id: i32) -> anyhow::Result<CheckpointOutcome> {
+        fn capture(
+            &self,
+            _game_id: i32,
+        ) -> anyhow::Result<(CheckpointOutcome, Option<super::super::BranchFrom>)> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(CheckpointOutcome::Empty)
+            Ok((CheckpointOutcome::Empty, None))
         }
 
         fn attach_screenshot(&self, _version_id: i32, _jpeg: &[u8]) -> anyhow::Result<()> {
@@ -539,7 +547,10 @@ mod tests {
             Ok(games)
         }
 
-        fn capture(&self, game_id: i32) -> anyhow::Result<CheckpointOutcome> {
+        fn capture(
+            &self,
+            game_id: i32,
+        ) -> anyhow::Result<(CheckpointOutcome, Option<super::super::BranchFrom>)> {
             let started = Utc::now().naive_utc();
             let n = self.created.fetch_add(1, Ordering::SeqCst) as i32;
             let outcome = CheckpointOutcome::Created(crate::models::Version {
@@ -558,7 +569,7 @@ mod tests {
             if let Some(checkpoints) = self.checkpoints.get() {
                 checkpoints.completed(game_id, started, &outcome);
             }
-            Ok(outcome)
+            Ok((outcome, None))
         }
 
         fn attach_screenshot(&self, version_id: i32, jpeg: &[u8]) -> anyhow::Result<()> {

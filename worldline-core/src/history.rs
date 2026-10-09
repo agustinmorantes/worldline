@@ -319,6 +319,28 @@ impl History {
         Ok(self.index.get_version(id)?.version)
     }
 
+    /// The parent `version` branches off, when that parent already has
+    /// another child in the slot. Read under the repository lock that
+    /// created `version`, so no other version lands in between.
+    pub fn branch_from(&self, version: &Version) -> Result<Option<crate::detection::BranchFrom>> {
+        let Some(parent_id) = version.parent_id else {
+            return Ok(None);
+        };
+        let slot = self.index.get_slot(version.slot_id)?;
+        let forks = slot
+            .versions
+            .iter()
+            .any(|other| other.parent_id == Some(parent_id) && other.id != version.id);
+        Ok(slot
+            .versions
+            .iter()
+            .find(|parent| forks && parent.id == parent_id)
+            .map(|parent| crate::detection::BranchFrom {
+                version_number: parent.version_number,
+                tag: parent.tag.clone(),
+            }))
+    }
+
     /// Captures the live tracked directories and records a new version on the
     /// active slot unless the content equals the active version. The caller
     /// must hold the repository lock.

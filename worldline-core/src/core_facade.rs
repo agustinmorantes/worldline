@@ -1,8 +1,8 @@
 use crate::bundle::{HistoryBundleSummary, HistoryTransferReport};
 use crate::detection::running::RunningMonitor;
 use crate::detection::{
-    CaptureTarget, Checkpoints, Notification, NotificationReceiver, RunningGames, Suppression,
-    Watcher,
+    BranchFrom, CaptureTarget, Checkpoints, Notification, NotificationReceiver, RunningGames,
+    Suppression, Watcher,
 };
 use crate::error::ErrorKind;
 use crate::history::{CheckpointOutcome, History, game_uuid};
@@ -133,10 +133,18 @@ impl CaptureTarget for Inner {
         Ok(games)
     }
 
-    fn capture(&self, game_id: i32) -> Result<CheckpointOutcome> {
+    fn capture(&self, game_id: i32) -> Result<(CheckpointOutcome, Option<BranchFrom>)> {
         store::with_lock(self.history.root(), || {
             let game = self.history.index.get_game(game_id)?;
-            self.checkpoint(&game, VersionReason::Watcher)
+            let outcome = self.checkpoint(&game, VersionReason::Watcher)?;
+            // The version exists either way: a failed lookup only loses the hint.
+            let branch_from = match &outcome {
+                CheckpointOutcome::Created(version) => {
+                    self.history.branch_from(version).ok().flatten()
+                }
+                _ => None,
+            };
+            Ok((outcome, branch_from))
         })
     }
 

@@ -75,9 +75,10 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 detection::Notification::VersionCreated {
                     game_id,
                     version_number,
+                    branch_from,
                 } => {
                     notif_app
-                        .emit("version-created", (game_id, version_number))
+                        .emit("version-created", (game_id, version_number, branch_from))
                         .ok();
                 }
                 detection::Notification::ScreenshotAttached {
@@ -90,6 +91,9 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 detection::Notification::Error(err) => {
                     notif_app.emit("detection-error", err).ok();
+                }
+                detection::Notification::CheckpointFailed { game_id, reason } => {
+                    notif_app.emit("checkpoint-failed", (game_id, reason)).ok();
                 }
                 detection::Notification::SyncStarted => {
                     notif_app.emit("sync-started", ()).ok();
