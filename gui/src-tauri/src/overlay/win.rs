@@ -19,8 +19,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VK_MENU,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
 };
 use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -271,26 +270,30 @@ pub fn interactive(window: &WebviewWindow, on: bool) {
 }
 
 /// Brings `hwnd` to the front with the focus; true if it's the foreground window now. Windows
-/// often refuses a background process that, so when it does, an injected Alt press and release
-/// lifts the foreground lock and it's tried once more, as tao's `set_focus` does (S0).
+/// often refuses a background process that, so when it does, an injected key press and release
+/// lifts the foreground lock and it's tried once more. tao's `set_focus` injects Alt (S0); this
+/// injects an unassigned key instead, which no game or layout binds.
 pub fn take_focus(hwnd: isize) -> bool {
     let fronted = || unsafe {
         SetForegroundWindow(hwnd as HWND) != 0 && GetForegroundWindow() == hwnd as HWND
     };
     fronted() || {
-        tap_alt();
+        tap_unassigned_key();
         fronted()
     }
 }
 
-fn tap_alt() {
+/// Virtual-key 0xE8, listed as unassigned by Windows.
+const VK_UNASSIGNED: u16 = 0xE8;
+
+fn tap_unassigned_key() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VK_MENU,
-                wScan: unsafe { MapVirtualKeyW(VK_MENU as u32, MAPVK_VK_TO_VSC) } as u16,
-                dwFlags: KEYEVENTF_EXTENDEDKEY | flags,
+                wVk: VK_UNASSIGNED,
+                wScan: 0,
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
             },
