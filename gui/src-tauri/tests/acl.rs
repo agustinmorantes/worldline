@@ -20,7 +20,14 @@ fn invoke(window: &WebviewWindow<MockRuntime>, cmd: &str, body: Value) -> Result
             cmd: cmd.into(),
             callback: CallbackFn(0),
             error: CallbackFn(1),
-            url: "http://tauri.localhost".parse().unwrap(),
+            // The app's own origin, which differs by platform.
+            url: if cfg!(windows) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .unwrap(),
             body: InvokeBody::Json(body),
             headers: Default::default(),
             invoke_key: INVOKE_KEY.to_string(),
