@@ -175,8 +175,9 @@ mod windows {
     const POLL: Duration = Duration::from_millis(200);
     /// The longest exit animation is 620 ms; hide the window anyway if "done" never comes.
     const LEAVE_LIMIT: Duration = Duration::from_millis(1500);
-    /// After the game first comes to the front, past splash screens (handoff, "Events").
-    const SESSION_DELAY: Duration = Duration::from_secs(2);
+    /// After the game first comes to the front, past splash screens and Steam's own overlay
+    /// toast, which it would otherwise show under (handoff, "Events").
+    const SESSION_DELAY: Duration = Duration::from_secs(5);
     /// The card's fold and fly take 880 ms; return to the game anyway if "landed" never comes.
     const LAND_LIMIT: Duration = Duration::from_millis(1500);
     const LAND_POLL: Duration = Duration::from_millis(16);
