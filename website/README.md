@@ -15,4 +15,4 @@ npx serve .     # or: python -m http.server
 
 ## Deploy
 
-`.github/workflows/site.yml` publishes this folder to GitHub Pages on every push to `main` or `dev` that touches `website/`. CI (`ci.yml`) ignores changes here. The repository's Pages source must be set to **GitHub Actions**.
+`.github/workflows/site.yml` publishes this folder to GitHub Pages on every push to `main` that touches `website/`. CI (`ci.yml`) ignores changes here. The repository's Pages source must be set to **GitHub Actions**.
