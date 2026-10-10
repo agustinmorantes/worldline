@@ -12,7 +12,7 @@ import { EmptyGame, formatDuration, GhostRow, TimelineFrame } from '@/features/s
 import { GraphView } from '@/features/graph/GraphView';
 import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
 import { useDevice, useMonitoringSettings, useUnrecorded } from '@/features/sessions/queries';
-import { layoutSessions, navOrder, playedMs, sessionGapMs, splitSessions } from '@/features/sessions/sessions';
+import { layoutSessions, navOrder, playedMs, sessionGapMs, splitSessions, totalPlayedMs } from '@/features/sessions/sessions';
 import type { Version } from '@/ipc/bindings/Version';
 import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
@@ -211,7 +211,7 @@ export function GameDetail(): ReactElement {
         inCloud={syncOn && report.data?.remote_games.some((g) => g.uuid === game.uuid) === true}
         syncDevice={remoteKind}
         onSyncChip={onSyncChip}
-        played={versions.length === 0 ? null : formatDuration(playedMs(versions, versions, gapMs), t)}
+        played={versions.length === 0 ? null : formatDuration(totalPlayedMs(versions, gapMs), t)}
         sessions={sessions}
         view={search.view ?? 'sessions'}
         onView={(view) => { void navigate({ search: (prev) => ({ ...prev, view: view === 'graph' ? view : undefined }) }); }}

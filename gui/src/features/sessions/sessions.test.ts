@@ -11,6 +11,7 @@ import {
   playedMs,
   sessionGapMs,
   splitSessions,
+  totalPlayedMs,
   trackPosition,
   trackWidth,
   withUnrecorded,
@@ -90,8 +91,14 @@ describe('playedMs', () => {
   it('counts every timeline once for the header, however far back you rewound', () => {
     // Rewound to 2: 3─4 and 5─6 are other timelines, each played once.
     const versions = [...line(1, null, [0, 10]), ...line(3, 2, [30, 60]), ...line(5, 2, [day(48), day(48) + 30])];
-    expect(playedMs(versions, versions, GAP)).toBe((10 + 20 + 30 + 30) * MIN);
+    expect(totalPlayedMs(versions, GAP)).toBe((10 + 20 + 30 + 30) * MIN);
     expect(splitSessions(versions, GAP)).toHaveLength(2);
+  });
+
+  it('counts the minutes before a rewind once', () => {
+    // 1 at 0, 2 at 10; rewound to 1, then 3 at 20: twenty minutes played, not thirty.
+    const versions = [...line(1, null, [0, 10]), ...line(3, 1, [20])];
+    expect(totalPlayedMs(versions, GAP)).toBe(20 * MIN);
   });
 });
 

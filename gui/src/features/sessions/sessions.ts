@@ -54,6 +54,29 @@ export function playedMs(list: Version[], all: Version[], gapMs: number): number
   return total;
 }
 
+/**
+ * Play time across every timeline: the spans `playedMs` counts, each stretch of the clock once.
+ * After a rewind, the new line's first span overlaps the one you left.
+ */
+export function totalPlayedMs(versions: Version[], gapMs: number): number {
+  const byId = new Map(versions.map((x) => [x.id, x]));
+  const spans = versions.flatMap((version): [number, number][] => {
+    const parent = version.parent_id === null ? undefined : byId.get(version.parent_id);
+    if (parent === undefined) return [];
+    const from = timeOf(parent);
+    const to = timeOf(version);
+    return to > from && to - from <= gapMs ? [[from, to]] : [];
+  });
+  let total = 0;
+  let end = -Infinity;
+  for (const [from, to] of spans.sort((a, b) => a[0] - b[0])) {
+    if (to <= end) continue;
+    total += to - Math.max(from, end);
+    end = to;
+  }
+  return total;
+}
+
 export function durationParts(ms: number): { hours: number; minutes: number } {
   const total = Math.round(ms / MINUTE);
   return { hours: Math.floor(total / 60), minutes: total % 60 };

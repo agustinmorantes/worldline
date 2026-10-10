@@ -241,49 +241,51 @@ function ForkView(props: SessionListProps & {
         </AnimatePresence>
         <ChevronDown size={14} strokeWidth={2.4} aria-hidden="true" className="shrink-0 transition-transform duration-300 ease-spring" style={{ rotate: open ? '180deg' : '0deg' }} />
       </motion.button>
-      <AnimatePresence initial={false}>
-        {open && (
-          // Folds open, so the chips below, and the lines passing behind, move with it. It clips only
-          // while folding, so the selection and dots flying in aren't cut off. The fade sits on the
-          // drawer itself: one on the fold would keep its blur off until the end.
-          <motion.div
-            key="drawer"
-            className={cn(folding && 'overflow-hidden')}
-            initial={{ height: 0 }}
-            animate={{ height: 'auto' }}
-            exit={{ height: 0, overflow: 'hidden' }}
-            transition={fold}
-            onAnimationStart={() => { setFolding(true); }}
-            onAnimationComplete={() => { setFolding(false); }}
-          >
+      {/* Clips only while folding (closing counts), so the selection and dots flying in aren't cut
+          off. On this wrapper, not the fold: a leaving fold keeps its last props. */}
+      <div className={cn((folding || !open) && 'overflow-hidden')}>
+        <AnimatePresence initial={false}>
+          {open && (
+            // Folds open, so the chips below, and the lines passing behind, move with it. The fade
+            // sits on the drawer itself: one on the fold would keep its blur off until the end.
             <motion.div
-              role="group"
-              aria-label={label}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
+              key="drawer"
+              initial={{ height: 0 }}
+              animate={{ height: 'auto' }}
+              exit={{ height: 0 }}
               transition={fold}
-              className="mt-1.5 rounded-2xl border-[1.5px] border-dashed border-ln bg-black/20 py-1.5 backdrop-blur-[2px]"
-              style={{ marginLeft: DRAWER_INDENT - 14 }}
+              onAnimationStart={() => { setFolding(true); }}
+              onAnimationComplete={() => { setFolding(false); }}
             >
-              {byDay([...fork.sessions].reverse(), (list) => list[0]).map((day) => (
-                <section key={day.day} aria-label={dayLabel(new Date(day.day), now, locale, t.sessions)}>
-                  <h3 className={cn(DAY_HEADER, 'h-7 pb-1.5 pl-12')}>{dayLabel(new Date(day.day), now, locale, t.sessions)}</h3>
-                  {day.rows.map((list) => (
-                    <SessionRowView
-                      key={list[0].id}
-                      {...props}
-                      session={list}
-                      durationMs={timeOf(list[list.length - 1]) - timeOf(list[0])}
-                      side
-                    />
-                  ))}
-                </section>
-              ))}
+              <motion.div
+                role="group"
+                aria-label={label}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={fold}
+                className="mt-1.5 rounded-2xl border-[1.5px] border-dashed border-ln bg-black/20 py-1.5 backdrop-blur-[2px]"
+                style={{ marginLeft: DRAWER_INDENT - 14 }}
+              >
+                {byDay([...fork.sessions].reverse(), (list) => list[0]).map((day) => (
+                  <section key={day.day} aria-label={dayLabel(new Date(day.day), now, locale, t.sessions)}>
+                    <h3 className={cn(DAY_HEADER, 'h-7 pb-1.5 pl-12')}>{dayLabel(new Date(day.day), now, locale, t.sessions)}</h3>
+                    {day.rows.map((list) => (
+                      <SessionRowView
+                        key={list[0].id}
+                        {...props}
+                        session={list}
+                        durationMs={timeOf(list[list.length - 1]) - timeOf(list[0])}
+                        side
+                      />
+                    ))}
+                  </section>
+                ))}
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>
+      </div>
     </motion.div>
   );
 }
