@@ -395,6 +395,19 @@ async fn check_shortcut(accelerator: String, app: tauri::AppHandle) -> Result<()
     crate::overlay::check_shortcut(&app, &accelerator)
 }
 
+/// Name it's card in this window closed: names card `session`'s checkpoint `name` if that changed
+/// it: whether the focus went back to the game, and why the name couldn't be saved, if it couldn't.
+/// Async, so it runs off the main thread, which the overlay's locks must stay off.
+#[tauri::command]
+async fn name_it_closed(
+    session: u64,
+    how: crate::overlay::How,
+    name: String,
+    app: tauri::AppHandle,
+) -> crate::overlay::NameItClosed {
+    crate::overlay::name_it_closed(&app, session, how, &name)
+}
+
 /// The GUI preferences file, kept with the rest of the app data.
 #[tauri::command]
 fn get_prefs_path(data_dir: State<crate::DataDir>) -> String {
@@ -451,6 +464,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         set_tray_labels,
         set_overlay_config,
         check_shortcut,
+        name_it_closed,
         #[cfg(feature = "e2e")]
         crate::tray::e2e_tray_labels,
     ])

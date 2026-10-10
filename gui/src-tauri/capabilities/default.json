@@ -65,6 +65,7 @@
     "allow-set-tray-labels",
     "allow-set-overlay-config",
     "allow-check-shortcut",
+    "allow-name-it-closed",
     "allow-e2e-tray-labels"
   ]
 }

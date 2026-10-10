@@ -4,11 +4,12 @@
 //! and says when its exit animation has ended.
 //!
 //! Windows only; elsewhere every entry point is a no-op. The hotkeys (`hotkeys.rs`) follow the
-//! game in front and share the popup.
+//! game in front and share the popup. Name it's card (`naming.rs`) takes the whole window, and the
+//! focus, while it's open over the game.
 //!
-//! Never take `hotkeys`, `front`, `games` or `popup` on the main thread: window calls from other
-//! threads wait for the main thread, so a lock held there would deadlock them. Take them in that
-//! order.
+//! Never take `hotkeys`, `front`, `games`, `popup` or `naming` on the main thread: window calls
+//! from other threads wait for the main thread, so a lock held there would deadlock them. Take
+//! them in that order.
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod decide;
@@ -16,12 +17,15 @@ mod decide;
 mod hotkeys;
 #[cfg(windows)]
 mod keep;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod naming;
 #[cfg(windows)]
 mod sound;
 #[cfg(windows)]
 mod win;
 
 use decide::{Corner, GameCorner};
+pub use naming::{How, NameItClosed};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -42,8 +46,6 @@ pub struct OverlayConfig {
     warn_ahead: bool,
     /// The hotkeys' accelerators (`hotkeys::parse`); `""` is off.
     quick_keep_key: String,
-    /// Name it (O4).
-    #[allow(dead_code)]
     name_it_key: String,
     /// The hotkeys' automatic tag in the app language, with `{time}` to fill in.
     kept_tag_template: String,
@@ -72,6 +74,8 @@ pub struct Overlay {
     games: Mutex<decide::Games>,
     #[cfg_attr(not(windows), allow(dead_code))]
     popup: Mutex<decide::Popup>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    naming: Mutex<naming::Naming>,
     #[cfg(windows)]
     hook: Mutex<Option<win::ForegroundHook>>,
     /// The hotkeys registered now.
@@ -98,8 +102,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 use windows::pressed;
 #[cfg(windows)]
 pub use windows::{
-    check_shortcut, checkpoint_failed, config_changed, game_started, game_stopped, setup,
-    version_created,
+    check_shortcut, checkpoint_failed, config_changed, game_started, game_stopped, name_it_closed,
+    setup, version_created,
 };
 
 #[cfg(not(windows))]
@@ -129,6 +133,17 @@ pub fn checkpoint_failed(_app: &tauri::AppHandle, _game_id: i32, _reason: Captur
 #[cfg(not(windows))]
 pub fn config_changed(_app: &tauri::AppHandle) {}
 
+/// No hotkeys here, so no card is ever open.
+#[cfg(not(windows))]
+pub fn name_it_closed(
+    _app: &tauri::AppHandle,
+    _session: u64,
+    _how: How,
+    _name: &str,
+) -> NameItClosed {
+    NameItClosed::default()
+}
+
 /// No hotkeys here, so none is taken.
 #[cfg(not(windows))]
 pub fn check_shortcut(_app: &tauri::AppHandle, _accelerator: &str) -> Result<(), String> {
@@ -137,18 +152,22 @@ pub fn check_shortcut(_app: &tauri::AppHandle, _accelerator: &str) -> Result<(),
 
 #[cfg(windows)]
 mod windows {
-    use super::decide::{self, Kind, Outcome, Presented, Rect, Watch};
+    use super::decide::{self, Kind, Outcome, Presented, Rect, Sound, Watch};
     use super::hotkeys::{self, Action, Press};
-    use super::{keep, lock, sound, win, BranchFrom, CaptureFailure, Corner, Motion, Overlay};
+    use super::keep::NotKept;
+    use super::naming::{self, How, NameItClosed, Opening, Place, Session};
+    use super::{
+        keep, lock, sound, win, BranchFrom, CaptureFailure, Corner, Motion, Overlay, OverlayConfig,
+    };
     use crate::webview_memory::set_low_memory;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tauri::{
         AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     };
     use tauri_plugin_log::log::{info, warn};
-    use worldline_core::models::Game;
+    use worldline_core::models::{Game, Version};
     use worldline_core::WorldlineCore;
 
     const LABEL: &str = "overlay";
@@ -158,6 +177,9 @@ mod windows {
     const LEAVE_LIMIT: Duration = Duration::from_millis(1500);
     /// After the game first comes to the front, past splash screens (handoff, "Events").
     const SESSION_DELAY: Duration = Duration::from_secs(2);
+    /// The card's fold and fly take 880 ms; return to the game anyway if "landed" never comes.
+    const LAND_LIMIT: Duration = Duration::from_millis(1500);
+    const LAND_POLL: Duration = Duration::from_millis(16);
 
     /// What the webview renders (`OverlayShow`, `gui/src/ipc/events.ts`).
     #[derive(Serialize, Clone)]
@@ -175,6 +197,8 @@ mod windows {
         motion: Motion,
         language: String,
         duration_ms: u64,
+        /// The Kept popup the naming card flew into: already in place, and silent.
+        landed: bool,
     }
 
     /// What the popup says, by kind.
@@ -225,6 +249,32 @@ mod windows {
         }
     }
 
+    /// The naming card, for either window (`NamingCard`, `gui/src/ipc/events.ts`).
+    #[derive(Serialize, Clone)]
+    #[serde(rename_all = "camelCase")]
+    struct Card {
+        session: u64,
+        game_id: i32,
+        version_id: i32,
+        version: i32,
+        /// The name the checkpoint has: Esc and an empty field keep it.
+        auto: String,
+        title: String,
+        accent_hue: i32,
+        /// The corner the card flies into over the game.
+        corner: Corner,
+        motion: Motion,
+        language: String,
+    }
+
+    /// The overlay's card closed (`naming-closed`).
+    #[derive(Deserialize)]
+    struct Closed {
+        session: u64,
+        how: How,
+        name: String,
+    }
+
     #[derive(Serialize, Clone)]
     struct Leave {
         id: u64,
@@ -247,6 +297,22 @@ mod windows {
             };
             let app = handle.clone();
             std::thread::spawn(move || finish(&app, id));
+        });
+        let handle = app.handle().clone();
+        app.listen("naming-closed", move |event| {
+            let Ok(closed) = serde_json::from_str::<Closed>(event.payload()) else {
+                return;
+            };
+            let app = handle.clone();
+            std::thread::spawn(move || card_closed(&app, closed.session, closed.how, &closed.name));
+        });
+        let handle = app.handle().clone();
+        app.listen("naming-landed", move |event| {
+            let Ok(id) = serde_json::from_str::<u64>(event.payload()) else {
+                return;
+            };
+            let app = handle.clone();
+            std::thread::spawn(move || lock(&app.state::<Overlay>().naming).land(id));
         });
     }
 
@@ -283,10 +349,19 @@ mod windows {
     /// with an install dir stops.
     pub fn game_stopped(app: &AppHandle, game_id: i32) {
         let overlay = app.state::<Overlay>();
+        // Its card over the game is asked for what was typed first, briefly.
+        save_draft(app, game_id);
         let mut games = lock(&overlay.games);
         let last = games.stopped(game_id);
         // A press for that run, still on its way, is stale now.
         overlay.generation.advance();
+        // Its card over the game goes with it, renamed already or named as the press kept it.
+        if lock(&overlay.naming).abandon(game_id).is_some() && !last {
+            if let Some(window) = app.get_webview_window(LABEL) {
+                uncover(&window);
+                hide(&window);
+            }
+        }
         if last {
             *lock(&overlay.hook) = None;
             lock(&overlay.popup).reset();
@@ -300,12 +375,50 @@ mod windows {
         foreground_changed(app, win::foreground());
     }
 
+    /// The game of a card still taking a name over it stopped: the webview closes the card as a
+    /// focus loss, sending what was typed, which is renamed. Waits for that, `LEAVE_LIMIT` at most.
+    fn save_draft(app: &AppHandle, game_id: i32) {
+        let overlay = app.state::<Overlay>();
+        let Some(id) = lock(&overlay.naming).taking_name(game_id) else {
+            return;
+        };
+        if let Err(err) = app.emit_to(LABEL, "naming-leave", id) {
+            warn!("overlay: couldn't close the naming card: {err}");
+            return;
+        }
+        let started = Instant::now();
+        while !lock(&overlay.naming).settled(id) && started.elapsed() < LEAVE_LIMIT {
+            std::thread::sleep(LAND_POLL);
+        }
+    }
+
     /// A new window is in front: records which running game it belongs to, if any, and gives the
     /// hotkeys to that game or back to other apps.
     fn foreground_changed(app: &AppHandle, hwnd: isize) {
+        focus_changed(app, hwnd);
         if front_changed(app, hwnd) {
             hotkeys::sync(app);
         }
+    }
+
+    /// The card over the game lost the focus to `hwnd`: it closes, saving what was typed, and the
+    /// focus stays where it went. The webview says what was typed; if it never does, the name the
+    /// press kept stays.
+    fn focus_changed(app: &AppHandle, hwnd: isize) {
+        let overlay = app.state::<Overlay>();
+        let Some(id) = lock(&overlay.naming).focus_lost(win::root(hwnd)) else {
+            return;
+        };
+        if let Err(err) = app.emit_to(LABEL, "naming-leave", id) {
+            warn!("overlay: couldn't close the naming card: {err}");
+        }
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(LEAVE_LIMIT);
+            if lock(&app.state::<Overlay>().naming).is_open(id) {
+                card_closed(&app, id, How::Blur, "");
+            }
+        });
     }
 
     /// Records the game run in front; true if that changed. A game's first time in front after it
@@ -367,17 +480,35 @@ mod windows {
         let Ok(full) = app.state::<Arc<WorldlineCore>>().get_game(game_id) else {
             return;
         };
-        // The game may have left the front since the press.
+        // The game may have left the front since the press. Its window, remembered for Name it
+        // before anything else happens.
         let in_front = full
             .game
             .install_dir
             .as_deref()
             .and_then(win::foreground_from);
-        if in_front.is_none() || !lock(&overlay.cooldown).accept(press.action, press.at) {
+        let Some(game_window) = in_front else {
             return;
-        }
+        };
+        let template = &config.kept_tag_template;
         match press.action {
-            Action::QuickKeep => quick_keep(app, full.game, press, &config.kept_tag_template),
+            Action::QuickKeep => {
+                if lock(&overlay.cooldown).accept(press.action, press.at) {
+                    quick_keep(app, full.game, press, template);
+                }
+            }
+            Action::NameIt => {
+                let accepted = hotkeys::accept_name_it(
+                    &mut lock(&overlay.naming),
+                    &mut lock(&overlay.cooldown),
+                    press.at,
+                );
+                if accepted {
+                    name_it(app, full.game, press, template, game_window);
+                    // A card that opened holds it on its own; frees it if none did.
+                    lock(&overlay.naming).end();
+                }
+            }
         }
     }
 
@@ -385,6 +516,67 @@ mod windows {
     /// focus: the Kept popup, or the capture-failed one, if it can show. With no popup possible,
     /// only its sound; a popup dropped under a warning or error, nothing.
     fn quick_keep(app: &AppHandle, game: Game, press: Press, template: &str) {
+        let Some(result) = keep_for(app, &game, press, template) else {
+            return;
+        };
+        let detail = match result {
+            Ok(version) => Detail::Kept {
+                version: version.version_number,
+                name: None,
+            },
+            Err(not_kept) => not_kept_detail(not_kept),
+        };
+        feedback(app, game, detail);
+    }
+
+    /// Keeps the checkpoint of `game`, the game `press` was made for, then asks for its name:
+    /// over the game when the card can show there, otherwise in Worldline. `game_window` is the
+    /// game's window at the press. A failed keep only says so, as Quick keep does.
+    fn name_it(app: &AppHandle, game: Game, press: Press, template: &str, game_window: isize) {
+        let Some(result) = keep_for(app, &game, press, template) else {
+            return;
+        };
+        let version = match result {
+            Ok(version) => version,
+            Err(not_kept) => return feedback(app, game, not_kept_detail(not_kept)),
+        };
+        let Some(config) = lock(&app.state::<Overlay>().config).clone() else {
+            return;
+        };
+        // Kept: its sound, once, now. The popup that lands after the card stays silent.
+        if config.sound {
+            sound::play(Sound::Kept);
+        }
+        open_card(app, game, &version, game_window, &config);
+    }
+
+    fn not_kept_detail(not_kept: NotKept) -> Detail {
+        Detail::CaptureFailed {
+            reason: not_kept.reason,
+            version: not_kept.captured,
+        }
+    }
+
+    /// A hotkey's result: its popup if it can show, otherwise only its sound.
+    fn feedback(app: &AppHandle, game: Game, detail: Detail) {
+        let kind = detail.kind();
+        let presented = present(app, game, detail, None, false);
+        let sound_on = lock(&app.state::<Overlay>().config)
+            .as_ref()
+            .is_some_and(|config| config.sound);
+        if let Some(sound) = decide::hotkey_sound(kind, presented, sound_on) {
+            sound::play(sound);
+        }
+    }
+
+    /// Keeps `game`'s checkpoint for `press`; `None` when the press went stale before the
+    /// capture.
+    fn keep_for(
+        app: &AppHandle,
+        game: &Game,
+        press: Press,
+        template: &str,
+    ) -> Option<Result<Version, NotKept>> {
         let overlay = app.state::<Overlay>();
         let install_dir = game.install_dir.clone();
         // Asked again under the repository lock, right before the capture. No overlay lock but
@@ -399,28 +591,231 @@ mod windows {
                     .and_then(win::foreground_from)
                     .is_some()
         };
-        let Some(result) = keep::keep(app, game.id, template, still) else {
+        let result = keep::keep(app, game.id, template, still);
+        if result.is_none() {
             info!("overlay: a hotkey press for game {} went stale", game.id);
+        }
+        result
+    }
+
+    /// Opens the naming card for `version`, just kept: over the game if the popup is on for it,
+    /// the game is still in front with the overlay ready, nothing runs in exclusive fullscreen,
+    /// and the overlay gets the focus; otherwise in Worldline, brought to the front.
+    fn open_card(
+        app: &AppHandle,
+        game: Game,
+        version: &Version,
+        game_window: isize,
+        config: &OverlayConfig,
+    ) {
+        let overlay = app.state::<Overlay>();
+        let corner = decide::corner(
+            config.enabled,
+            config.corner,
+            config.per_game.get(&game.uuid).copied(),
+        );
+        let auto = version.tag.clone().unwrap_or_default();
+        let opening = |place, was_tray| Opening {
+            game_id: game.id,
+            version_id: version.id,
+            version_number: version.version_number,
+            auto: auto.clone(),
+            game_window,
+            place,
+            was_tray,
+        };
+        let card = |session| Card {
+            session,
+            game_id: game.id,
+            version_id: version.id,
+            version: version.version_number,
+            auto: auto.clone(),
+            title: game.title.clone(),
+            accent_hue: game.accent_hue,
+            corner: corner.unwrap_or(config.corner),
+            motion: config.motion,
+            language: config.language.clone(),
+        };
+
+        // The lifecycle lock, held until the card has the focus: no stop or restart in between.
+        let games = lock(&overlay.games);
+        let mut popup = lock(&overlay.popup);
+        let mut naming = lock(&overlay.naming);
+        let window = app.get_webview_window(LABEL);
+        let client = win::client_rect(game_window);
+        let in_front = game.install_dir.as_deref().and_then(win::foreground_from);
+        let gate = in_front == Some(game_window)
+            && popup.is_ready()
+            && window.is_some()
+            && client.is_some();
+        let place = naming::place(corner.is_some(), gate, win::d3d_fullscreen(), || {
+            let (Some(window), Some(client)) = (window.as_ref(), client) else {
+                return false;
+            };
+            let Some(id) = naming.open(opening(Place::Overlay, false)).map(|s| s.id) else {
+                return false;
+            };
+            popup.take_over();
+            set_low_memory(window, false);
+            if let Err(err) = app.emit_to(LABEL, "naming-open", card(id)) {
+                warn!("overlay: couldn't send the naming card: {err}");
+            }
+            cover(window, client, game_window);
+            let handle = win::handle(window);
+            if !win::take_focus(handle) {
+                info!("overlay: Windows kept the focus from the naming card; it opens in the app");
+                naming.cancel(id);
+                uncover(window);
+                hide(window);
+                return false;
+            }
+            // Into the webview too, as its WM_SETFOCUS does.
+            if let Err(err) = window.as_ref().set_focus() {
+                warn!("overlay: couldn't focus the naming card: {err}");
+            }
+            naming.focused(id, handle);
+            true
+        });
+        drop(naming);
+        drop(popup);
+        drop(games);
+        if place == Place::Overlay {
+            return;
+        }
+
+        let Some(main) = app.get_webview_window("main") else {
             return;
         };
-        let detail = match result {
-            Ok(version) => Detail::Kept {
-                version: version.version_number,
-                name: None,
-            },
-            Err(not_kept) => Detail::CaptureFailed {
-                reason: not_kept.reason,
-                version: not_kept.captured,
-            },
+        // Hidden is in the tray; minimised isn't.
+        let was_tray = !main.is_visible().unwrap_or(true);
+        let Some(id) = lock(&overlay.naming)
+            .open(opening(Place::App, was_tray))
+            .map(|s| s.id)
+        else {
+            return;
         };
-        let kind = detail.kind();
-        let presented = present(app, game, detail, None);
-        let sound_on = lock(&overlay.config)
-            .as_ref()
-            .is_some_and(|config| config.sound);
-        if let Some(sound) = decide::hotkey_sound(kind, presented, sound_on) {
-            sound::play(sound);
+        crate::tray::show_window(app);
+        if let Err(err) = app.emit_to("main", "name-it-open", card(id)) {
+            warn!("overlay: couldn't send the naming card to the app: {err}");
         }
+    }
+
+    /// The overlay over the game's whole client area, directly above the game, taking clicks and
+    /// able to take the focus: for the card. Shown, but not activated yet.
+    fn cover(window: &WebviewWindow, client: Rect, game: isize) {
+        win::interactive(window, true);
+        win::show_at(window, client, game);
+    }
+
+    /// The overlay back to the popup's: click-through, and never activated.
+    fn uncover(window: &WebviewWindow) {
+        win::interactive(window, false);
+    }
+
+    /// Renames the card's checkpoint to the name it closed with, only if that isn't its name
+    /// already (`tag_version`, under the repository lock). The name it ends up with, or why it
+    /// couldn't be renamed: it keeps the name the press gave it then.
+    fn rename(app: &AppHandle, session: &Session, how: How, typed: &str) -> Result<String, String> {
+        let name = naming::final_name(how, typed, &session.auto);
+        let Some(changed) = naming::rename(Some(&session.auto), &name) else {
+            return Ok(name);
+        };
+        let core = app.state::<Arc<WorldlineCore>>();
+        match core.tag_version(session.version_id, changed.to_owned()) {
+            Ok(_) => {
+                app.emit("version-kept", (session.game_id, session.version_id))
+                    .ok();
+                Ok(name)
+            }
+            Err(err) => {
+                warn!(
+                    "overlay: couldn't name version {}: {err:#}",
+                    session.version_id
+                );
+                Err(format!("{err:#}"))
+            }
+        }
+    }
+
+    /// The card over the game closed (`naming-closed`), or its webview never said: renames the
+    /// checkpoint, then, once the card has flown into its corner, returns to the game.
+    fn card_closed(app: &AppHandle, id: u64, how: How, typed: &str) {
+        let overlay = app.state::<Overlay>();
+        let Some(session) = lock(&overlay.naming).close(id, Place::Overlay, how) else {
+            return;
+        };
+        // Unrenamed, it keeps the press's name: the Kept popup then shows no name, which is true.
+        let name = rename(app, &session, how, typed).unwrap_or_else(|_| session.auto.clone());
+        lock(&overlay.naming).named(id, name);
+        let started = Instant::now();
+        while lock(&overlay.naming).folding(id) && started.elapsed() < LAND_LIMIT {
+            std::thread::sleep(LAND_POLL);
+        }
+        card_return(app, id);
+    }
+
+    /// After card `id` over the game: the focus back to the game only when it was closed
+    /// explicitly, the window passive and click-through again, and the Kept popup, already in its
+    /// corner and silent, or no window at all. The card is only gone once the window is passive,
+    /// so no newer card can open before. Nothing if its game stopped meanwhile.
+    fn card_return(app: &AppHandle, id: u64) {
+        let overlay = app.state::<Overlay>();
+        let (session, name) = {
+            let _games = lock(&overlay.games);
+            let Some((session, how, name)) = lock(&overlay.naming).finish(id) else {
+                return;
+            };
+            let Some(window) = app.get_webview_window(LABEL) else {
+                return;
+            };
+            if how.hands_back() && !win::hand_back(session.game_window) {
+                info!("overlay: couldn't give the focus back to the game");
+            }
+            uncover(&window);
+            (session, name)
+        };
+        let detail = Detail::Kept {
+            version: session.version_number,
+            name: (name != session.auto).then_some(name),
+        };
+        let shown = match app.state::<Arc<WorldlineCore>>().get_game(session.game_id) {
+            Ok(full) => present(app, full.game, detail, None, true) == Presented::Shown,
+            Err(_) => false,
+        };
+        if !shown {
+            // Unless another popup showed, or another card opened, meanwhile.
+            let _games = lock(&overlay.games);
+            let popup = lock(&overlay.popup);
+            let idle = popup.is_hidden() && !lock(&overlay.naming).over_game();
+            if let (true, Some(window)) = (idle, app.get_webview_window(LABEL)) {
+                hide(&window);
+            }
+        }
+    }
+
+    /// The card in the app closed (`name_it_closed`): renames the checkpoint and, after an
+    /// explicit close, gives the focus back to the game if its window is still there, hiding
+    /// Worldline to the tray again if it came from there and the name was saved, so a failure is
+    /// seen.
+    pub fn name_it_closed(app: &AppHandle, id: u64, how: How, typed: &str) -> NameItClosed {
+        let overlay = app.state::<Overlay>();
+        let Some(session) = lock(&overlay.naming).close(id, Place::App, how) else {
+            return NameItClosed::default();
+        };
+        let error = rename(app, &session, how, typed).err();
+        let (hand_back, rehide) = naming::app_return(
+            how,
+            win::exists(session.game_window),
+            session.was_tray,
+            error.is_none(),
+        );
+        let handed = hand_back && win::hand_back(session.game_window);
+        if handed && rehide {
+            if let Some(main) = app.get_webview_window("main") {
+                crate::tray::hide_window(&main);
+            }
+        }
+        NameItClosed { handed, error }
     }
 
     /// The session start of the game's run `run`, or the device-ahead warning in its place. Not
@@ -473,7 +868,7 @@ mod windows {
                     .map(|at| at.and_utc().timestamp_millis()),
             },
         };
-        present(app, full.game, detail, Some(run));
+        present(app, full.game, detail, Some(run), false);
     }
 
     fn create(app: &AppHandle) {
@@ -528,7 +923,7 @@ mod windows {
                 version: version_number,
             },
         };
-        present(app, full.game, detail, None);
+        present(app, full.game, detail, None, false);
     }
 
     /// An automatic capture failed: nothing was saved.
@@ -540,13 +935,21 @@ mod windows {
             reason,
             version: None,
         };
-        present(app, full.game, detail, None);
+        present(app, full.game, detail, None, false);
     }
 
     /// Shows the popup if `game` is the window in front; otherwise it's dropped, not queued.
     /// `run` names the run a session start belongs to; it's dropped if that run has ended.
-    /// Whether it showed, with its sound, was turned away, or couldn't show at all.
-    fn present(app: &AppHandle, game: Game, detail: Detail, run: Option<u64>) -> Presented {
+    /// Whether it showed, with its sound, was turned away, or couldn't show at all. `landed`: the
+    /// Kept popup the naming card flew into, without its rise or sound. Nothing shows while the
+    /// card is over the game.
+    fn present(
+        app: &AppHandle,
+        game: Game,
+        detail: Detail,
+        run: Option<u64>,
+        landed: bool,
+    ) -> Presented {
         let overlay = app.state::<Overlay>();
         let Some(config) = lock(&overlay.config).clone() else {
             return Presented::Unavailable;
@@ -582,6 +985,9 @@ mod windows {
         if !popup.is_ready() {
             return Presented::Unavailable;
         }
+        if lock(&overlay.naming).over_game() {
+            return Presented::Dropped;
+        }
         let session = run.map(|run| (game.id, run));
         let (outcome, id) = decide::admit(&games, &mut popup, kind, session, config.quiet);
         if !matches!(outcome, Outcome::Show | Outcome::Swap) {
@@ -600,12 +1006,13 @@ mod windows {
             motion: config.motion,
             language: config.language,
             duration_ms: duration.as_millis() as u64,
+            landed,
         };
         if let Err(err) = app.emit_to(LABEL, "overlay-show", show) {
             warn!("overlay: couldn't send the popup: {err}");
         }
         win::show_at(&window, rect, hwnd);
-        if config.sound {
+        if config.sound && !landed {
             if let Some(sound) = decide::sound(kind, outcome) {
                 sound::play(sound);
             }

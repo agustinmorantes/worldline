@@ -1,6 +1,7 @@
 //! The overlay's Win32 side, as S0 measured it: the foreground gate, the client area and DPI,
 //! and showing the window without activating it, directly above the game in the z-order. Also
-//! the hook that reports each new foreground window.
+//! the hook that reports each new foreground window. For the naming card (O4), the overlay over
+//! the whole client area, taking the focus, and the focus handed back to the game.
 
 use super::decide::Rect;
 use std::cell::RefCell;
@@ -17,6 +18,7 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 fn hwnd(window: &WebviewWindow) -> HWND {
@@ -230,4 +232,56 @@ pub fn show_at(window: &WebviewWindow, rect: Rect, game: isize) {
 
 pub fn hide(window: &WebviewWindow) {
     unsafe { ShowWindow(hwnd(window), SW_HIDE) };
+}
+
+pub fn handle(window: &WebviewWindow) -> isize {
+    hwnd(window) as isize
+}
+
+/// The top-level window `hwnd` belongs to.
+pub fn root(hwnd: isize) -> isize {
+    unsafe { GetAncestor(hwnd as HWND, GA_ROOT) as isize }
+}
+
+/// Windows reports a Direct3D app in exclusive fullscreen: nothing can show over it.
+pub fn d3d_fullscreen() -> bool {
+    let mut state = 0;
+    unsafe {
+        SHQueryUserNotificationState(&mut state) == 0 && state == QUNS_RUNNING_D3D_FULL_SCREEN
+    }
+}
+
+/// For the naming card, lets the overlay take clicks and be activated; or back to the popup's
+/// click-through, never activated. Still out of Alt+Tab and the taskbar either way. Win32 only:
+/// Tauri's own setters apply later, on the main thread, and would undo `passive`.
+pub fn interactive(window: &WebviewWindow, on: bool) {
+    let hwnd = hwnd(window);
+    let bits = (WS_EX_NOACTIVATE | WS_EX_TRANSPARENT) as isize;
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let style = if on { style & !bits } else { style | bits };
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, flags);
+    }
+}
+
+/// Brings `hwnd` to the front with the focus; true if it's the foreground window now.
+pub fn take_focus(hwnd: isize) -> bool {
+    unsafe { SetForegroundWindow(hwnd as HWND) != 0 && GetForegroundWindow() == hwnd as HWND }
+}
+
+/// Whether `hwnd` is still a window.
+pub fn exists(hwnd: isize) -> bool {
+    unsafe { IsWindow(hwnd as HWND) != 0 }
+}
+
+/// Gives the focus back to the game's window, restoring it first if it's minimised.
+pub fn hand_back(hwnd: isize) -> bool {
+    unsafe {
+        if IsIconic(hwnd as HWND) != 0 {
+            ShowWindow(hwnd as HWND, SW_RESTORE);
+        }
+    }
+    take_focus(hwnd)
 }

@@ -33,7 +33,32 @@ export interface Events {
   'overlay-show': OverlayShow;
   /** To the overlay webview: play popup `id`'s exit; `fast` when the game left the front. */
   'overlay-leave': { id: number; fast: boolean };
+  /** To the overlay webview: the Name it hotkey's card, over the game. */
+  'naming-open': NamingCard;
+  /** To the overlay webview: the game took the focus back from card `session`; save it. */
+  'naming-leave': number;
+  /** To the main window: the Name it hotkey's card, in the app. */
+  'name-it-open': NamingCard;
 }
+
+/** The naming card (O4): its checkpoint, already kept under `auto`, and how to show it. */
+export interface NamingCard {
+  session: number;
+  gameId: number;
+  versionId: number;
+  version: number;
+  /** The name the checkpoint has: Esc and an empty field keep it. */
+  auto: string;
+  title: string;
+  accentHue: number;
+  /** The corner the tile flies into over the game. */
+  corner: Corner;
+  motion: 'full' | 'reduced';
+  language: Locale;
+}
+
+/** How a naming card closed: Enter or ✓, Esc, or the focus went elsewhere. */
+export type NamingClose = 'save' | 'escape' | 'blur';
 
 /** A popup for the overlay webview to render; Rust has decided everything else. */
 export type OverlayShow = OverlayBase & OverlayDetail;
@@ -51,6 +76,8 @@ interface OverlayBase {
   motion: 'full' | 'reduced';
   language: Locale;
   durationMs: number;
+  /** The tile flew in from the naming card: no rise and no redraw, only the text unfolds. */
+  landed: boolean;
 }
 
 /** What the popup says, by kind. */
@@ -65,10 +92,13 @@ export type OverlayDetail =
   /** `version`: a keep's checkpoint, saved but then not kept; `null` when nothing was saved. */
   | { kind: 'captureFailed'; reason: CaptureFailure; version: number | null };
 
-/** What the overlay webview tells Rust: it listens now, and a popup's exit animation ended. */
+/** What the overlay webview tells Rust: it listens now, a popup's exit animation ended, its
+ * naming card closed, and the card's tile landed in the corner. */
 export interface OverlaySignals {
   'overlay-ready': null;
   'overlay-done': number;
+  'naming-closed': { session: number; how: NamingClose; name: string };
+  'naming-landed': number;
 }
 
 export function signal<K extends keyof OverlaySignals>(event: K, payload: OverlaySignals[K]): Promise<void> {

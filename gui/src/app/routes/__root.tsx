@@ -5,6 +5,7 @@ import { TitleBar } from "@/app/shell/TitleBar"
 import { Shell } from "@/app/shell/Shell"
 import { Toasts } from "@/app/shell/Toasts"
 import { TourHost } from "@/features/onboarding/TourHost"
+import { NamingHost } from "@/features/naming/NamingHost"
 
 export const RootLayout = (): ReactElement => (
   <TourHost>
@@ -12,6 +13,7 @@ export const RootLayout = (): ReactElement => (
       <Outlet />
     </Shell>
     <Toasts />
+    <NamingHost />
   </TourHost>
 )
 

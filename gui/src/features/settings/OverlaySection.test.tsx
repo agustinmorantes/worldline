@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getPrefs, setPref } from '@/shared/prefs/prefs';
 import { DEFAULT_PREFS } from '@/shared/prefs/schema';
@@ -23,6 +23,8 @@ const toggle = (name: string): HTMLElement | null => screen.queryByRole('switch'
 const corner = (name: string): HTMLElement => screen.getByRole('radio', { name });
 
 const quickKeep = (): HTMLElement => screen.getByRole('button', { name: /^Quick keep hotkey: / });
+const nameIt = (): HTMLElement => screen.getByRole('button', { name: /^Name it hotkey: / });
+const row = (name: string): HTMLElement => screen.getByRole('group', { name });
 
 /** A system check that answers when the test says. */
 function pendingCheck(): { resolve: () => Promise<void>; reject: () => Promise<void> } {
@@ -110,7 +112,7 @@ describe('Quick keep hotkey', () => {
 
     fireEvent.click(screen.getByRole('switch', { name: 'Show a popup in game' }));
     expect(quickKeep()).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Turn off' })).toBeInTheDocument();
+    expect(within(row('Quick keep hotkey')).getByRole('button', { name: 'Turn off' })).toBeInTheDocument();
   });
 
   it('records a shortcut once the system has it free, ignoring modifiers alone', async () => {
@@ -118,7 +120,7 @@ describe('Quick keep hotkey', () => {
     fireEvent.click(quickKeep());
     expect(screen.getByText('Press keys…')).toBeInTheDocument();
     expect(screen.getByText('Hold a modifier and press a key. Esc cancels.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Turn off' })).not.toBeInTheDocument();
+    expect(within(row('Quick keep hotkey')).queryByRole('button', { name: 'Turn off' })).not.toBeInTheDocument();
 
     fireEvent.keyDown(quickKeep(), { key: 'Alt', code: 'AltLeft', altKey: true });
     fireEvent.keyDown(quickKeep(), { key: 'j', code: 'KeyJ' });
@@ -146,10 +148,10 @@ describe('Quick keep hotkey', () => {
 
   it('turns off', () => {
     setup();
-    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }));
+    fireEvent.click(within(row('Quick keep hotkey')).getByRole('button', { name: 'Turn off' }));
     expect(getPrefs().overlay.quickKeepKey).toBe('');
     expect(quickKeep()).toHaveAccessibleName('Quick keep hotkey: Off. Click to change.');
-    expect(screen.queryByRole('button', { name: 'Turn off' })).not.toBeInTheDocument();
+    expect(within(row('Quick keep hotkey')).queryByRole('button', { name: 'Turn off' })).not.toBeInTheDocument();
   });
 
   it('keeps the old shortcut when another app holds the new one', async () => {
@@ -166,7 +168,7 @@ describe('Quick keep hotkey', () => {
     const check = pendingCheck();
     record('j');
     expect(checkShortcut).toHaveBeenCalledWith('Alt+J');
-    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }));
+    fireEvent.click(within(row('Quick keep hotkey')).getByRole('button', { name: 'Turn off' }));
     await check.resolve();
     expect(getPrefs().overlay.quickKeepKey).toBe('');
     expect(quickKeep()).toHaveAccessibleName('Quick keep hotkey: Off. Click to change.');
@@ -198,7 +200,7 @@ describe('Quick keep hotkey', () => {
     setup();
     const check = pendingCheck();
     record('j');
-    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }));
+    fireEvent.click(within(row('Quick keep hotkey')).getByRole('button', { name: 'Turn off' }));
     await check.reject();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(getPrefs().overlay.quickKeepKey).toBe('');
@@ -221,5 +223,44 @@ describe('Quick keep hotkey', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Already used by the other hotkey');
     expect(checkShortcut).not.toHaveBeenCalled();
     expect(getPrefs().overlay.quickKeepKey).toBe('Ctrl+Shift+K');
+  });
+});
+
+describe('Name it hotkey', () => {
+  it('shows its keys right after Quick keep, and stays with the popup off', () => {
+    setup();
+    expect(nameIt()).toHaveAccessibleName('Name it hotkey: Ctrl Shift N. Click to change.');
+    const order = ['Quick keep hotkey', 'Name it hotkey', 'Quiet mode'].map((text) => screen.getByText(text));
+    expect(order[0].compareDocumentPosition(order[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(order[1].compareDocumentPosition(order[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Show a popup in game' }));
+    expect(nameIt()).toBeInTheDocument();
+  });
+
+  it('records its own shortcut once the system has it free', async () => {
+    setup();
+    fireEvent.click(nameIt());
+    fireEvent.keyDown(nameIt(), { key: 'm', code: 'KeyM', altKey: true });
+    expect(checkShortcut).toHaveBeenCalledWith('Alt+M');
+    await waitFor(() => { expect(getPrefs().overlay.nameItKey).toBe('Alt+M'); });
+    expect(getPrefs().overlay.quickKeepKey).toBe('Ctrl+Shift+K');
+  });
+
+  it('refuses Quick keep’s shortcut without asking the system', () => {
+    setup();
+    fireEvent.click(nameIt());
+    fireEvent.keyDown(nameIt(), { key: 'k', code: 'KeyK', ctrlKey: true, shiftKey: true });
+    expect(within(row('Name it hotkey')).getByRole('alert')).toHaveTextContent('Already used by the other hotkey');
+    expect(checkShortcut).not.toHaveBeenCalled();
+    expect(getPrefs().overlay.nameItKey).toBe('Ctrl+Shift+N');
+  });
+
+  it('turns off on its own', () => {
+    setup();
+    fireEvent.click(within(row('Name it hotkey')).getByRole('button', { name: 'Turn off' }));
+    expect(getPrefs().overlay.nameItKey).toBe('');
+    expect(getPrefs().overlay.quickKeepKey).toBe('Ctrl+Shift+K');
+    expect(nameIt()).toHaveAccessibleName('Name it hotkey: Off. Click to change.');
   });
 });

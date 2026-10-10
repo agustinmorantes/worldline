@@ -207,6 +207,7 @@ export function Shell({ titleBar, sidebar, children }: {
   return (
     <ShellNavContext value={nav}>
       <div
+        data-app-frame
         className="relative isolate flex h-screen w-screen flex-col overflow-hidden bg-bg text-tx"
         style={accentVars(hue)}
       >

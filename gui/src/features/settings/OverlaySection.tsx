@@ -52,6 +52,13 @@ export function OverlaySection(): ReactElement {
           other={overlay.nameItKey}
           onChange={(quickKeepKey) => { change({ quickKeepKey }); }}
         />
+        <HotkeyRecorder
+          label={t.overlay.nameIt}
+          hint={t.overlay.nameItHint}
+          value={overlay.nameItKey}
+          other={overlay.quickKeepKey}
+          onChange={(nameItKey) => { change({ nameItKey }); }}
+        />
         {popupOnly('options', <>
           <Toggle label={t.overlay.quiet} hint={t.overlay.quietHint} on={overlay.quiet} onChange={(quiet) => { change({ quiet }); }} />
           {/* Only the cloud knows another device is ahead. */}
@@ -110,7 +117,7 @@ function HotkeyRecorder({ label, hint, value, other, onChange }: {
   };
 
   return (
-    <div className="flex items-center gap-4">
+    <div role="group" aria-label={label} className="flex items-center gap-4">
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
         <span className="text-sm font-semibold">{label}</span>
         <span role={error === null ? undefined : 'alert'} className={cn('text-[12.5px]', error === null || recording ? 'text-tx3' : 'text-err')}>

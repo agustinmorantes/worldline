@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "overlay",
-  "description": "Capability for the game overlay: it hears popups and says when its exit animation ends",
+  "description": "Capability for the game overlay: it hears popups and the naming card, and says when they end",
   "windows": [
     "overlay"
   ],

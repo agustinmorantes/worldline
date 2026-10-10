@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Events, OverlayShow } from '@/ipc/events';
-import { Overlay } from './Overlay';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Events, NamingCard, OverlayShow } from '@/ipc/events';
+import { cornerFlight, Overlay } from './Overlay';
 
 const handlers = new Map<string, (payload: unknown) => void>();
 vi.mock('@/ipc/events', () => ({
@@ -228,5 +228,76 @@ describe('Overlay', () => {
     expect(popup()).not.toHaveClass('swap');
     animationEnd(popup(), 'rise');
     expect(signal).not.toHaveBeenCalledWith('overlay-done', 1);
+  });
+});
+
+const card = (over: Partial<NamingCard> = {}): NamingCard => ({
+  session: 5, gameId: 7, versionId: 40, version: 43, auto: 'Kept in game, 21:04', title: 'Lantern Knight',
+  accentHue: 28, corner: 'br', motion: 'full', language: 'en', ...over,
+});
+const field = (): HTMLInputElement => screen.getByRole('textbox', { name: 'Checkpoint name' });
+const advance = (ms: number): Promise<void> => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+describe('Overlay naming card', () => {
+  beforeEach(() => {
+    handlers.clear();
+    vi.mocked(signal).mockClear();
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('listens for the card and the game taking the focus back', async () => {
+    await mount();
+    expect(handlers.has('naming-open')).toBe(true);
+    expect(handlers.has('naming-leave')).toBe(true);
+  });
+
+  it('takes the popup’s place without reporting its exit', async () => {
+    await mount();
+    emit('overlay-show', show());
+    emit('naming-open', card());
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Name this checkpoint' })).toBeInTheDocument();
+    expect(signal).not.toHaveBeenCalledWith('overlay-done', 1);
+  });
+
+  it('says how it closed, then that its tile landed in the corner, and stays until the popup', async () => {
+    await mount();
+    vi.useFakeTimers();
+    emit('naming-open', card());
+    fireEvent.change(field(), { target: { value: 'Boss door' } });
+    fireEvent.keyDown(field(), { key: 'Enter' });
+    expect(signal).toHaveBeenCalledWith('naming-closed', { session: 5, how: 'save', name: 'Boss door' });
+    await advance(420);
+    const host = screen.getByRole('dialog').parentElement;
+    if (host === null) throw new Error('No card');
+    const { x, y } = cornerFlight('br', window.innerWidth, window.innerHeight);
+    expect(host.style.getPropertyValue('--fx')).toBe(`${x.toString()}px`);
+    expect(host.style.getPropertyValue('--fy')).toBe(`${y.toString()}px`);
+    expect(signal).not.toHaveBeenCalledWith('naming-landed', 5);
+    await advance(440);
+    expect(signal).toHaveBeenCalledWith('naming-landed', 5);
+    expect(document.querySelector('.nb')).not.toBeNull();
+
+    emit('overlay-show', show({ id: 9, kind: 'kept', version: 43, name: 'Boss door', landed: true }));
+    expect(document.querySelector('.nb')).toBeNull();
+    expect(popup()).toHaveClass('landed', 'enter');
+    expect(popup()).toHaveTextContent('“Boss door”');
+  });
+
+  it('saves as a focus loss when Rust says the game took the focus back', async () => {
+    await mount();
+    emit('naming-open', card());
+    emit('naming-leave', 4);
+    expect(signal).not.toHaveBeenCalledWith('naming-closed', expect.anything());
+    emit('naming-leave', 5);
+    expect(signal).toHaveBeenCalledWith('naming-closed', { session: 5, how: 'blur', name: 'Kept in game, 21:04' });
+  });
+
+  it('flies its tile onto the popup’s tile in each corner', () => {
+    // The card's tile sits 80px above the centre of a 1280x720 client area: at (640, 280).
+    expect(cornerFlight('br', 1280, 720)).toEqual({ x: 1240 - 640, y: 680 - 280 });
+    expect(cornerFlight('bl', 1280, 720)).toEqual({ x: 40 - 640, y: 680 - 280 });
+    expect(cornerFlight('tr', 1280, 720)).toEqual({ x: 1240 - 640, y: 40 - 280 });
+    expect(cornerFlight('tl', 1280, 720)).toEqual({ x: 40 - 640, y: 40 - 280 });
   });
 });

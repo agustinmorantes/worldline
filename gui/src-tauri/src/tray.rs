@@ -150,11 +150,18 @@ pub fn e2e_tray_labels(app: AppHandle) -> Result<TrayLabels, String> {
     })
 }
 
-fn show_window(app: &AppHandle) {
+/// Brings the main window out of the tray or the taskbar, to the front.
+pub(crate) fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         set_low_memory(&window, false);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+/// Hides the main window to the tray, as closing it does.
+pub(crate) fn hide_window(window: &tauri::WebviewWindow) {
+    let _ = window.hide();
+    set_low_memory(window, true);
 }

@@ -329,6 +329,8 @@ export const en = {
     warnAheadHint: 'When the game starts and the cloud has newer checkpoints',
     quickKeep: 'Quick keep hotkey',
     quickKeepHint: 'Keeps the latest checkpoint with an automatic name. Never takes focus from the game.',
+    nameIt: 'Name it hotkey',
+    nameItHint: 'Keeps it and asks for a name: over the game when the popup can show there, otherwise in Worldline.',
     keptTag: (time: string): string => `Kept in game, ${time}`,
     hotkeyRecording: 'Press keys…',
     hotkeyRecordingHint: 'Hold a modifier and press a key. Esc cancels.',
@@ -340,6 +342,18 @@ export const en = {
     useDefault: 'Use default',
     off: 'Off for this game',
     offHint: 'No popups while it plays',
+  },
+  /** The naming card the Name it hotkey opens, over the game or in the app. */
+  naming: {
+    eyebrow: 'Name this checkpoint',
+    meta: (n: number, game: string): string => `#${n.toString()} · ${game} · just now`,
+    field: 'Checkpoint name',
+    save: 'Save name',
+    /** The hint, after the Enter and Esc keycaps: "Enter saves · Esc keeps “…”". */
+    saves: 'saves',
+    keeps: (auto: string): string => `keeps “${auto}”`,
+    /** Under "Couldn't name the checkpoint." when the rename failed. */
+    keptAs: (auto: string): string => `It keeps “${auto}”.`,
   },
   home: {
     noGames: 'No games yet',

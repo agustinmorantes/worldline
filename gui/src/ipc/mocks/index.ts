@@ -154,6 +154,8 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       return 'mock://prefs.json';
     case 'set_overlay_config':
       return null;
+    case 'name_it_closed':
+      return { handed: false, error: null };
     case 'check_shortcut':
       if ((state.takenShortcuts ?? []).includes(args.accelerator as string)) throw new Error('HotKey already registered');
       return null;

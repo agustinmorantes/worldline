@@ -153,6 +153,11 @@ html, body {
 .roll.late { animation-delay: 720ms; }
 .life { animation: life var(--dur) linear both; }
 
+/* Landed: the naming card's tile flew into the corner and is the mark already. No rise and no
+   redraw, only the text unfolds. */
+.ov.enter.landed { animation: none; }
+.ov.enter.landed:not(.swap) :is(.trunk, .up, .dn, .node, .end, .dia) { animation: none; }
+
 /* Exit: the text folds back into the mark, then the mark sinks. Or a quick fade. */
 .ov.out { animation: sink 380ms var(--ez) 240ms both; }
 .ov.out .txt { animation: shut 300ms cubic-bezier(.5, 0, .9, .5) both; }

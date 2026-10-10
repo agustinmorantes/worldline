@@ -1,6 +1,6 @@
 //! The overlay's hotkeys (handoff, "Hotkeys"): registered only while a tracked game with an install
 //! dir is the window in front, so other apps keep those keys the rest of the time. Each entry in
-//! `wanted` is an `(action, shortcut)`; Name it (O4) only adds one.
+//! `wanted` is an `(action, shortcut)`.
 //!
 //! The plugin runs every register and unregister on the main thread and waits for it, and calls
 //! the handler there: never call `sync` or `check` on the main thread, and leave the handler at
@@ -11,6 +11,7 @@
 //! on, and a press from an earlier generation does nothing: it never acts for another game.
 
 use super::decide::Front;
+use super::naming::Naming;
 use super::{lock, Overlay, OverlayConfig};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,6 +24,7 @@ use tauri_plugin_log::log::warn;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     QuickKeep,
+    NameIt,
 }
 
 /// A hotkey: what it does and its keys.
@@ -59,11 +61,20 @@ pub fn parse(stored: &str) -> Option<Shortcut> {
     allowed.then(|| stored.parse().ok()).flatten()
 }
 
-/// The hotkeys `config` asks for, without the ones that are off or unreadable.
+/// The hotkeys `config` asks for, without the ones that are off or unreadable. Two actions on the
+/// same keys (Settings refuses that) take neither.
 pub fn wanted(config: &OverlayConfig) -> Vec<Entry> {
-    [(Action::QuickKeep, &config.quick_keep_key)]
-        .into_iter()
-        .filter_map(|(action, stored)| parse(stored).map(|shortcut| (action, shortcut)))
+    let entries: Vec<Entry> = [
+        (Action::QuickKeep, &config.quick_keep_key),
+        (Action::NameIt, &config.name_it_key),
+    ]
+    .into_iter()
+    .filter_map(|(action, stored)| parse(stored).map(|shortcut| (action, shortcut)))
+    .collect();
+    entries
+        .iter()
+        .filter(|(_, shortcut)| entries.iter().filter(|(_, s)| s == shortcut).count() == 1)
+        .copied()
         .collect()
 }
 
@@ -144,6 +155,19 @@ impl Cooldown {
         }
         ready
     }
+}
+
+/// Whether a Name it press at `at` counts: never while a card is kept for or open, which doesn't
+/// start its cooldown either, nor within its cooldown. One that counts claims the card.
+pub fn accept_name_it(naming: &mut Naming, cooldown: &mut Cooldown, at: Instant) -> bool {
+    if !naming.begin() {
+        return false;
+    }
+    if cooldown.accept(Action::NameIt, at) {
+        return true;
+    }
+    naming.end();
+    false
 }
 
 /// Registers the wanted hotkeys while a game is in front and the GUI has pushed its config, and
@@ -259,23 +283,90 @@ mod tests {
     }
 
     fn config(quick_keep_key: &str) -> OverlayConfig {
+        both(quick_keep_key, "")
+    }
+
+    fn both(quick_keep_key: &str, name_it_key: &str) -> OverlayConfig {
         serde_json::from_value(serde_json::json!({
             "enabled": false, "sound": true, "corner": "br", "perGame": {}, "quiet": false,
-            "warnAhead": true, "quickKeepKey": quick_keep_key, "nameItKey": "Ctrl+Shift+N",
+            "warnAhead": true, "quickKeepKey": quick_keep_key, "nameItKey": name_it_key,
             "keptTagTemplate": "Kept in game, {time}", "motion": "full", "language": "en",
         }))
         .unwrap()
     }
 
     const KEEP: Action = Action::QuickKeep;
+    const NAME: Action = Action::NameIt;
 
     #[test]
     fn the_pushed_config_names_the_hotkeys_even_with_the_popup_off() {
         let k = parse("Ctrl+Shift+K").unwrap();
+        let n = parse("Ctrl+Shift+N").unwrap();
         assert_eq!(wanted(&config("Ctrl+Shift+K")), [(KEEP, k)]);
+        assert_eq!(
+            wanted(&both("Ctrl+Shift+K", "Ctrl+Shift+N")),
+            [(KEEP, k), (NAME, n)]
+        );
+        assert_eq!(wanted(&both("", "Ctrl+Shift+N")), [(NAME, n)]);
         // Turned off, or a value we don't accept: nothing to register.
         assert_eq!(wanted(&config("")), []);
         assert_eq!(wanted(&config("Ctrl+Shift")), []);
+    }
+
+    #[test]
+    fn two_actions_on_the_same_keys_take_neither() {
+        // Settings refuses it; a hand-edited prefs file can still say it.
+        assert_eq!(wanted(&both("Ctrl+Shift+K", "Ctrl+Shift+K")), []);
+    }
+
+    #[test]
+    fn each_hotkey_has_its_own_cooldown() {
+        let mut cooldown = Cooldown::default();
+        let now = Instant::now();
+        assert!(cooldown.accept(KEEP, now));
+        assert!(cooldown.accept(NAME, now + Duration::from_millis(100)));
+        assert!(!cooldown.accept(NAME, now + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn name_it_is_ignored_while_its_card_is_kept_for_or_open_without_starting_its_cooldown() {
+        use super::super::naming::{Opening, Place};
+        let mut naming = Naming::default();
+        let mut cooldown = Cooldown::default();
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        assert!(accept_name_it(&mut naming, &mut cooldown, at(0)));
+        // Its keep runs: a second press, even past the cooldown, does nothing.
+        assert!(!accept_name_it(&mut naming, &mut cooldown, at(2500)));
+        let opening = Opening {
+            game_id: 7,
+            version_id: 40,
+            version_number: 12,
+            auto: "Auto".into(),
+            game_window: 1,
+            place: Place::App,
+            was_tray: false,
+        };
+        let id = naming.open(opening).unwrap().id;
+        assert!(!accept_name_it(&mut naming, &mut cooldown, at(3000)));
+        naming.close(id, Place::App, super::super::naming::How::Save);
+        // Closed: the ignored presses didn't restart the cooldown, so this one counts.
+        assert!(accept_name_it(&mut naming, &mut cooldown, at(3100)));
+        naming.end();
+        // Within the cooldown of that one: ignored, and the card stays free.
+        assert!(!accept_name_it(&mut naming, &mut cooldown, at(3200)));
+        assert!(naming.begin());
+    }
+
+    #[test]
+    fn a_name_it_press_waiting_while_its_hotkey_is_rebound_is_stale() {
+        let mut games = Games::default();
+        let (_, generation, mut press) = pressed_in(&mut games);
+        press.action = NAME;
+        press.shortcut = parse("Ctrl+Shift+N").unwrap();
+        assert!(press.stands(&generation, &both("Ctrl+Shift+K", "Ctrl+Shift+N")));
+        assert!(!press.stands(&generation, &both("Ctrl+Shift+K", "Alt+N")));
+        assert!(!press.stands(&generation, &both("Ctrl+Shift+N", "Ctrl+Shift+N")));
     }
 
     #[test]

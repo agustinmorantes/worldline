@@ -289,6 +289,11 @@ impl Popup {
         leaving
     }
 
+    /// No popup is showing or leaving.
+    pub fn is_hidden(&self) -> bool {
+        self.phase == Phase::Hidden
+    }
+
     /// The overlay webview listens for popups.
     pub fn is_ready(&self) -> bool {
         self.ready
@@ -296,6 +301,13 @@ impl Popup {
 
     pub fn set_ready(&mut self) {
         self.ready = true;
+    }
+
+    /// The naming card takes the window: the popup showing is gone at once, and its delayed
+    /// work is stale.
+    pub fn take_over(&mut self) {
+        self.generation += 1;
+        self.phase = Phase::Hidden;
     }
 
     /// The window is being created or destroyed: everything in flight is stale, and nothing
@@ -876,6 +888,18 @@ mod tests {
         popup.reset();
         assert!(!popup.finish(id));
         assert_eq!(look(&mut popup, id, LATE), Watch::Stop);
+    }
+
+    #[test]
+    fn the_naming_card_ends_the_popup_showing_and_the_next_one_rises_fresh() {
+        let mut popup = ready();
+        let (_, id) = popup.offer(Fail, false);
+        popup.take_over();
+        // Its watcher and its exit are stale; the webview stays ready.
+        assert_eq!(look(&mut popup, id, DUE), Watch::Stop);
+        assert!(!popup.finish(id));
+        // The landed Kept popup isn't swapped in or held back by the error that was showing.
+        assert_eq!(popup.offer(Kind::Kept, false).0, Sh);
     }
 
     #[test]

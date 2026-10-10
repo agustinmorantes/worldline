@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import { on, signal, type OverlayShow } from '@/ipc/events';
+import { on, signal, type NamingCard as Card, type OverlayShow } from '@/ipc/events';
+import { NamingCard, type Flight } from '@/features/naming/NamingCard';
 import { formatRelative } from '@/shared/i18n/dates';
 import { en } from '@/shared/i18n/en';
 import { es } from '@/shared/i18n/es';
@@ -79,11 +80,30 @@ interface Shown {
   phase: 'in' | 'out' | 'gone';
 }
 
-/** The whole overlay page: at most one popup. Rust decides what shows and when it leaves; this
- * plays it and says when the exit has ended (`overlay-done`), so Rust can hide the window. */
+/** Where the popup's tile sits, from the client corner: its 16px inset, padding 8, half of 32. */
+const TILE_CENTRE = 16 + 8 + 16;
+
+/** The card's tile flies from its place (80px above the window's centre) into the popup's tile. */
+export function cornerFlight(corner: Card['corner'], width: number, height: number): Flight {
+  const x = corner.endsWith('r') ? width - TILE_CENTRE : TILE_CENTRE;
+  const y = corner.startsWith('t') ? TILE_CENTRE : height - TILE_CENTRE;
+  return { x: x - width / 2, y: y - (height / 2 - 80) };
+}
+
+interface Naming {
+  card: Card;
+  /** The game took the focus back. */
+  left: boolean;
+}
+
+/** The whole overlay page: at most one popup, or the naming card. Rust decides what shows and when
+ * it leaves; this plays it and says when the exit has ended (`overlay-done`), so Rust can hide the
+ * window. The card says how it closed (`naming-closed`) and when its tile landed in the corner
+ * (`naming-landed`); it stays there until the Kept popup takes the tile over. */
 export function Overlay(): ReactElement | null {
   const [shown, setShown] = useState<Shown | null>(null);
   const currentRef = useRef<Shown | null>(null);
+  const [naming, setNaming] = useState<Naming | null>(null);
 
   useEffect(() => {
     const set = (next: Shown | null): void => {
@@ -94,6 +114,7 @@ export function Overlay(): ReactElement | null {
     let unlisten: UnlistenFn[] = [];
     void Promise.all([
       on('overlay-show', (show) => {
+        setNaming(null);
         const prev = currentRef.current;
         const before = (numberOf(show) ?? 0) - 1;
         if (show.swap && prev?.phase === 'in') {
@@ -112,6 +133,14 @@ export function Overlay(): ReactElement | null {
         }
         set({ ...prev, phase: fast ? 'gone' : 'out' });
       }),
+      on('naming-open', (card) => {
+        // The card takes the popup's place; Rust no longer waits for its exit.
+        set(null);
+        setNaming({ card, left: false });
+      }),
+      on('naming-leave', (session) => {
+        setNaming((prev) => (prev?.card.session === session ? { ...prev, left: true } : prev));
+      }),
     ]).then((fns) => {
       unlisten = fns;
       if (!live) fns.forEach((fn) => { fn(); });
@@ -123,6 +152,22 @@ export function Overlay(): ReactElement | null {
     };
   }, []);
 
+  if (naming !== null) {
+    const { card } = naming;
+    return (
+      <NamingCard
+        key={card.session}
+        card={card}
+        place="overlay"
+        left={naming.left}
+        onClose={(how, name) => {
+          void signal('naming-closed', { session: card.session, how, name });
+          return cornerFlight(card.corner, window.innerWidth, window.innerHeight);
+        }}
+        onDone={() => { void signal('naming-landed', card.session); }}
+      />
+    );
+  }
   if (!shown) return null;
   const exited = (): void => {
     currentRef.current = null;
@@ -154,6 +199,7 @@ function Popup({ shown, onExited }: { shown: Shown; onExited: () => void }): Rea
     swaps > 0 && 'swap',
     show.quiet && 'quiet',
     show.motion === 'reduced' && 'rm',
+    show.landed && 'landed',
   ].filter(Boolean).join(' ');
   const style = {
     ...accentVars(show.accentHue),

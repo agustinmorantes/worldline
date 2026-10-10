@@ -17,6 +17,7 @@ import type { RetentionSettings } from './bindings/RetentionSettings';
 import type { SyncReport } from './bindings/SyncReport';
 import type { SyncSettings } from './bindings/SyncSettings';
 import type { Version } from './bindings/Version';
+import type { NamingClose } from './events';
 import type { Locale } from '@/shared/i18n/locale';
 import type { OverlayPrefs } from '@/shared/prefs/schema';
 
@@ -109,6 +110,13 @@ export const setOverlayConfig = (config: OverlayConfig): Promise<void> =>
 /** Rejects when a hotkey can't be registered, most often because another app holds it. */
 export const checkShortcut = (accelerator: string): Promise<void> =>
   invoke('check_shortcut', { accelerator });
+/** What closing the app's naming card did: whether the focus went back to the game, and why the
+ * name couldn't be saved, if it couldn't. */
+export interface NameItClosed { handed: boolean; error: string | null }
+/** The in-app naming card closed: Rust renames the checkpoint and hands the focus back to the
+ * game when it should. When it did, the card just folds instead of flying to its row. */
+export const nameItClosed = (session: number, how: NamingClose, name: string): Promise<NameItClosed> =>
+  invoke('name_it_closed', { session, how, name });
 /** Absolute path of the GUI preferences file. */
 export const getPrefsPath = (): Promise<string> => invoke('get_prefs_path');
 
