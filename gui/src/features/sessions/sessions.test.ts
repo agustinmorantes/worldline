@@ -11,6 +11,7 @@ import {
   playedMs,
   sessionGapMs,
   splitSessions,
+  totalPlayedMs,
   trackPosition,
   trackWidth,
   withUnrecorded,
@@ -85,6 +86,19 @@ describe('playedMs', () => {
   it('counts a branch from its own fork point', () => {
     const versions = [...line(1, null, [0, 10]), v(3, 1, 20)];
     expect(playedMs([versions[2]], versions, GAP)).toBe(20 * MIN);
+  });
+
+  it('counts every timeline once for the header, however far back you rewound', () => {
+    // Rewound to 2: 3─4 and 5─6 are other timelines, each played once.
+    const versions = [...line(1, null, [0, 10]), ...line(3, 2, [30, 60]), ...line(5, 2, [day(48), day(48) + 30])];
+    expect(totalPlayedMs(versions, GAP)).toBe((10 + 20 + 30 + 30) * MIN);
+    expect(splitSessions(versions, GAP)).toHaveLength(2);
+  });
+
+  it('counts the minutes before a rewind once', () => {
+    // 1 at 0, 2 at 10; rewound to 1, then 3 at 20: twenty minutes played, not thirty.
+    const versions = [...line(1, null, [0, 10]), ...line(3, 1, [20])];
+    expect(totalPlayedMs(versions, GAP)).toBe(20 * MIN);
   });
 });
 
@@ -165,6 +179,21 @@ describe('layoutSessions', () => {
     const lastDay = layout.days[layout.days.length - 1];
     const oldest = lastDay.rows[lastDay.rows.length - 1];
     expect(oldest.forks.map((f) => [f.from?.id ?? null, ids(f.line)])).toEqual([[null, [3, 4]]]);
+  });
+
+  it('marks the fork holding the newest checkpoint, only when it is off your line', () => {
+    // 1─2 is your line after a rewind; 3─4 left from 2 on Thursday, 5─6 today.
+    const versions = [...line(1, null, [0, 10]), ...line(3, 2, [30, 60]), ...line(5, 2, [day(48), day(48) + 30])];
+    const forks = (activeId: number): [number, boolean][] =>
+      layoutSessions({ versions, activeId, gapMs: GAP }).days.flatMap((d) => d.rows.flatMap((r) => r.forks.map((f): [number, boolean] => [f.root.id, f.latest])));
+    expect(forks(2)).toEqual([[5, true], [3, false]]);
+    expect(forks(6)).toEqual([[3, false]]);
+  });
+
+  it('orders the forks leaving a row newest first, wherever on the row they leave', () => {
+    const versions = [...line(1, null, [0, 10, 20]), ...line(4, 1, [day(24)]), ...line(5, 3, [100]), ...line(6, 2, [day(48)])];
+    const layout = layoutSessions({ versions, activeId: 3, gapMs: GAP });
+    expect(layout.days[0].rows[0].forks.map((f) => f.root.id)).toEqual([6, 4, 5]);
   });
 
   it('falls back to the newest version when nothing is active', () => {

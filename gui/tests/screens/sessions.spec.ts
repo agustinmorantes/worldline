@@ -57,7 +57,7 @@ test.describe('sessions list', () => {
 
   test('opens another timeline from its stub', async ({ page }) => {
     await page.goto('/game/1');
-    const stub = page.getByRole('button', { name: /another timeline · 1 session/i });
+    const stub = page.getByRole('button', { name: /another timeline · yesterday · 1 session/i });
     await expect(stub).toHaveAttribute('aria-expanded', 'false');
     await stub.click();
     await expect(stub).toHaveAttribute('aria-expanded', 'true');
