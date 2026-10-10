@@ -41,10 +41,10 @@ describe('Unrecorded changes', () => {
     await expect($('[role="img"][aria-label^="Not recorded yet · recorded in ~"]')).toBeDisplayed();
 
     const hold = panel.$('button*=Hold to go back');
-    // It just slid in, maybe below the panel's fold: WebKit's driver won't press it until it's in view.
-    await hold.scrollIntoView();
-    await hold.waitForClickable();
-    await browser.action('pointer').move({ origin: await hold }).down().pause(1300).up().perform();
+    await hold.waitForEnabled();
+    // Held with Space: it just slid in, and WebKit's driver can press the pointer beside it.
+    await browser.execute((el) => { el.focus(); }, await hold);
+    await browser.action('key').down(' ').pause(1300).up(' ').perform();
 
     await browser.waitUntil(() => readFileSync(save, 'utf8') === 'before the boss', { timeoutMsg: 'the save file was not restored' });
     await expect(panel.$('span=You are here')).toBeDisplayed();
