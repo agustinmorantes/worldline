@@ -128,6 +128,9 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     overlay::game_stopped(&notif_app, game_id);
                     notif_app.emit("game-stopped", game_id).ok();
                 }
+                detection::Notification::UnrecordedChanges { game_id, due_at } => {
+                    notif_app.emit("unrecorded-changes", (game_id, due_at)).ok();
+                }
             }
         }
     });

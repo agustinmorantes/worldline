@@ -3,6 +3,7 @@
 
 mod common;
 
+use chrono::NaiveDateTime;
 use std::fs;
 use std::time::{Duration, Instant};
 use worldline_core::detection::{BranchFrom, CaptureFailure, Notification};
@@ -294,4 +295,179 @@ fn a_capture_that_cannot_be_written_reports_checkpoint_failed() {
     assert_eq!(failed, Some((game.id, CaptureFailure::Other)));
     assert!(error_first, "the existing error is still sent");
     assert_eq!(core.get_game(game.id).unwrap().versions.len(), 1);
+}
+
+/// A core watching with a five-minute cooldown, so a change waits unrecorded.
+fn open_cooling(
+    data: &std::path::Path,
+) -> (WorldlineCore, std::sync::mpsc::Receiver<Notification>) {
+    worldline_core::store::write_json(
+        &data.join("monitoring_settings.json"),
+        &MonitoringSettings {
+            version_cooldown_minutes: 5,
+            snapshot_debounce_seconds: 0.2,
+            ..MonitoringSettings::default()
+        },
+    )
+    .unwrap();
+    WorldlineCore::open(
+        data,
+        OpenOptions {
+            watch: true,
+            debounce_seconds: None,
+        },
+    )
+    .unwrap()
+}
+
+/// The `due_at` of the game's next `UnrecordedChanges`.
+fn unrecorded(
+    rx: &std::sync::mpsc::Receiver<Notification>,
+    game: i32,
+) -> Option<Option<NaiveDateTime>> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(Notification::UnrecordedChanges { game_id, due_at }) if game_id == game => {
+                return Some(due_at);
+            }
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Writes `contents` until the watcher reports it unrecorded; returns its `due_at`.
+/// Retrying covers the folder not being watched yet.
+fn change(
+    rx: &std::sync::mpsc::Receiver<Notification>,
+    game: i32,
+    save: &std::path::Path,
+    contents: &str,
+) -> NaiveDateTime {
+    for _ in 0..20 {
+        fs::write(save, contents).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(Notification::UnrecordedChanges {
+                    game_id,
+                    due_at: Some(due_at),
+                }) if game_id == game => return due_at,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    }
+    panic!("{contents:?} was not reported unrecorded");
+}
+
+fn add_watched_game(core: &WorldlineCore, saves: &std::path::Path) -> i32 {
+    core.save_game(
+        GameForm {
+            id: None,
+            title: "Silksong".into(),
+        },
+        Some(vec![saves.to_string_lossy().into_owned()]),
+    )
+    .unwrap()
+    .id
+}
+
+#[test]
+fn a_change_inside_the_cooldown_is_unrecorded_until_captured() {
+    let data = tempfile::tempdir().unwrap();
+    let saves = tempfile::tempdir().unwrap();
+    let save = saves.path().join("save.dat");
+    let (core, rx) = open_cooling(data.path());
+    fs::write(&save, "before the death").unwrap();
+    let game = add_watched_game(&core, saves.path());
+    let first = core.get_game(game).unwrap().last_version.unwrap();
+
+    let due_at = change(&rx, game, &save, "after the death");
+    assert_eq!(due_at, first.created_at + chrono::Duration::minutes(5));
+    assert_eq!(core.unrecorded_changes(), vec![(game, due_at)]);
+
+    // The flush captures it, as the end of the cooldown would.
+    core.shutdown();
+    assert_eq!(unrecorded(&rx, game), Some(None));
+    assert!(core.unrecorded_changes().is_empty());
+    assert_eq!(core.get_game(game).unwrap().versions.len(), 2);
+}
+
+#[test]
+fn the_same_bytes_written_again_are_not_unrecorded() {
+    let data = tempfile::tempdir().unwrap();
+    let saves = tempfile::tempdir().unwrap();
+    let save = saves.path().join("save.dat");
+    let (core, rx) = open_cooling(data.path());
+    fs::write(&save, "same").unwrap();
+    let game = add_watched_game(&core, saves.path());
+
+    let mut seen = false;
+    for _ in 0..20 {
+        fs::write(&save, "same").unwrap();
+        if wait_for(
+            &rx,
+            |n| matches!(n, Notification::ChangeDetected { game_id } if *game_id == game),
+        ) {
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "the rewrite was not seen");
+    // The check runs right after the change is reported.
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !rx.try_iter()
+            .any(|n| matches!(n, Notification::UnrecordedChanges { .. }))
+    );
+    assert!(core.unrecorded_changes().is_empty());
+
+    change(&rx, game, &save, "different");
+}
+
+#[test]
+fn a_change_made_while_the_app_was_closed_is_unrecorded_on_start() {
+    let data = tempfile::tempdir().unwrap();
+    let saves = tempfile::tempdir().unwrap();
+    let save = saves.path().join("save.dat");
+    let (core, _) = open_cooling(data.path());
+    fs::write(&save, "before").unwrap();
+    let game = add_watched_game(&core, saves.path());
+    let first = core.get_game(game).unwrap().last_version.unwrap();
+    drop(core);
+
+    fs::write(&save, "while closed").unwrap();
+    let (core, rx) = open_cooling(data.path());
+    let due_at = first.created_at + chrono::Duration::minutes(5);
+    assert_eq!(unrecorded(&rx, game), Some(Some(due_at)));
+    assert_eq!(core.unrecorded_changes(), vec![(game, due_at)]);
+}
+
+#[test]
+fn checkpoint_keep_and_restore_clear_unrecorded_changes() {
+    let data = tempfile::tempdir().unwrap();
+    let saves = tempfile::tempdir().unwrap();
+    let save = saves.path().join("save.dat");
+    let (core, rx) = open_cooling(data.path());
+    fs::write(&save, "first").unwrap();
+    let game = add_watched_game(&core, saves.path());
+    let first = core.get_game(game).unwrap().last_version.unwrap();
+
+    change(&rx, game, &save, "second");
+    core.checkpoint(game).unwrap();
+    assert_eq!(unrecorded(&rx, game), Some(None));
+    assert!(core.unrecorded_changes().is_empty());
+
+    change(&rx, game, &save, "third");
+    core.keep(game, "Kept in game, 21:04", || true).unwrap();
+    assert_eq!(unrecorded(&rx, game), Some(None));
+    assert!(core.unrecorded_changes().is_empty());
+
+    change(&rx, game, &save, "fourth");
+    core.restore_version(first.id).unwrap();
+    assert_eq!(unrecorded(&rx, game), Some(None));
+    assert!(core.unrecorded_changes().is_empty());
 }

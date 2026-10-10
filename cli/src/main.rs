@@ -332,7 +332,7 @@ fn watch(data_dir: &std::path::Path, debounce_seconds: Option<f32>) -> Result<()
             Notification::Error(err) => eprintln!("Error: {err}"),
             // Already reported with its details as `Error`.
             Notification::CheckpointFailed { .. } => {}
-            Notification::SyncStarted => {}
+            Notification::SyncStarted | Notification::UnrecordedChanges { .. } => {}
             Notification::SyncCompleted(report) => {
                 println!("Synced.");
                 print_sync_report(&report);

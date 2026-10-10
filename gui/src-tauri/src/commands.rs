@@ -24,6 +24,13 @@ fn get_running_games(core: State<Arc<WorldlineCore>>) -> Vec<i32> {
     core.running_games()
 }
 
+/// `(game id, when the watcher records them)` for the games whose saves changed since their
+/// current checkpoint; `unrecorded-changes` reports changes.
+#[tauri::command]
+fn get_unrecorded_changes(core: State<Arc<WorldlineCore>>) -> Vec<(i32, chrono::NaiveDateTime)> {
+    core.unrecorded_changes()
+}
+
 #[tauri::command]
 fn save_game(
     game: GameForm,
@@ -419,6 +426,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_games,
         get_game,
         get_running_games,
+        get_unrecorded_changes,
         save_game,
         delete_game,
         untrack_game,

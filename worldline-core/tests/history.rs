@@ -226,6 +226,36 @@ fn restore_checkpoints_uncaptured_progress_before_overwriting_it() {
 }
 
 #[test]
+fn restoring_the_active_version_keeps_the_unrecorded_saves_and_goes_back() {
+    let device = Device::new();
+    device.write("save.dat", "before the death");
+    let game = device.add_game("Silksong");
+    let active = device.active_version(game.game.id);
+    // Saved again inside the cooldown: not recorded yet.
+    device.write("save.dat", "after the death");
+
+    device.core.restore_version(active.id).unwrap();
+
+    assert_eq!(device.read("save.dat").as_deref(), Some("before the death"));
+    assert_eq!(device.active_version(game.game.id).id, active.id);
+    let game = device.game(game.game.id);
+    assert_eq!(game.versions.len(), 2);
+    let kept = game
+        .versions
+        .iter()
+        .find(|v| v.reason == "pre_restore")
+        .expect("pre-restore checkpoint");
+    assert_eq!(kept.parent_id, Some(active.id));
+    let out = tempfile::tempdir().unwrap();
+    device.core.extract_version(kept.id, out.path()).unwrap();
+    let dir = &game.tracked_dirs[0].folder_slug;
+    assert_eq!(
+        fs::read_to_string(out.path().join(dir).join("save.dat")).unwrap(),
+        "after the death"
+    );
+}
+
+#[test]
 fn a_damaged_chunk_aborts_restore_before_live_files_change() {
     let device = Device::new();
     device.write("save.dat", "old");

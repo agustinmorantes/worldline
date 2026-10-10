@@ -14,6 +14,7 @@ use crate::history::CheckpointOutcome;
 use crate::models::FullGame;
 use crate::sync::SyncReport;
 use anyhow::Result;
+use chrono::NaiveDateTime;
 use serde::Serialize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +31,9 @@ pub trait CaptureTarget: Send + Sync + 'static {
     fn capture(&self, game_id: i32) -> Result<(CheckpointOutcome, Option<BranchFrom>)>;
     /// Stores a screenshot as the version's.
     fn attach_screenshot(&self, version_id: i32, jpeg: &[u8]) -> Result<()>;
+    /// Records whether the game's live saves differ from its active version;
+    /// `due_at`: when the watcher will capture them.
+    fn check_unrecorded(&self, game_id: i32, due_at: NaiveDateTime) -> Result<()>;
 }
 
 pub type NotificationReceiver = mpsc::Receiver<Notification>;
@@ -68,6 +72,13 @@ pub enum Notification {
     },
     GameStopped {
         game_id: i32,
+    },
+    /// The game's live saves differ from its active version, and the watcher
+    /// captures them at `due_at`; `None` once they no longer differ. Sent
+    /// only when that changes.
+    UnrecordedChanges {
+        game_id: i32,
+        due_at: Option<NaiveDateTime>,
     },
 }
 

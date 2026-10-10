@@ -400,24 +400,38 @@ impl History {
     /// The live contents of the tracked directories, stored as chunks. The
     /// caller must hold the repository lock.
     pub fn capture(&self, game: &FullGame) -> Result<Vec<FileEntry>> {
-        let exclusions: Vec<_> = game
-            .tracked_dirs
-            .iter()
-            .map(|dir| crate::exclusions::parse(&dir.exclusions))
-            .collect();
-        let roots = game
-            .tracked_dirs
-            .iter()
-            .zip(&exclusions)
-            .map(|(dir, exclusions)| {
-                Ok(CaptureRoot {
-                    uuid: Uuid::parse_str(&dir.uuid)?,
-                    path: Path::new(&dir.path),
-                    exclusions,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        chunks::capture(&self.store, &roots).context("failed to capture tracked directories")
+        with_roots(game, |roots| chunks::capture(&self.store, roots))
+            .context("failed to capture tracked directories")
+    }
+
+    /// Whether the live saves differ from the active version, by content, as
+    /// a checkpoint would find them; nothing is written. A file being written
+    /// while it is read differs.
+    pub fn live_differs(&self, game: &FullGame) -> Result<bool> {
+        let files = match with_roots(game, chunks::hash) {
+            Err(error) if error.is::<chunks::KeptChanging>() => return Ok(true),
+            files => files?,
+        };
+        let (Some(slot), Some(active)) = (&game.active_slot, &game.last_version) else {
+            return Ok(!files.is_empty());
+        };
+        let meta = self.store.version_meta(
+            &game.game.folder_slug,
+            &slot.folder_slug,
+            &active.folder_slug,
+        )?;
+        // Both sorted alike; the hashed files have no chunk list to compare.
+        let same = |live: &FileEntry, recorded: &FileEntry| {
+            (live.tracked_dir_uuid, &live.path, live.size, &live.sha256)
+                == (
+                    recorded.tracked_dir_uuid,
+                    &recorded.path,
+                    recorded.size,
+                    &recorded.sha256,
+                )
+        };
+        Ok(files.len() != meta.files.len()
+            || !files.iter().zip(&meta.files).all(|(a, b)| same(a, b)))
     }
 
     /// Records `files`, captured at `created_at`, as a new version on `slot`
@@ -595,6 +609,28 @@ impl History {
         }
         Ok(())
     }
+}
+
+/// Runs `walk` over the game's tracked directories with their exclusions.
+fn with_roots<T>(game: &FullGame, walk: impl FnOnce(&[CaptureRoot]) -> Result<T>) -> Result<T> {
+    let exclusions: Vec<_> = game
+        .tracked_dirs
+        .iter()
+        .map(|dir| crate::exclusions::parse(&dir.exclusions))
+        .collect();
+    let roots = game
+        .tracked_dirs
+        .iter()
+        .zip(&exclusions)
+        .map(|(dir, exclusions)| {
+            Ok(CaptureRoot {
+                uuid: Uuid::parse_str(&dir.uuid)?,
+                path: Path::new(&dir.path),
+                exclusions,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    walk(&roots)
 }
 
 pub fn game_uuid(game: &Game) -> Result<Uuid> {

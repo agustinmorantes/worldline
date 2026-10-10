@@ -30,6 +30,8 @@ anyhow = "1.0.100"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 tauri-plugin-log = "2"
+# Unrecorded changes' due times, and the local time in the hotkeys' automatic tag.
+chrono = "0.4"
 
 # The versions Tauri uses, so the WebView2 interface types match.
 [target.'cfg(windows)'.dependencies]
@@ -39,8 +41,6 @@ windows-core = "0.62"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_System_Threading", "Win32_Media", "Win32_Media_Audio", "Win32_UI_Shell"] }
 # The overlay's hotkeys (O3, O4), registered from Rust only.
 tauri-plugin-global-shortcut = "2.4"
-# The local time in the hotkeys' automatic tag.
-chrono = "0.4"
 
 [features]
 # Test build for WebdriverIO: `WORLDLINE_E2E_DATA_DIR` overrides the data directory and
