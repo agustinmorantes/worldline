@@ -2327,6 +2327,8 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error> fo
 
 /// Pre-release data (an older schema or store format) is moved into
 /// `backup-pre-fase3-<timestamp>/`, never deleted, and the app starts fresh.
+// Clippy 1.99 flags `QueryableByName`'s expansion of `Row` below.
+#[allow(clippy::redundant_field_names)]
 fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
     let db = data_dir.join("database.db");
     let repository = data_dir.join("repository");
