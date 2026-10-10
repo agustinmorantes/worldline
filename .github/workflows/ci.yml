@@ -102,7 +102,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest]
+        # windows-2022 keeps an older WebView2: newer runtimes let Tauri's browser
+        # arguments replace msedgedriver's debugging port, so no session starts
+        # (actions/runner-images#14738).
+        os: [ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -150,7 +153,8 @@ jobs:
       - if: runner.os == 'Linux'
         name: Run E2E tests
         working-directory: gui
-        run: xvfb-run --auto-servernum bun run e2e
+        # xvfb's default 640x480 screen would fold the sidebar.
+        run: xvfb-run --auto-servernum --server-args='-screen 0 1920x1080x24' bun run e2e
 
       - if: runner.os == 'Windows'
         name: Run E2E tests
