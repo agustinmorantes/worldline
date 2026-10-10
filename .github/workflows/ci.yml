@@ -3,7 +3,13 @@ name: CI
 on:
   push:
     branches: [main, dev]
+    paths-ignore:
+      - 'website/**'
+      - '.github/workflows/site.yml'
   pull_request:
+    paths-ignore:
+      - 'website/**'
+      - '.github/workflows/site.yml'
   workflow_dispatch:
 
 permissions:

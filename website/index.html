@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worldline: every save, every timeline</title>
+<meta name="description" content="Worldline keeps a history of your game saves. Rewind a bad call, branch into the road not taken, and carry it all between your PC and Steam Deck. Free and open source.">
+<meta name="theme-color" content="#16171d">
+<meta property="og:title" content="Worldline">
+<meta property="og:description" content="Every save. Every timeline. Automatic checkpoints for your game saves, with rewind and branching.">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="main.js" defer></script>
+</head>
+<body>
+<div class="glow" aria-hidden="true"></div>
+
+<header class="titlebar">
+  <a class="brand" href="#top" aria-label="Worldline home">
+    <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h7c4.5 0 5.5-6 12-6M9 12c4.5 0 5.5 6 12 6"/></svg>
+    <span class="disp">Worldline</span>
+  </a>
+  <nav class="nav">
+    <a href="#try">Try it</a>
+    <a href="#features">Features</a>
+    <a class="nav-gh" href="https://github.com/agustinmorantes/worldline" data-gh aria-label="Worldline on GitHub">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+      <span>GitHub</span>
+      <span class="gh-stars" data-stars hidden><svg class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.3l-5.7 3 1.1-6.3-4.6-4.5 6.4-.9z"/></svg><b>0</b></span>
+    </a>
+    <a class="btn btn-sm" href="https://github.com/agustinmorantes/worldline/releases/latest" data-dl>Download</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow rise" style="--d: 0ms">Save history for PC games</p>
+    <h1 class="disp wm rise" style="--d: 80ms">Worldline</h1>
+    <p class="tagline rise" style="--d: 160ms">Every save. Every timeline.</p>
+    <p class="lede rise" style="--d: 240ms">Worldline checkpoints your game saves while you play. Rewind a bad call, take the road not taken, and carry it all between your PC and your Steam&nbsp;Deck.</p>
+    <div class="ctas rise" style="--d: 320ms">
+      <a class="btn btn-lg" href="https://github.com/agustinmorantes/worldline/releases/latest" data-dl data-dl-main>
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+        <span class="btn-stack"><b data-dl-label>Download for Windows</b><small data-dl-meta>Latest release</small></span>
+      </a>
+      <a class="chip chip-lg" href="https://github.com/agustinmorantes/worldline" data-gh>
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+        View on GitHub
+        <span class="gh-stars" data-stars hidden><svg class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.3l-5.7 3 1.1-6.3-4.6-4.5 6.4-.9z"/></svg><b>0</b></span>
+      </a>
+    </div>
+    <p class="fine rise" style="--d: 400ms">Windows &amp; Linux · Free and open source, MIT · <a href="https://github.com/agustinmorantes/worldline/releases" data-releases>All downloads</a></p>
+  </div>
+
+  <div class="hero-art" aria-hidden="true">
+    <svg class="card-icon cycX litL" id="card" viewBox="0 0 512 512">
+      <defs>
+        <linearGradient id="wTile" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" class="c-t1"/><stop offset="1" class="c-t2"/></linearGradient>
+        <radialGradient id="wAura" cx="242" cy="214" r="180" gradientUnits="userSpaceOnUse"><stop offset="0" class="c-aura"/><stop offset="1" class="c-aura0"/></radialGradient>
+        <linearGradient id="wFace" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" class="c-f1"/><stop offset="1" class="c-f2"/></linearGradient>
+        <linearGradient id="wSide" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="c-s1"/><stop offset="1" class="c-s2"/></linearGradient>
+        <linearGradient id="wHi" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="c-hi1"/><stop offset="1" class="c-hi2"/></linearGradient>
+        <linearGradient id="wTube" x1="146" y1="0" x2="334" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" class="c-a1"/><stop offset="1" class="c-a2"/></linearGradient>
+        <radialGradient id="wNode"><stop offset="0" class="c-hot"/><stop offset=".55" class="c-a2"/><stop offset="1" class="c-a1"/></radialGradient>
+        <filter id="wGlow" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="wShadow" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#000" flood-opacity=".5"/></filter>
+        <clipPath id="wTileClip"><rect width="512" height="512" rx="116"/></clipPath>
+        <clipPath id="wFaceClip"><rect x="117" y="86" width="250" height="330" rx="18"/></clipPath>
+      </defs>
+      <g clip-path="url(#wTileClip)">
+        <rect width="512" height="512" fill="url(#wTile)"/>
+        <g opacity=".9">
+          <path class="grid" d="M256 330 L-200 512 M256 330 L-30 512 M256 330 L110 512 M256 330 L256 512 M256 330 L402 512 M256 330 L542 512 M256 330 L712 512"/>
+          <path class="grid" d="M0 352 H512 M0 380 H512 M0 420 H512 M0 476 H512"/>
+        </g>
+        <circle class="aura" cx="242" cy="250" r="230" fill="url(#wAura)"/>
+      </g>
+      <rect class="tileEdge" x="1" y="1" width="510" height="510" rx="115"/>
+      <g class="float">
+        <rect x="129" y="100" width="250" height="330" rx="18" fill="url(#wSide)" filter="url(#wShadow)"/>
+        <rect x="117" y="86" width="250" height="330" rx="18" fill="url(#wFace)"/>
+        <g clip-path="url(#wFaceClip)">
+          <circle class="aura" cx="242" cy="214" r="150" fill="url(#wAura)"/>
+          <rect x="117" y="86" width="250" height="170" fill="url(#wHi)"/>
+          <g transform="rotate(24 256 256)"><rect class="sheen" x="-120" y="-120" width="70" height="760"/></g>
+        </g>
+        <rect class="faceEdge" x="117" y="86" width="250" height="330" rx="18"/>
+        <circle class="screw" cx="139" cy="106" r="5.5"/>
+        <circle class="screw" cx="345" cy="106" r="5.5"/>
+        <path class="step" d="M117 326 H367"/>
+        <path class="stepHi" d="M117 329.5 H367"/>
+        <rect class="grip" x="137" y="340" width="210" height="60" rx="10"/>
+        <path class="ridge" d="M117 344 H127 M117 354 H127 M117 364 H127 M117 374 H127 M117 384 H127 M117 394 H127 M357 344 H367 M357 354 H367 M357 364 H367 M357 374 H367 M357 384 H367 M357 394 H367"/>
+        <text class="emb" x="244" y="377">WORLDLINE</text>
+        <text class="engr" x="244" y="313">MEMORY CARD</text>
+        <g class="stem">
+          <path class="glassTube" d="M146 214 L226 214"/>
+          <path class="core" d="M146 214 L226 214" filter="url(#wGlow)"/>
+          <path class="pulse" pathLength="1" d="M146 214 L226 214" filter="url(#wGlow)"/>
+        </g>
+        <g class="armL">
+          <path class="glassTube" d="M226 214 C 270 214 290 160 334 160"/>
+          <path class="core" d="M226 214 C 270 214 290 160 334 160" filter="url(#wGlow)"/>
+          <path class="pulse" pathLength="1" d="M226 214 C 270 214 290 160 334 160" filter="url(#wGlow)"/>
+        </g>
+        <g class="armR">
+          <path class="glassTube" d="M226 214 C 270 214 290 268 334 268"/>
+          <path class="core" d="M226 214 C 270 214 290 268 334 268" filter="url(#wGlow)"/>
+          <path class="pulse" pathLength="1" d="M226 214 C 270 214 290 268 334 268" filter="url(#wGlow)"/>
+        </g>
+        <g class="elS"><circle class="elc" cx="146" cy="214" r="6" filter="url(#wGlow)"/></g>
+        <g class="elL"><circle class="elBody" cx="334" cy="160" r="12"/><circle class="elc" cx="334" cy="160" r="5" filter="url(#wGlow)"/></g>
+        <g class="elR"><circle class="elBody" cx="334" cy="268" r="12"/><circle class="elc" cx="334" cy="268" r="5" filter="url(#wGlow)"/></g>
+        <g class="node">
+          <circle cx="226" cy="214" r="18" fill="url(#wNode)" filter="url(#wGlow)"/>
+          <circle class="nodeHot" cx="226" cy="214" r="7"/>
+        </g>
+      </g>
+    </svg>
+  </div>
+</section>
+
+<section id="try" class="section">
+  <header class="sec-head">
+    <p class="eyebrow">Try it</p>
+    <h2 class="disp">Thirty seconds with a knight.</h2>
+  </header>
+
+  <div class="demo">
+    <div class="demo-side">
+      <div class="steps" role="tablist" aria-label="Tour steps">
+        <button role="tab" data-step="1"><span class="mono">1</span>Checkpoints</button>
+        <button role="tab" data-step="2"><span class="mono">2</span>Rewind</button>
+        <button role="tab" data-step="3"><span class="mono">3</span>Timelines</button>
+      </div>
+      <div class="demo-text" aria-live="polite">
+        <h3 class="disp" data-d-title>Just play.</h3>
+        <p data-d-body>Every time the game saves, Worldline keeps a checkpoint. You never press a thing.</p>
+      </div>
+      <div class="demo-actions">
+        <button class="btn" data-d-act>Play</button>
+        <button class="hold" data-d-hold hidden><span class="fill"></span><span class="lbl">
+          <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 6 4 12l7 6zM20 6l-7 6 7 6z" fill="currentColor"/></svg>Hold to rewind</span></button>
+        <a class="btn" data-d-dl data-dl href="https://github.com/agustinmorantes/worldline/releases/latest" hidden>Get Worldline</a>
+        <button class="chip" data-d-replay hidden>
+          <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg>Replay</button>
+      </div>
+    </div>
+
+    <div class="demo-stage" data-stage>
+      <div class="scene" data-scene>
+        <div class="stars"></div>
+        <svg class="hills" viewBox="0 0 600 120" preserveAspectRatio="none" aria-hidden="true">
+          <path class="h1" d="M0 70 C80 30 150 40 220 66 S380 30 460 56 S560 50 600 40 V120 H0Z"/>
+          <path class="h2" d="M0 96 C90 70 170 80 260 92 S430 70 520 86 S580 84 600 80 V120 H0Z"/>
+        </svg>
+        <div class="ground"></div>
+
+        <svg class="prop house" style="left: 14%" viewBox="0 0 40 40" aria-hidden="true"><path d="M4 20 20 6l16 14v18H4z"/><rect class="win" x="16" y="24" width="8" height="14" rx="2"/></svg>
+        <svg class="prop tree" style="left: 36%" viewBox="0 0 40 52" aria-hidden="true"><path d="M20 2 34 30H6zM20 14l16 26H4z"/><rect x="17" y="40" width="6" height="12" rx="1"/></svg>
+        <div class="chest" data-chest style="left: 64%"><div class="lid"><i></i><i></i></div><div class="box"></div></div>
+        <svg class="prop castle" style="left: 88%" viewBox="0 0 64 64" aria-hidden="true"><path d="M4 64V20h8v6h6v-6h8v6h6v-6h8v6h6v-6h8v44H40V48a8 8 0 0 0-16 0v16z"/></svg>
+
+        <div class="knight" data-knight style="left: 4%">
+          <div class="toast mono" data-toast><span class="spin"></span>Saving…</div>
+          <svg viewBox="0 0 40 48" aria-hidden="true">
+            <path class="plume" d="M18 7c2-6 10-7 14-2-4-1-8 0-10 4z"/>
+            <rect class="steel" x="9" y="6" width="22" height="20" rx="9"/>
+            <rect class="visor" x="14" y="14" width="14" height="4" rx="2"/>
+            <rect class="steel" x="10" y="24" width="20" height="15" rx="5"/>
+            <rect class="leg l" x="12" y="38" width="6" height="8" rx="2"/>
+            <rect class="leg r" x="22" y="38" width="6" height="8" rx="2"/>
+            <path class="handle" d="M31 28v4"/>
+            <rect class="lantern" x="28" y="31" width="7" height="9" rx="2"/>
+          </svg>
+        </div>
+
+        <div class="hud mono" data-gold><span class="coin"></span><b>120</b></div>
+        <div class="vhs" aria-hidden="true"><span class="mono">◀◀ REWIND</span></div>
+      </div>
+
+      <div class="strip" data-strip>
+        <div class="rail"></div>
+        <div class="rail-fill" data-fill></div>
+        <svg class="branch" viewBox="0 0 100 120" preserveAspectRatio="none" aria-hidden="true">
+          <path data-branch d="M58 40 C64 40 64 92 70 92 L72 92"/>
+        </svg>
+        <div class="cp" data-cp="c1"><span class="pip"></span><span class="cp-lbl">Village</span></div>
+        <div class="cp" data-cp="c2"><span class="pip"></span><span class="cp-lbl">Forest</span></div>
+        <div class="cp" data-cp="c3"><span class="pip"></span><span class="cp-lbl">Old chest</span></div>
+        <div class="cp" data-cp="c4"><span class="pip"></span><span class="cp-lbl">Mimic</span></div>
+        <div class="cp" data-cp="c5"><span class="pip"></span><span class="cp-lbl">Castle gate</span></div>
+        <div class="token" data-token><span class="halo"></span><span class="halo h2"></span><span class="disc">LK</span></div>
+        <p class="strip-hint mono" data-hint>Your timeline</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features" class="section">
+  <header class="sec-head">
+    <p class="eyebrow">What it does</p>
+    <h2 class="disp">Fewer worries. More attempts.</h2>
+  </header>
+
+  <div class="bento">
+    <article class="cell span3">
+      <div class="viz lib" data-lib>
+        <span class="lib-pill" data-lib-pill></span>
+        <button class="lib-row" data-hue="255"><span class="gi" style="--gh: 255">HK</span><span><b>Hollow Knight</b><small class="live"><i></i>Playing now</small></span></button>
+        <button class="lib-row" data-hue="75"><span class="gi" style="--gh: 75">ER</span><span><b>Elden Ring</b><small class="deck"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="4"/><path d="M7 10v4M5 12h4"/></svg>Played on Steam Deck</small></span></button>
+        <button class="lib-row" data-hue="335"><span class="gi" style="--gh: 335">CE</span><span><b>Celeste</b><small>3 sessions this week</small></span></button>
+        <button class="lib-row" data-hue="145"><span class="gi" style="--gh: 145">SV</span><span><b>Stardew Valley</b><small>Not in the cloud yet</small></span></button>
+      </div>
+      <h3 class="disp">Finds your games.</h3>
+      <p>Scans Steam and Epic, and already knows where thousands of games keep their saves, thanks to the Ludusavi manifest. For anything else, pick the folder.</p>
+      <p class="hint">Every game gets its own color. Go on, pick one.</p>
+    </article>
+
+    <article class="cell span3">
+      <div class="viz sync">
+        <div class="node"><span class="nb"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>This PC</div>
+        <div class="wire"><i></i></div>
+        <div class="node hub"><span class="nb"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1-1 8z"/></svg></span>Your folder</div>
+        <div class="wire rev"><i></i></div>
+        <div class="node deckn"><span class="nb"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="4"/><path d="M7 10v4M5 12h4M16 11h.01M18 13h.01"/></svg></span>Steam Deck</div>
+        <p class="sync-status mono"><i></i>Synced just now</p>
+      </div>
+      <h3 class="disp">Your PC and your Deck, in step.</h3>
+      <p>Point Worldline at any shared folder: Syncthing, Dropbox, a network drive. Progress follows you between devices. If both played, both lines are kept and you choose.</p>
+    </article>
+
+    <article class="cell span2">
+      <div class="viz sess">
+        <p class="eyebrow">Today</p>
+        <div class="srow"><span class="mono">8:12 PM</span><span class="strack" style="--w: 78%"><i style="--x: 0%"></i><i style="--x: 22%"></i><i style="--x: 41%"></i><i style="--x: 63%"></i><i style="--x: 100%"></i></span></div>
+        <div class="srow"><span class="mono">3:40 PM</span><span class="strack" style="--w: 30%"><i style="--x: 0%"></i><i style="--x: 50%"></i><i style="--x: 100%"></i></span><span class="tag"><span class="dia"></span>Before the boss</span></div>
+        <p class="eyebrow">Yesterday</p>
+        <div class="srow"><span class="mono">10:05 PM</span><span class="strack" style="--w: 62%"><i style="--x: 0%"></i><i style="--x: 30%"></i><i style="--x: 70%"></i><i style="--x: 100%"></i></span></div>
+      </div>
+      <h3 class="disp">Sessions, not commits.</h3>
+      <p>Checkpoints group into the evenings you actually played. Name one to keep it forever.</p>
+    </article>
+
+    <article class="cell span2">
+      <div class="viz keep">
+        <div class="ruler">
+          <span style="--n: 14"><b>Last day</b></span>
+          <span style="--n: 7"><b>Hourly</b></span>
+          <span style="--n: 4"><b>Daily</b></span>
+          <span style="--n: 2"><b>Weekly</b></span>
+        </div>
+        <p class="mono freed"><span class="ok">✓</span> Freed 1.2 GB · named checkpoints kept</p>
+      </div>
+      <h3 class="disp">Tidies up after itself.</h3>
+      <p>Old checkpoints thin out over time, hourly, then daily, then weekly. Named ones never go.</p>
+    </article>
+
+    <article class="cell span2">
+      <div class="viz files mono">
+        <p><span class="dir">repository/</span></p>
+        <p class="i1"><span class="dir">games/</span>…/<span class="dir">versions/</span></p>
+        <p class="i2">metadata.json</p>
+        <p class="i1"><span class="dir">chunks/</span></p>
+        <p class="i2">3f/<span class="hash">a91c…e07</span> <span class="z">zstd</span></p>
+        <p class="i2">b2/<span class="hash">04de…71c</span> <span class="z">zstd</span></p>
+      </div>
+      <h3 class="disp">No lock-in.</h3>
+      <p>Plain files on your disk, checksummed. Rebuild any save by hand with zstd, or export a game's whole history as a .zip.</p>
+    </article>
+
+    <article class="cell span6 cli">
+      <div>
+        <h3 class="disp">Terminal, too.</h3>
+        <p>The desktop app and the CLI share one history. List games, export and import history, sync, clean up, check every stored chunk.</p>
+      </div>
+      <pre class="term mono" aria-label="Example CLI commands"><span class="pr">$</span> worldline-cli games list
+<span class="pr">$</span> worldline-cli history export <span class="arg">&lt;game&gt; hk.zip</span>
+<span class="pr">$</span> worldline-cli sync status
+<span class="pr">$</span> worldline-cli repo check --deep<span class="cursor"></span></pre>
+    </article>
+  </div>
+</section>
+
+<section class="outro section">
+  <svg class="big-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h7c4.5 0 5.5-6 12-6M9 12c4.5 0 5.5 6 12 6"/></svg>
+  <h2 class="disp">Start keeping every save.</h2>
+  <p>Free, open source, and it stays out of your way.</p>
+  <div class="ctas">
+    <a class="btn btn-lg" href="https://github.com/agustinmorantes/worldline/releases/latest" data-dl>
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+      <span class="btn-stack"><b data-dl-label>Download for Windows</b><small data-dl-meta>Latest release</small></span>
+    </a>
+    <a class="chip chip-lg" href="https://github.com/agustinmorantes/worldline" data-gh><svg class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.3l-5.7 3 1.1-6.3-4.6-4.5 6.4-.9z"/></svg>Star it on GitHub <span class="gh-stars" data-stars hidden><svg class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.3l-5.7 3 1.1-6.3-4.6-4.5 6.4-.9z"/></svg><b>0</b></span></a>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <span><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h7c4.5 0 5.5-6 12-6M9 12c4.5 0 5.5 6 12 6"/></svg> Worldline</span>
+  <span>MIT licensed · Made by Agustín Morantes</span>
+  <a href="https://github.com/agustinmorantes/worldline" data-gh>GitHub</a>
+</footer>
+
+<aside class="star-ask" data-star-ask hidden aria-label="Star Worldline on GitHub">
+  <span class="star-burst"><svg class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.3l-5.7 3 1.1-6.3-4.6-4.5 6.4-.9z"/></svg></span>
+  <p><b>Like what you see?</b> A star helps other players find Worldline.</p>
+  <a class="btn btn-sm" href="https://github.com/agustinmorantes/worldline" data-gh data-star-go>Star on GitHub</a>
+  <button class="star-x" data-star-close aria-label="Dismiss"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+</aside>
+</body>
+</html>
