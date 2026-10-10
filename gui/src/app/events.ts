@@ -49,6 +49,11 @@ export function listenNotifications(): void {
   });
 
   void on('unrecorded-changes', ([gameId, dueAt]) => {
+    // A read on its way may predate the change; reading again gets it.
+    if (queryClient.isFetching({ queryKey: ['unrecorded-changes'] }) > 0) {
+      void queryClient.invalidateQueries({ queryKey: ['unrecorded-changes'] });
+      return;
+    }
     queryClient.setQueryData<[number, string][]>(['unrecorded-changes'], (entries) => withUnrecorded(entries, gameId, dueAt));
   });
 

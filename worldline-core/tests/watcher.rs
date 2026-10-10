@@ -295,6 +295,8 @@ fn a_capture_that_cannot_be_written_reports_checkpoint_failed() {
     assert_eq!(failed, Some((game.id, CaptureFailure::Other)));
     assert!(error_first, "the existing error is still sent");
     assert_eq!(core.get_game(game.id).unwrap().versions.len(), 1);
+    // The save it couldn't record shows as unrecorded until the retry.
+    assert!(matches!(unrecorded(&rx, game.id), Some(Some(_))));
 }
 
 /// A core watching with a five-minute cooldown, so a change waits unrecorded.
@@ -394,6 +396,28 @@ fn a_change_inside_the_cooldown_is_unrecorded_until_captured() {
     assert_eq!(unrecorded(&rx, game), Some(None));
     assert!(core.unrecorded_changes().is_empty());
     assert_eq!(core.get_game(game).unwrap().versions.len(), 2);
+}
+
+#[test]
+fn a_new_cooldown_moves_when_unrecorded_changes_are_due() {
+    let data = tempfile::tempdir().unwrap();
+    let saves = tempfile::tempdir().unwrap();
+    let save = saves.path().join("save.dat");
+    let (core, rx) = open_cooling(data.path());
+    fs::write(&save, "before the death").unwrap();
+    let game = add_watched_game(&core, saves.path());
+    let first = core.get_game(game).unwrap().last_version.unwrap();
+    change(&rx, game, &save, "after the death");
+
+    core.update_monitoring_settings(MonitoringSettings {
+        version_cooldown_minutes: 30,
+        snapshot_debounce_seconds: 1.0,
+        ..MonitoringSettings::default()
+    })
+    .unwrap();
+    let due_at = first.created_at + chrono::Duration::minutes(30);
+    assert_eq!(unrecorded(&rx, game), Some(Some(due_at)));
+    assert_eq!(core.unrecorded_changes(), vec![(game, due_at)]);
 }
 
 #[test]

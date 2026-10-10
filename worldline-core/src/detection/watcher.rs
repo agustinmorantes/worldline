@@ -202,12 +202,20 @@ impl Loop {
                         - self.settings.snapshot_debounce_seconds)
                         .abs()
                         > f32::EPSILON;
+                    let cooldown =
+                        settings.version_cooldown_minutes != self.settings.version_cooldown_minutes;
                     self.settings = settings;
                     if rebuild {
                         debouncer = self.debouncer();
                         self.reload(&mut debouncer, false);
                     }
                     self.set_worker(settings.screenshots_enabled);
+                    // A new cooldown moves when pending games are due.
+                    if cooldown {
+                        for game_id in self.scheduler.pending() {
+                            self.check_unrecorded(game_id);
+                        }
+                    }
                 }
                 Ok(event @ (Event::Checkpointed { .. } | Event::Shot { .. })) => self.settle(event),
                 Ok(Event::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
@@ -242,6 +250,7 @@ impl Loop {
                         self.scheduler.completed(game);
                     } else {
                         self.scheduler.failed(game, Utc::now().naive_utc());
+                        self.check_unrecorded(game);
                     }
                 }
             }
@@ -333,16 +342,20 @@ impl Loop {
 
     /// Records whether the game's live saves differ from its active version,
     /// unless its capture runs now and settles that itself. They're due at the
-    /// later of the cooldown's end and the debounce's.
+    /// latest of the cooldown's end, a failed capture's retry and the debounce's end.
     fn check_unrecorded(&self, game_id: i32) {
         let now = Utc::now().naive_utc();
         let Some(eligible) = self.eligible_at(game_id) else {
             return;
         };
-        if !self.suppression.is_active() && eligible.is_none_or(|at| at <= now) {
+        let retry = self.scheduler.retry_at(game_id);
+        if !self.suppression.is_active() && retry.is_none() && eligible.is_none_or(|at| at <= now) {
             return;
         }
-        let due_at = eligible.unwrap_or(now).max(now + self.debounce());
+        let due_at = eligible
+            .unwrap_or(now)
+            .max(retry.unwrap_or(now))
+            .max(now + self.debounce());
         // A check that fails keeps what the last one found; the capture reports real trouble.
         if let Err(error) = self.target.check_unrecorded(game_id, due_at) {
             eprintln!("Cannot check game {game_id} for unrecorded changes: {error:#}");
