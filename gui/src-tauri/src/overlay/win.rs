@@ -13,14 +13,11 @@ use windows_sys::Win32::Graphics::Gdi::{
     ClientToScreen, MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-};
 use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -270,42 +267,27 @@ pub fn interactive(window: &WebviewWindow, on: bool) {
 }
 
 /// Brings `hwnd` to the front with the focus; true if it's the foreground window now. Windows
-/// often refuses a background process that, so when it does, an injected key press and release
-/// lifts the foreground lock and it's tried once more. tao's `set_focus` injects Alt (S0); this
-/// injects an unassigned key instead, which no game or layout binds.
+/// often refuses a background process that, so when it does it's tried once more with this
+/// thread's input attached to the foreground window's thread, which Windows lets set the
+/// foreground. No key is injected: one can arrive late, at the window that just took the focus.
 pub fn take_focus(hwnd: isize) -> bool {
     let fronted = || unsafe {
         SetForegroundWindow(hwnd as HWND) != 0 && GetForegroundWindow() == hwnd as HWND
     };
-    fronted() || {
-        tap_unassigned_key();
-        fronted()
-    }
+    fronted() || attached_to_foreground(fronted)
 }
 
-/// Virtual-key 0xE8, listed as unassigned by Windows.
-const VK_UNASSIGNED: u16 = 0xE8;
-
-fn tap_unassigned_key() {
-    let key = |flags| INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VK_UNASSIGNED,
-                wScan: 0,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    let inputs = [key(0), key(KEYEVENTF_KEYUP)];
+/// Runs `f` with this thread's input attached to the foreground window's thread, then detaches.
+fn attached_to_foreground(f: impl FnOnce() -> bool) -> bool {
     unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        );
+        let front = GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut());
+        let me = GetCurrentThreadId();
+        let attached = front != 0 && front != me && AttachThreadInput(me, front, 1) != 0;
+        let done = f();
+        if attached {
+            AttachThreadInput(me, front, 0);
+        }
+        done
     }
 }
 
