@@ -160,7 +160,8 @@ pub(crate) fn show_window(app: &AppHandle) {
     }
 }
 
-/// Hides the main window to the tray, as closing it does.
+/// Hides the main window to the tray, as closing it does. Only the overlay needs it.
+#[cfg(windows)]
 pub(crate) fn hide_window(window: &tauri::WebviewWindow) {
     let _ = window.hide();
     set_low_memory(window, true);
