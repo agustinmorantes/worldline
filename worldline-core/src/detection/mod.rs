@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
-pub use running::RunningGames;
+pub use running::{RunningGames, runs_from};
 pub use watcher::{Checkpoints, Watcher};
 
 /// What the watcher needs from the core.

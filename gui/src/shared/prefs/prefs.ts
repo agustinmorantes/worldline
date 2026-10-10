@@ -47,11 +47,12 @@ async function persist(): Promise<void> {
   }
 }
 
-function subscribe(listener: () => void): () => void {
+/** Calls `listener` after every change. */
+export function subscribePrefs(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
 
 export function usePrefs(): Prefs {
-  return useSyncExternalStore(subscribe, getPrefs);
+  return useSyncExternalStore(subscribePrefs, getPrefs);
 }

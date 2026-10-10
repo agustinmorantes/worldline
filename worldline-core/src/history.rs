@@ -26,6 +26,17 @@ pub enum CheckpointOutcome {
     Empty,
 }
 
+/// What `WorldlineCore::keep` did.
+#[derive(Debug)]
+pub struct Kept {
+    /// The capture. A created version stays in history even when tagging it then failed.
+    pub checkpoint: CheckpointOutcome,
+    /// The parent a created version branches off, as captures report it.
+    pub branch_from: Option<crate::detection::BranchFrom>,
+    /// The version with its tag, or why it couldn't be tagged; `None` when nothing was captured.
+    pub tagged: Option<Result<Version>>,
+}
+
 impl CheckpointOutcome {
     pub fn version(&self) -> Option<&Version> {
         match self {
@@ -317,6 +328,16 @@ impl History {
             .publish_version(&version.game.folder_slug, &version.slot.folder_slug, &meta)?;
         self.refresh_game(game_uuid(&version.game)?)?;
         Ok(self.index.get_version(id)?.version)
+    }
+
+    /// Tags version `id` with `tag` unless its metadata, the truth, already has one. Call it under
+    /// the repository lock, so no other tag lands between the read and the write.
+    pub fn tag_if_untagged(&self, id: i32, tag: &str) -> Result<Version> {
+        let version = self.index.get_version(id)?;
+        if self.version_meta(&version)?.tag.is_some() {
+            return Ok(version.version);
+        }
+        self.tag_version(id, Some(tag.to_owned()))
     }
 
     /// The parent `version` branches off, when that parent already has

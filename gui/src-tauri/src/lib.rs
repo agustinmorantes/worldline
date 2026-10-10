@@ -8,6 +8,7 @@ use worldline_core::{OpenOptions, WorldlineCore};
 
 pub mod commands;
 mod dialogs;
+mod overlay;
 mod tray;
 mod webview_memory;
 
@@ -27,6 +28,9 @@ pub fn run() {
                 .build(),
         )
         .setup(init);
+    // The overlay's hotkeys, registered from Rust only: no capability grants its commands.
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
     let builder = add_handlers(builder);
 
@@ -64,6 +68,7 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     app.manage(core);
     tray::setup_tray(app)?;
+    overlay::setup(app);
 
     let notif_app = app.handle().clone();
     std::thread::spawn(move || {
@@ -78,8 +83,12 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     branch_from,
                 } => {
                     notif_app
-                        .emit("version-created", (game_id, version_number, branch_from))
+                        .emit(
+                            "version-created",
+                            (game_id, version_number, branch_from.clone()),
+                        )
                         .ok();
+                    overlay::version_created(&notif_app, game_id, version_number, branch_from);
                 }
                 detection::Notification::ScreenshotAttached {
                     game_id,
@@ -94,6 +103,7 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 detection::Notification::CheckpointFailed { game_id, reason } => {
                     notif_app.emit("checkpoint-failed", (game_id, reason)).ok();
+                    overlay::checkpoint_failed(&notif_app, game_id, reason);
                 }
                 detection::Notification::SyncStarted => {
                     notif_app.emit("sync-started", ()).ok();
@@ -111,9 +121,11 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     notif_app.emit("pruning-error", error).ok();
                 }
                 detection::Notification::GameStarted { game_id } => {
+                    overlay::game_started(&notif_app, game_id);
                     notif_app.emit("game-started", game_id).ok();
                 }
                 detection::Notification::GameStopped { game_id } => {
+                    overlay::game_stopped(&notif_app, game_id);
                     notif_app.emit("game-stopped", game_id).ok();
                 }
             }

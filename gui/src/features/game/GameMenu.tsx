@@ -1,5 +1,5 @@
 // The header's "…" menu: everything about the game itself, from its name and color to removing it.
-import { type ReactElement, useState } from 'react';
+import { Fragment, type ReactElement, useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
 import * as Menu from '@radix-ui/react-dropdown-menu';
 import { Check, ChevronRight, Plus, Trash2, X } from 'lucide-react';
@@ -11,6 +11,8 @@ import { deleteGame, exportGameHistory, pickFile, pickFolder, pickSavePath, save
 import { queryClient } from '@/app/query-client';
 import { reportError } from '@/shared/errors/report';
 import { useT } from '@/shared/i18n';
+import { setPref, usePrefs } from '@/shared/prefs/prefs';
+import { CORNERS, type GameCorner } from '@/shared/prefs/schema';
 import { accentVars } from '@/shared/tokens/accent';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog';
 import { HoldButton } from '@/shared/ui/HoldButton';
@@ -97,6 +99,14 @@ export function GameMenu({ game, inCloud }: {
   }
 
   const userHue = game.accent_hue_source === 'user' ? game.accent_hue : null;
+  const overlay = usePrefs().overlay;
+  const popupCorner = overlay.perGame[game.uuid] ?? 'default';
+  // By `uuid`, on this device only: screens differ per device.
+  const setPopupCorner = (value: string): void => {
+    const { [game.uuid]: _, ...others } = overlay.perGame;
+    const perGame = value === 'default' ? others : { ...others, [game.uuid]: value as GameCorner };
+    setPref('overlay', { ...overlay, perGame });
+  };
 
   return (
     <>
@@ -140,6 +150,35 @@ export function GameMenu({ game, inCloud }: {
               <span className="flex-1">{t.game.saveFolders}</span>
               <span className="font-mono text-xs text-tx3">{dirs.length}</span>
             </Menu.Item>
+            <Menu.Sub>
+              <Menu.SubTrigger className={row}>
+                <span className="flex-1">{t.overlay.section}</span>
+                <ChevronRight size={14} aria-hidden="true" className="text-tx3" />
+              </Menu.SubTrigger>
+              <Menu.Portal>
+                <Menu.SubContent sideOffset={8} className={`${popover} w-[262px]`}>
+                  <Menu.RadioGroup value={popupCorner} onValueChange={setPopupCorner}>
+                    {(['default', ...CORNERS, 'off'] as const).map((value) => (
+                      <Fragment key={value}>
+                        {(value === 'br' || value === 'off') && <Menu.Separator className="mx-1 my-1.5 h-px bg-[oklch(100%_0_0/0.07)]" />}
+                        <Menu.RadioItem value={value} className={row}>
+                          <span className="flex w-4 text-acc">
+                            <Menu.ItemIndicator><Check size={16} strokeWidth={2.6} aria-hidden="true" /></Menu.ItemIndicator>
+                          </span>
+                          {value === 'default' ? (
+                            <PopupChoice label={t.overlay.useDefault} hint={t.overlay.corners[overlay.corner]} />
+                          ) : value === 'off' ? (
+                            <PopupChoice label={t.overlay.off} hint={t.overlay.offHint} />
+                          ) : (
+                            <span className="flex-1">{t.overlay.corners[value]}</span>
+                          )}
+                        </Menu.RadioItem>
+                      </Fragment>
+                    ))}
+                  </Menu.RadioGroup>
+                </Menu.SubContent>
+              </Menu.Portal>
+            </Menu.Sub>
             <Menu.Item className={row} onSelect={() => { void exportHistory(); }}>{t.game.exportHistory}</Menu.Item>
             <Menu.Separator className="mx-1 my-1.5 h-px bg-[oklch(100%_0_0/0.07)]" />
             <Menu.Item
@@ -232,5 +271,14 @@ export function GameMenu({ game, inCloud }: {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+function PopupChoice({ label, hint }: { label: string; hint: string }): ReactElement {
+  return (
+    <span className="flex flex-1 flex-col gap-0.5">
+      <span>{label}</span>
+      <span className="text-xs font-medium text-tx3">{hint}</span>
+    </span>
   );
 }

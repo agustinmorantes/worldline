@@ -5,7 +5,7 @@ use crate::detection::{
     Suppression, Watcher,
 };
 use crate::error::ErrorKind;
-use crate::history::{CheckpointOutcome, History, game_uuid};
+use crate::history::{CheckpointOutcome, History, Kept, game_uuid};
 use crate::index::{DbPool, Index};
 use crate::install_scanner::InstallScannerItem;
 use crate::maintenance::{self, GcReport, RetentionSettings};
@@ -449,8 +449,11 @@ impl WorldlineCore {
         Ok(())
     }
 
+    /// Under the repository lock, like `keep`, so a keep can't overwrite the name.
     pub fn tag_version(&self, id: i32, tag: String) -> Result<Version> {
-        self.history().tag_version(id, Some(tag))
+        store::with_lock(self.repository_root(), || {
+            self.history().tag_version(id, Some(tag))
+        })
     }
 
     /// Checkpoints the live saves now (a no-op when unchanged).
@@ -458,6 +461,74 @@ impl WorldlineCore {
         store::with_lock(self.repository_root(), || {
             let game = self.get_game(game_id)?;
             self.inner.checkpoint(&game, VersionReason::Manual)
+        })
+    }
+
+    /// Checkpoints the live saves now, like `checkpoint`, and tags the new
+    /// version with `tag`, which keeps it forever; when the saves haven't
+    /// changed, the active version. A version that already
+    /// has a tag keeps it. One repository lock covers both, and every tag
+    /// write takes it, so nothing lands, prunes or renames in between. Only a
+    /// failed capture is an error: a created version is reported even when
+    /// tagging it then fails. `still` is asked first, under the lock: when it
+    /// says the keep no longer stands, nothing is touched and it's `None`.
+    pub fn keep(
+        &self,
+        game_id: i32,
+        tag: &str,
+        still: impl FnOnce() -> bool,
+    ) -> Result<Option<Kept>> {
+        self.keep_with(game_id, tag, still, |history, id| {
+            history.tag_if_untagged(id, tag)
+        })
+    }
+
+    /// `keep`, with the tag step given, so tests can make it fail.
+    fn keep_with(
+        &self,
+        game_id: i32,
+        tag: &str,
+        still: impl FnOnce() -> bool,
+        tag_step: impl FnOnce(&History, i32) -> Result<Version>,
+    ) -> Result<Option<Kept>> {
+        // A blank tag would clear one instead of keeping the version.
+        if tag.trim().is_empty() {
+            bail!("A kept checkpoint needs a name");
+        }
+        store::with_lock(self.repository_root(), || {
+            if !still() {
+                return Ok(None);
+            }
+            let game = self.get_game(game_id)?;
+            let checkpoint = self.inner.checkpoint(&game, VersionReason::Manual)?;
+            let branch_from = match &checkpoint {
+                // The version exists either way: a failed lookup only loses the hint.
+                CheckpointOutcome::Created(version) => {
+                    self.history().branch_from(version).ok().flatten()
+                }
+                _ => None,
+            };
+            // Unchanged keeps the active version, the one the saves match. After a restore the
+            // slot's newest is on the branch the player left.
+            let target = match &checkpoint {
+                CheckpointOutcome::Created(version) | CheckpointOutcome::Unchanged(version) => {
+                    Some(version.id)
+                }
+                CheckpointOutcome::Empty => None,
+            };
+            let tagged = target.map(|id| {
+                tag_step(self.history(), id).inspect_err(|_| {
+                    // The tag may be written but not indexed: show what the files say.
+                    if let Ok(uuid) = game_uuid(&game.game) {
+                        self.history().refresh_game(uuid).ok();
+                    }
+                })
+            });
+            Ok(Some(Kept {
+                checkpoint,
+                branch_from,
+                tagged,
+            }))
         })
     }
 
@@ -1412,6 +1483,30 @@ impl WorldlineCore {
         self.sync_report(&remote, &HashSet::new(), &installed, Vec::new())
     }
 
+    /// One game's sync status as it is now (like `sync_status`, without pulling or applying
+    /// anything), with the parents of its versions on the remote, so the distance to another
+    /// device's tip can be told even before that tip is pulled. `None` when the remote has no
+    /// status for the game.
+    pub fn game_sync_status(
+        &self,
+        game_uuid: Uuid,
+    ) -> Result<Option<(sync::GameSyncStatus, sync::Parents)>> {
+        let remote = self.require_remote()?;
+        let installed = self
+            .last_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let report = self.sync_report(&remote, &HashSet::new(), &installed, Vec::new())?;
+        let Some(status) = report.games.into_iter().find(|s| s.game_uuid == game_uuid) else {
+            return Ok(None);
+        };
+        let Some(game) = remote.store.game(game_uuid)? else {
+            return Ok(None);
+        };
+        Ok(Some((status, sync::parents(&game))))
+    }
+
     /// Adopts the remote game `uuid` on this device.
     pub fn adopt_remote_game(&self, uuid: Uuid) -> Result<FullGame> {
         let remote = self.require_remote()?;
@@ -2243,4 +2338,86 @@ fn extract_exe_icon(exe_path: &Path, output_path: &Path) -> Result<()> {
 #[cfg(not(target_os = "windows"))]
 fn extract_exe_icon(_: &Path, _: &Path) -> Result<()> {
     bail!("Executable icon extraction is only supported on Windows")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A core tracking one game whose saves changed after its first version.
+    fn changed_game() -> (WorldlineCore, i32, tempfile::TempDir, tempfile::TempDir) {
+        let data = tempfile::tempdir().unwrap();
+        let saves = tempfile::tempdir().unwrap();
+        let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+        std::fs::write(saves.path().join("save.dat"), "level 1").unwrap();
+        let game = core
+            .save_game(
+                GameForm {
+                    id: None,
+                    title: "Hollow Knight".into(),
+                },
+                Some(vec![saves.path().to_string_lossy().into_owned()]),
+            )
+            .unwrap();
+        std::fs::write(saves.path().join("save.dat"), "level 2").unwrap();
+        (core, game.id, data, saves)
+    }
+
+    /// The created version and the active one, as the app's views read them.
+    fn created_and_active(core: &WorldlineCore, game_id: i32, kept: &Kept) -> (Version, Version) {
+        let CheckpointOutcome::Created(created) = &kept.checkpoint else {
+            panic!("a created version: {kept:?}");
+        };
+        let active = core.get_game(game_id).unwrap().last_version.unwrap();
+        (core.get_version(created.id).unwrap().version, active)
+    }
+
+    #[test]
+    fn a_tag_that_fails_to_publish_still_reports_the_created_version() {
+        let (core, game_id, _data, _saves) = changed_game();
+        let kept = core
+            .keep_with(
+                game_id,
+                "Kept in game, 21:04",
+                || true,
+                |_, _| bail!("disk full"),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(kept.tagged, Some(Err(_))));
+        let (created, active) = created_and_active(&core, game_id, &kept);
+        assert_eq!(active.id, created.id);
+        assert_eq!(created.tag, None);
+        assert_eq!(core.get_game(game_id).unwrap().versions.len(), 2);
+    }
+
+    #[test]
+    fn a_tag_written_but_not_indexed_shows_what_the_files_say() {
+        let (core, game_id, _data, _saves) = changed_game();
+        let kept = core
+            .keep_with(
+                game_id,
+                "Kept in game, 21:04",
+                || true,
+                |history, id| {
+                    let version = history.index.get_version(id)?;
+                    let mut meta = history.version_meta(&version)?;
+                    meta.tag = Some("Kept in game, 21:04".into());
+                    // Newer metadata wins, as `tag_version` writes it.
+                    meta.updated_at += chrono::Duration::milliseconds(1);
+                    history.store.publish_version(
+                        &version.game.folder_slug,
+                        &version.slot.folder_slug,
+                        &meta,
+                    )?;
+                    bail!("index refresh failed")
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(kept.tagged, Some(Err(_))));
+        let (created, active) = created_and_active(&core, game_id, &kept);
+        assert_eq!(active.id, created.id);
+        assert_eq!(created.tag.as_deref(), Some("Kept in game, 21:04"));
+    }
 }

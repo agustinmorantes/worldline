@@ -9,6 +9,7 @@ import { listenNotifications } from "@/app/events"
 import { AppProviders } from "@/app/AppProviders"
 import { queryClient } from '@/app/query-client'
 import { loadPrefs } from '@/shared/prefs/prefs'
+import { pushOverlayConfig } from '@/app/overlay-config'
 
 // Create a new router instance
 const router = createRouter({
@@ -53,6 +54,7 @@ async function start(): Promise<void> {
   }
 
   await loadPrefs()
+  pushOverlayConfig()
   listenNotifications()
 
   const rootElement = document.getElementById('root')

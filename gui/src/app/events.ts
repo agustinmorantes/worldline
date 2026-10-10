@@ -24,6 +24,13 @@ export function listenNotifications(): void {
       });
   })
 
+  // A hotkey's tag, on a new checkpoint or the one the saves match.
+  void on('version-kept', ([gameId]) => {
+    void queryClient.invalidateQueries({ queryKey: ['games'] });
+    void queryClient.invalidateQueries({ queryKey: ['game', gameId] });
+    void queryClient.invalidateQueries({ queryKey: ['versions', gameId] });
+  });
+
   void on('screenshot-attached', ([, versionId]) => {
     void queryClient.invalidateQueries({ queryKey: ['screenshot', versionId] });
   });

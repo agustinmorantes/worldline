@@ -1,6 +1,9 @@
-// Typed subscriptions to the events emitted in `src-tauri/src/lib.rs`. The only
-// place in the GUI that calls `listen`.
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+// Typed subscriptions to the events emitted in `src-tauri/src/lib.rs` and
+// `overlay/mod.rs`, and the overlay's replies. The only place in the GUI that
+// calls `listen` and `emit`.
+import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { Corner } from '@/shared/prefs/schema';
+import type { Locale } from '@/shared/i18n/locale';
 import type { BranchFrom } from './bindings/BranchFrom';
 import type { CaptureFailure } from './bindings/CaptureFailure';
 import type { Failure } from './bindings/Failure';
@@ -13,6 +16,8 @@ export interface Events {
   'version-created': [number, number, BranchFrom | null];
   /** [game id, version id]: the version's screenshot arrived, usually seconds after it. */
   'screenshot-attached': [number, number];
+  /** [game id, version id]: a hotkey kept the version under its automatic tag. */
+  'version-kept': [number, number];
   'detection-error': string;
   /** [game id, reason]: an automatic capture failed; `detection-error` carries the details. */
   'checkpoint-failed': [number, CaptureFailure];
@@ -24,6 +29,80 @@ export interface Events {
   /** A game's process started or its last one exited; the payload is the game id. */
   'game-started': number;
   'game-stopped': number;
+  /** To the overlay webview: show a popup, or swap the one showing. */
+  'overlay-show': OverlayShow;
+  /** To the overlay webview: play popup `id`'s exit; `fast` when the game left the front. */
+  'overlay-leave': { id: number; fast: boolean };
+  /** To the overlay webview: the Name it hotkey's card, over the game. */
+  'naming-open': NamingCard;
+  /** To the overlay webview: the game took the focus back from card `session`; save it. */
+  'naming-leave': number;
+  /** To the main window: the Name it hotkey's card, in the app. */
+  'name-it-open': NamingCard;
+}
+
+/** The naming card (O4): its checkpoint, already kept under `auto`, and how to show it. */
+export interface NamingCard {
+  session: number;
+  gameId: number;
+  versionId: number;
+  version: number;
+  /** The name the checkpoint has: Esc and an empty field keep it. */
+  auto: string;
+  title: string;
+  accentHue: number;
+  /** The corner the tile flies into over the game. */
+  corner: Corner;
+  motion: 'full' | 'reduced';
+  language: Locale;
+}
+
+/** How a naming card closed: Enter or ✓, Esc, or the focus went elsewhere. */
+export type NamingClose = 'save' | 'escape' | 'blur';
+
+/** A popup for the overlay webview to render; Rust has decided everything else. */
+export type OverlayShow = OverlayBase & OverlayDetail;
+
+interface OverlayBase {
+  /** Every show or swap gets a new id; "done" names the one that ended. */
+  id: number;
+  /** A popup is showing: change it in place instead of rising again. */
+  swap: boolean;
+  title: string;
+  accentHue: number;
+  corner: Corner;
+  /** Only the mark; never for warnings and errors. */
+  quiet: boolean;
+  motion: 'full' | 'reduced';
+  language: Locale;
+  durationMs: number;
+  /** The tile flew in from the naming card: no rise and no redraw, only the text unfolds. */
+  landed: boolean;
+}
+
+/** What the popup says, by kind. */
+export type OverlayDetail =
+  | { kind: 'checkpoint'; version: number }
+  | { kind: 'newTimeline'; version: number; from: BranchFrom }
+  /** The hotkeys' (O3, O4); `name` once it's named. */
+  | { kind: 'kept'; version: number; name: string | null }
+  /** `lastAt`: the game's latest checkpoint, Unix ms. */
+  | { kind: 'sessionStart'; lastAt: number | null }
+  | { kind: 'deviceAhead'; device: string; count: number }
+  /** `version`: a keep's checkpoint, saved but then not kept; `null` when nothing was saved. */
+  | { kind: 'captureFailed'; reason: CaptureFailure; version: number | null };
+
+/** What the overlay webview tells Rust: it listens now, a popup's exit animation ended, its
+ * naming card closed, and the card's tile landed in the corner. */
+export interface OverlaySignals {
+  'overlay-ready': null;
+  'overlay-done': number;
+  'naming-closed': { session: number; how: NamingClose; name: string };
+  'naming-landed': number;
+}
+
+export function signal<K extends keyof OverlaySignals>(event: K, payload: OverlaySignals[K]): Promise<void> {
+  return emit(event, payload);
 }
 
 export function on<K extends keyof Events>(

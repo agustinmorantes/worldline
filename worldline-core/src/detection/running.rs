@@ -153,7 +153,7 @@ pub fn pids_under(dir: &str) -> Vec<u32> {
 }
 
 /// Whether `exe` lives under `dir`; case-insensitive on Windows.
-pub(crate) fn runs_from(exe: &Path, dir: &str) -> bool {
+pub fn runs_from(exe: &Path, dir: &str) -> bool {
     if cfg!(windows) {
         let exe = exe.to_string_lossy().replace('/', "\\").to_lowercase();
         let dir = dir.replace('/', "\\").to_lowercase();

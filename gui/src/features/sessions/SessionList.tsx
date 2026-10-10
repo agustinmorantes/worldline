@@ -132,6 +132,8 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
       </span>
       {tagged.length > 0 && (
         <span
+          // The naming card's tile flies here (`NamingHost`).
+          data-versions={session.map((v) => v.id).join(' ')}
           className={cn(
             'relative ml-3.5 flex h-5 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-bold',
             side ? 'bg-el text-tx2' : 'bg-acc-soft text-acc',

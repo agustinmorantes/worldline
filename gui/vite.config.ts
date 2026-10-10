@@ -20,6 +20,16 @@ export default defineConfig(() => ({
     tailwindcss()
   ],
 
+  // The overlay window has a page of its own (`src-tauri/src/overlay/mod.rs`).
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        overlay: path.resolve(__dirname, "overlay.html"),
+      },
+    },
+  },
+
   test: {
     globals: true,
     environment: 'jsdom',

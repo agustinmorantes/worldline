@@ -50,6 +50,11 @@
   50%      { transform: scale(1.55); opacity: .32; }
 }
 
+/* Settings: a hotkey recorder's outline while it waits for keys. */
+@keyframes breathe {
+  50% { box-shadow: inset 0 0 0 1.5px var(--acc-line); }
+}
+
 /* Add games: the light sweeping across the scan box. */
 @keyframes sweep {
   from { transform: translateX(-120%); }

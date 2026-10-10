@@ -377,6 +377,37 @@ fn set_tray_labels(labels: crate::tray::TrayLabels, app: tauri::AppHandle) -> Re
     crate::tray::set_labels(&app, labels).map_err(|e| e.to_string())
 }
 
+/// The overlay preferences, pushed after the GUI loads its preferences and on every change.
+#[tauri::command]
+fn set_overlay_config(
+    config: crate::overlay::OverlayConfig,
+    overlay: State<crate::overlay::Overlay>,
+    app: tauri::AppHandle,
+) {
+    overlay.set_config(config);
+    crate::overlay::config_changed(&app);
+}
+
+/// Settings' hotkey recorder: fails if another app holds `accelerator`. Async, so it runs off the
+/// main thread, which registering waits for.
+#[tauri::command]
+async fn check_shortcut(accelerator: String, app: tauri::AppHandle) -> Result<(), String> {
+    crate::overlay::check_shortcut(&app, &accelerator)
+}
+
+/// Name it's card in this window closed: names card `session`'s checkpoint `name` if that changed
+/// it: whether the focus went back to the game, and why the name couldn't be saved, if it couldn't.
+/// Async, so it runs off the main thread, which the overlay's locks must stay off.
+#[tauri::command]
+async fn name_it_closed(
+    session: u64,
+    how: crate::overlay::How,
+    name: String,
+    app: tauri::AppHandle,
+) -> crate::overlay::NameItClosed {
+    crate::overlay::name_it_closed(&app, session, how, &name)
+}
+
 /// The GUI preferences file, kept with the rest of the app data.
 #[tauri::command]
 fn get_prefs_path(data_dir: State<crate::DataDir>) -> String {
@@ -431,6 +462,9 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         crate::dialogs::pick_save_path,
         crate::dialogs::confirm,
         set_tray_labels,
+        set_overlay_config,
+        check_shortcut,
+        name_it_closed,
         #[cfg(feature = "e2e")]
         crate::tray::e2e_tray_labels,
     ])

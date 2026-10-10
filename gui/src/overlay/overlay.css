@@ -1,0 +1,190 @@
+/* The popup, from `docs/design/mocks/overlay-main.dc.html` and the handoff's
+   "Anatomy" and "Motion". The window is the popup plus a 16px margin on every side, flush with
+   the game's client corner, so the popup sits at the handoff's 16px inset. */
+@import "@fontsource/figtree/latin-500.css";
+@import "@fontsource/figtree/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-600.css";
+
+:root {
+  --tx: oklch(96.5% .004 265);
+  --ez: cubic-bezier(.2, .9, .25, 1);
+  --spring: cubic-bezier(.34, 1.5, .5, 1);
+  --live: oklch(82% .17 150);
+  --warn: oklch(84% .14 75);
+  --err: oklch(72% .17 25);
+}
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: Figtree, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+.ov {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  border-radius: 18px;
+  background: oklch(13% .015 265 / .7);
+  backdrop-filter: blur(16px) saturate(1.5);
+  box-shadow: inset 0 0 0 1px oklch(100% 0 0 / .14), 0 10px 30px -8px oklch(0% 0 0 / .45);
+  color: var(--tx);
+  transform-origin: var(--ox) var(--oy);
+  --tone: var(--acc);
+}
+.c-br { right: 16px; bottom: 16px; --ox: 100%; --oy: 100%; --dy: 18px; }
+.c-bl { left: 16px; bottom: 16px; --ox: 0; --oy: 100%; --dy: 18px; }
+.c-tr { right: 16px; top: 16px; --ox: 100%; --oy: 0; --dy: -18px; }
+.c-tl { left: 16px; top: 16px; --ox: 0; --oy: 0; --dy: -18px; }
+
+.tile {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: linear-gradient(165deg, color-mix(in oklch, var(--acc) 32%, oklch(20% .03 265)), oklch(14% .02 265));
+  box-shadow: inset 0 0 0 1px oklch(100% 0 0 / .1);
+}
+.tile svg { display: block; overflow: visible; }
+.mk path { fill: none; stroke-linecap: round; stroke-width: 5.8; stroke: var(--acc); stroke-dasharray: 1; stroke-dashoffset: 0; }
+.mk circle, .mk .dia { transform-box: fill-box; transform-origin: center; }
+.mk .end { fill: var(--acc); }
+.mk .node { fill: var(--acc); stroke: color-mix(in oklch, var(--acc) 22%, oklch(18% .02 265)); stroke-width: 4.35; }
+.mk .dia { display: none; fill: var(--acc); stroke: color-mix(in oklch, var(--acc) 22%, oklch(18% .02 265)); stroke-width: 3.5; stroke-linejoin: round; }
+.mk .lvr, .mk .burst { display: none; fill: none; stroke-width: 2.5; }
+.ring { position: absolute; inset: 0; border-radius: 9px; border: 2px solid var(--tone); opacity: 0; pointer-events: none; }
+
+.badge {
+  position: absolute;
+  right: -6px;
+  top: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: oklch(18% .03 265);
+  box-shadow: 0 0 0 2px oklch(13% .015 265);
+}
+.badge svg { display: block; }
+
+/* Each kind's look and tone (the mock's "event looks"). */
+.k-recording { --tone: var(--live); }
+.k-recording .node { fill: var(--live); }
+.k-recording .lvr { display: inline; stroke: var(--live); animation: halo 1.6s ease-out infinite; }
+.k-timeline { --tone: var(--lane); }
+.k-timeline .up { stroke: var(--lane); }
+.k-timeline .eu { fill: var(--lane); }
+.k-timeline .burst { display: inline; stroke: var(--lane); opacity: 0; }
+.k-pinned .node { display: none; }
+.k-pinned .dia { display: inline; }
+.k-ahead { --tone: var(--warn); }
+.k-ahead .badge { background: var(--warn); }
+.k-failed { --tone: var(--err); }
+.k-failed .badge { background: var(--err); }
+
+.txt { overflow: hidden; white-space: nowrap; transition: width 440ms var(--ez); }
+.lines {
+  width: max-content;
+  max-width: 252px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 10px 0 12px;
+  text-shadow: 0 1px 2px oklch(0% 0 0 / .45);
+}
+.l1 { font-size: 14px; line-height: 18px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.l2 { font-size: 12px; line-height: 16px; font-weight: 500; color: oklch(87% .01 265); overflow: hidden; text-overflow: ellipsis; }
+.num {
+  display: inline-block;
+  height: 18px;
+  overflow: hidden;
+  color: var(--acc);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+.roll { display: flex; flex-direction: column; transform: translateY(-18px); }
+.roll span { height: 18px; line-height: 18px; }
+.life {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  transform-origin: left;
+  background: var(--tone);
+  opacity: .9;
+}
+.quiet .life { left: 12px; right: 12px; }
+
+/* Entry: the mark rises and draws itself, then the text unfolds away from the corner. A swap
+   remounts its parts (keyed by the swap count) without replaying this. */
+.ov.enter { animation: rise 560ms var(--spring) backwards; }
+.ov.enter:not(.swap) .trunk { animation: draw 200ms var(--ez) 140ms backwards; }
+.ov.enter:not(.swap) .up, .ov.enter:not(.swap) .dn { animation: draw 340ms var(--ez) 300ms backwards; }
+.ov.enter:not(.swap) .node { animation: pop 420ms var(--spring) 240ms backwards; }
+.ov.enter:not(.swap) .end { animation: pop 420ms var(--spring) 560ms backwards; }
+.ov.enter:not(.swap) .txt { animation: open 520ms var(--ez) 380ms backwards; }
+.ov.enter:not(.swap) .lines { animation: slide 420ms var(--ez) 500ms backwards; }
+.ov.enter:not(.swap) .ring { animation: ring 900ms var(--ez) 600ms both; }
+.ov.enter .dia { animation: pop 460ms var(--spring) 420ms backwards; }
+.ov.enter .burst { animation: burst 900ms var(--ez) 640ms both; }
+.ov.enter .badge { animation: pop 420ms var(--spring) 700ms backwards; }
+/* Swap (a new event over the one showing): the lines fade up, the tile bumps, the halo and the
+   kind's accent replay; the width follows the new text. */
+.ov.swap .lines { animation: lift 380ms var(--ez) backwards; }
+.ov.swap .tile { animation: bump 420ms var(--spring); }
+.ov.swap .ring { animation: ring 900ms var(--ez) 120ms both; }
+.ov.swap .burst { animation-delay: 120ms; }
+.ov.swap .dia, .ov.swap .badge { animation-delay: 80ms; }
+.roll { animation: roll 560ms var(--spring) backwards; }
+.roll.late { animation-delay: 720ms; }
+.life { animation: life var(--dur) linear both; }
+
+/* Landed: the naming card's tile flew into the corner and is the mark already. No rise and no
+   redraw, only the text unfolds. */
+.ov.enter.landed { animation: none; }
+.ov.enter.landed:not(.swap) :is(.trunk, .up, .dn, .node, .end, .dia) { animation: none; }
+
+/* Exit: the text folds back into the mark, then the mark sinks. Or a quick fade. */
+.ov.out { animation: sink 380ms var(--ez) 240ms both; }
+.ov.out .txt { animation: shut 300ms cubic-bezier(.5, 0, .9, .5) both; }
+.ov.out .lines { animation: fadeOut 160ms both; }
+.ov.out .life { opacity: 0; transition: opacity 150ms; }
+.ov.gone { animation: fadeOut 140ms both; }
+
+/* Reduced motion: fades in and out, nothing moves; the time-left bar still runs. */
+.rm.ov, .rm.ov * { animation: none !important; transition: none !important; }
+.rm.ov.enter { animation: fadeIn 200ms both !important; }
+.rm.ov.out, .rm.ov.gone { animation: fadeOut 200ms both !important; }
+.rm.ov.swap .lines { animation: fadeIn 200ms both !important; }
+.rm.ov .life { animation: life var(--dur) linear both !important; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(var(--dy)) scale(.6); } }
+@keyframes draw { from { stroke-dashoffset: 1; } }
+@keyframes pop { 0% { transform: scale(0); } 60% { transform: scale(1.4); } 100% { transform: scale(1); } }
+@keyframes open { from { width: 0; } }
+@keyframes slide { from { opacity: 0; transform: translateX(-10px); } }
+@keyframes burst { from { opacity: 1; transform: scale(.6); } to { opacity: 0; transform: scale(3.4); } }
+@keyframes halo { 0% { transform: scale(1); opacity: .9; } 100% { transform: scale(2.4); opacity: 0; } }
+@keyframes ring { from { opacity: .9; transform: scale(1); } to { opacity: 0; transform: scale(1.7); } }
+@keyframes roll { from { transform: translateY(0); } }
+@keyframes life { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes lift { from { opacity: 0; transform: translateY(8px); } }
+@keyframes bump { 40% { transform: scale(1.14); } }
+@keyframes shut { to { width: 0; } }
+@keyframes sink { to { opacity: 0; transform: translateY(calc(var(--dy) * .66)) scale(.7); } }
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes fadeOut { to { opacity: 0; } }
