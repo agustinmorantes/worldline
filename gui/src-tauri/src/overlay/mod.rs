@@ -760,19 +760,18 @@ mod windows {
     /// so no newer card can open before. Nothing if its game stopped meanwhile.
     fn card_return(app: &AppHandle, id: u64) {
         let overlay = app.state::<Overlay>();
-        let (session, name) = {
-            let _games = lock(&overlay.games);
-            let Some((session, how, name)) = lock(&overlay.naming).finish(id) else {
-                return;
-            };
+        let released = release(&overlay, id, |session, how| {
             let Some(window) = app.get_webview_window(LABEL) else {
-                return;
+                return false;
             };
             if how.hands_back() && !win::hand_back(session.game_window) {
                 info!("overlay: couldn't give the focus back to the game");
             }
             uncover(&window);
-            (session, name)
+            true
+        });
+        let Some((session, name)) = released else {
+            return;
         };
         let detail = Detail::Kept {
             version: session.version_number,
@@ -791,6 +790,20 @@ mod windows {
                 hide(&window);
             }
         }
+    }
+
+    /// Ends card `id` over the game, `cleanup` (its hand-back, the window passive again) done
+    /// under the lifecycle lock, which opening a card, a stop and a restart all take: none of
+    /// them happens in between. Its session and name; `None` if it had ended already, or
+    /// `cleanup` found no window.
+    fn release(
+        overlay: &Overlay,
+        id: u64,
+        cleanup: impl FnOnce(&Session, How) -> bool,
+    ) -> Option<(Session, String)> {
+        let _games = lock(&overlay.games);
+        let (session, how, name) = lock(&overlay.naming).finish(id)?;
+        cleanup(&session, how).then_some((session, name))
     }
 
     /// The card in the app closed (`name_it_closed`): renames the checkpoint and, after an
@@ -1075,5 +1088,58 @@ mod windows {
     fn hide(window: &WebviewWindow) {
         win::hide(window);
         set_low_memory(window, true);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn try_open(overlay: &Overlay) -> Option<u64> {
+            // Opening a card takes the lifecycle lock first (`open_card`).
+            let _games = overlay.games.try_lock().ok()?;
+            let opening = Opening {
+                game_id: 7,
+                version_id: 41,
+                version_number: 13,
+                auto: "Auto".into(),
+                game_window: 0x1234,
+                place: Place::Overlay,
+                was_tray: false,
+            };
+            lock(&overlay.naming).open(opening).map(|s| s.id)
+        }
+
+        #[test]
+        fn an_older_cards_late_return_never_reaches_a_newer_card() {
+            let overlay = Overlay::default();
+            let older = try_open(&overlay).unwrap();
+            {
+                let mut naming = lock(&overlay.naming);
+                naming.close(older, Place::Overlay, How::Save).unwrap();
+                naming.named(older, "Boss".into());
+            }
+            let mut newer_meanwhile = None;
+            let released = release(&overlay, older, |session, how| {
+                assert_eq!((session.id, how), (older, How::Save));
+                // A newer press opens its card, from its own thread, while the older card hands
+                // the focus back and makes the window passive.
+                newer_meanwhile =
+                    std::thread::scope(|s| s.spawn(|| try_open(&overlay)).join().unwrap());
+                true
+            });
+            assert_eq!(released.unwrap().1, "Boss");
+            assert_eq!(
+                newer_meanwhile, None,
+                "a newer card opened before the older one's window was passive"
+            );
+            let newer = try_open(&overlay).expect("the card is free once the older one is done");
+            // The older card's return, close or landing, late, leaves the newer card alone.
+            let late = release(&overlay, older, |_, _| panic!("cleaned up the newer card"));
+            assert!(late.is_none());
+            let mut naming = lock(&overlay.naming);
+            assert!(naming.close(older, Place::Overlay, How::Blur).is_none());
+            naming.land(older);
+            assert!(naming.is_open(newer) && naming.over_game());
+        }
     }
 }
