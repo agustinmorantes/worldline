@@ -2,7 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [main, dev]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -11,6 +20,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +41,8 @@ jobs:
           node-version: '22'
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: gui/package.json
 
       - name: Install GUI dependencies
         working-directory: gui
@@ -73,12 +85,20 @@ jobs:
           bunx playwright install --with-deps chromium
           bun run test:screens
 
+      - if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: screen-test-results
+          path: gui/test-results/
+          if-no-files-found: ignore
+
   e2e:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -91,12 +111,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: gui/package.json
 
       - name: Install tauri-driver
         run: cargo install tauri-driver --locked
@@ -105,7 +129,7 @@ jobs:
         name: Install an msedgedriver matching WebView2
         shell: bash
         run: |
-          cargo install --git https://github.com/chippers/msedgedriver-tool
+          cargo install --locked --git https://github.com/chippers/msedgedriver-tool
           msedgedriver-tool
           echo "TAURI_NATIVE_DRIVER=$(cygpath -w "$PWD")\msedgedriver.exe" >> "$GITHUB_ENV"
 

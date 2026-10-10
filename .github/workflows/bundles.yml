@@ -3,6 +3,9 @@ name: Build desktop bundles
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   bundle:
     strategy:
@@ -14,6 +17,7 @@ jobs:
           - os: windows-latest
             target: nsis
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +33,8 @@ jobs:
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: gui/package.json
 
       - name: Install GUI dependencies
         working-directory: gui

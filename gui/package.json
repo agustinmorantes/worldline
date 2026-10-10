@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0-rc1",
   "type": "module",
+  "packageManager": "bun@1.4.2",
   "scripts": {
     "dev": "vite",
     "dev:mock": "vite --mode mock",
