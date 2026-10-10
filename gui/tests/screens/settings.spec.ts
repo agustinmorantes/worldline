@@ -66,7 +66,7 @@ test.describe('cloud on', () => {
 
     await cloud.getByRole('button', { name: 'Remove Old laptop' }).click();
     await expect(cloud.getByText('Old laptop')).toHaveCount(0);
-    await expect(cloud.getByText('Steam Deck')).toBeVisible();
+    await expect(cloud.getByText('Laptop', { exact: true })).toBeVisible();
 
     await cloud.getByRole('button', { name: 'Change' }).click();
     await expect(cloud.getByText('E:/OneDrive/Worldline')).toBeVisible();

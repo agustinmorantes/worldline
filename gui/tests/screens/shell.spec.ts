@@ -19,7 +19,7 @@ test.describe('several games', () => {
     await page.goto('/');
     const library = page.getByRole('complementary', { name: 'Library' });
     await expect(library.getByRole('link', { name: /stardew valley/i })).toBeVisible();
-    await expect(library.getByText('New from Steam Deck')).toBeVisible();
+    await expect(library.getByText('New from Laptop')).toBeVisible();
     await expect(library.getByText('1 game in your cloud isn’t on this PC yet')).toBeAttached();
     await expect(library.getByRole('button', { name: /sync now\. synced/i })).toBeVisible();
   });

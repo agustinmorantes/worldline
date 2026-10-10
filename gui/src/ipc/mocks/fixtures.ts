@@ -109,7 +109,7 @@ function savedGame(id: number, title: string, minutes: number): FullGame {
   });
 }
 
-/** Several games with sync on: one has news from the handheld, one cloud game isn't here. */
+/** Several games with sync on: one has news from the laptop, one cloud game isn't here. */
 function library(): Fixture {
   const games = [eldenRing(), hollowKnight(), savedGame(3, 'Hades', 60 * 5), savedGame(4, 'Celeste', 60 * 24 * 9), savedGame(5, 'Stardew Valley', 60 * 24 * 30)];
   const status = (game: FullGame, relation: Divergence, device: string | null = null): GameSyncStatus => ({
@@ -126,8 +126,8 @@ function library(): Fixture {
     syncSettings: { remote_path: 'D:/Cloud/Worldline' },
     syncReport: {
       synced_at: new Date(Date.now() - 4 * 60_000).toISOString(),
-      games: [status(games[0], 'in_sync'), status(games[1], 'fast_forward', 'Steam Deck'), status(games[2], 'in_sync'), status(games[3], 'in_sync')],
-      remote_games: [{ uuid: 'remote-1', title: 'Hollow Knight: Silksong', installed: false, adopted: false, source_device: 'Steam Deck', version_count: 4 }],
+      games: [status(games[0], 'in_sync'), status(games[1], 'fast_forward', 'Laptop'), status(games[2], 'in_sync'), status(games[3], 'in_sync')],
+      remote_games: [{ uuid: 'remote-1', title: 'Hollow Knight: Silksong', installed: false, adopted: false, source_device: 'Laptop', version_count: 4 }],
       devices: [],
       remote_versions: {},
       problems: [],
@@ -136,18 +136,18 @@ function library(): Fixture {
 }
 
 
-const DECK: DeviceMetadata = {
+const LAPTOP: DeviceMetadata = {
   device_uuid: '00000000-0000-4000-8000-00000000d002',
-  name: 'Steam Deck',
+  name: 'Laptop',
   platform: 'linux',
   first_seen: '2024-01-01T00:00:00Z',
   last_seen: '2024-01-01T00:00:00Z',
-  kind: 'handheld',
+  kind: 'laptop',
 };
 
-type Checkpoint = [id: number, parent: number | null, minutesAgo: number, tag?: string | null, deck?: boolean];
+type Checkpoint = [id: number, parent: number | null, minutesAgo: number, tag?: string | null, laptop?: boolean];
 
-/** Three days of Hades: a session on the handheld, a timeline you left, and tonight's play. */
+/** Three days of Hades: a session on the laptop, a timeline you left, and tonight's play. */
 const HADES: Checkpoint[] = [
   [1, null, 60 * 72 + 60, null, true],
   [2, 1, 60 * 72 + 25, 'Asphodel', true],
@@ -163,14 +163,14 @@ const HADES: Checkpoint[] = [
 
 function hades(extra: Checkpoint[] = []): FullGame {
   const main = makeSlot({ id: 1, game_id: 1, name: 'Main', active_version_id: 10 });
-  const versions = [...HADES, ...extra].map(([id, parent, minutes, tag = null, deck = false]) => makeVersion({
+  const versions = [...HADES, ...extra].map(([id, parent, minutes, tag = null, laptop = false]) => makeVersion({
     id,
     slot_id: 1,
     parent_id: parent,
     version_number: id,
     tag,
     created_at: minutesAgo(minutes),
-    origin_device: deck ? DECK.device_uuid : null,
+    origin_device: laptop ? LAPTOP.device_uuid : null,
   }));
   return makeGame({
     id: 1,
@@ -190,11 +190,11 @@ function celeste(): FullGame {
   return makeGame({ id: 2, title: 'Celeste', active_slot_id: 2, active_slot: main, slots: [main], versions: [], last_version: null });
 }
 
-/** The Sessions view: Hades with history, Celeste with none, the handheld synced in. */
+/** The Sessions view: Hades with history, Celeste with none, the laptop synced in. */
 function sessions(relation: Divergence = 'in_sync', extra: Checkpoint[] = []): Fixture {
   const games = [hades(extra), celeste()];
-  const deckVersions = games[0].versions.filter((v) => v.origin_device === DECK.device_uuid);
-  const pending = relation === 'fast_forward' ? deckVersions[deckVersions.length - 1] : null;
+  const laptopVersions = games[0].versions.filter((v) => v.origin_device === LAPTOP.device_uuid);
+  const pending = relation === 'fast_forward' ? laptopVersions[laptopVersions.length - 1] : null;
   return {
     ...base(games),
     syncSettings: { remote_path: 'D:/Cloud/Worldline' },
@@ -203,14 +203,14 @@ function sessions(relation: Divergence = 'in_sync', extra: Checkpoint[] = []): F
       games: [{
         game_uuid: games[0].uuid,
         relation,
-        remote_device: relation === 'in_sync' ? null : DECK.name,
+        remote_device: relation === 'in_sync' ? null : LAPTOP.name,
         remote_version_uuid: pending?.uuid ?? null,
         remote_version_id: pending?.id ?? null,
         auto_applied: false,
       }],
       remote_games: [],
-      devices: [DECK],
-      remote_versions: Object.fromEntries(deckVersions.map((v) => [v.uuid, DECK.name])),
+      devices: [LAPTOP],
+      remote_versions: Object.fromEntries(laptopVersions.map((v) => [v.uuid, LAPTOP.name])),
       problems: [],
     },
   };
@@ -250,12 +250,12 @@ function addGames(scan: Fixture['scan']): Fixture {
     ...state,
     syncReport: {
       ...report,
-      devices: [DECK, { ...DECK, device_uuid: '00000000-0000-4000-8000-00000000d003', name: 'Laptop', platform: 'windows', kind: 'laptop' }],
+      devices: [LAPTOP, { ...LAPTOP, device_uuid: '00000000-0000-4000-8000-00000000d003', name: 'Work PC', platform: 'windows', kind: 'desktop' }],
       remote_games: [
         ...report.remote_games,
-        { uuid: 'remote-2', title: 'Balatro', installed: true, adopted: false, source_device: 'Laptop', version_count: 12 },
-        { uuid: 'remote-3', title: 'Dave the Diver', installed: false, adopted: false, source_device: 'Steam Deck', version_count: 1 },
-        { uuid: 'remote-4', title: 'Tunic', installed: false, adopted: true, source_device: 'Laptop', version_count: 7 },
+        { uuid: 'remote-2', title: 'Balatro', installed: true, adopted: false, source_device: 'Work PC', version_count: 12 },
+        { uuid: 'remote-3', title: 'Dave the Diver', installed: false, adopted: false, source_device: 'Laptop', version_count: 1 },
+        { uuid: 'remote-4', title: 'Tunic', installed: false, adopted: true, source_device: 'Work PC', version_count: 7 },
       ],
     },
     scanRoots: ['D:/Games', 'E:/Emulation/Saves'],
@@ -277,7 +277,7 @@ function addGamesDone(): Fixture {
   return { ...state, syncReport: { ...report, remote_games: report.remote_games.map((g) => ({ ...g, adopted: true })) } };
 }
 
-/** Settings with sync on: this PC, the handheld and a laptop share the cloud. */
+/** Settings with sync on: this PC, the laptop and an old laptop share the cloud. */
 function settings(): Fixture {
   const state = library();
   const report = state.syncReport as SyncReport;
@@ -287,8 +287,8 @@ function settings(): Fixture {
       ...report,
       devices: [
         state.device,
-        { ...DECK, last_seen: new Date(Date.now() - 120 * 60_000).toISOString() },
-        { ...DECK, device_uuid: '00000000-0000-4000-8000-00000000d003', name: 'Old laptop', platform: 'windows', kind: 'laptop', last_seen: new Date(Date.now() - 40 * 86_400_000).toISOString() },
+        { ...LAPTOP, last_seen: new Date(Date.now() - 120 * 60_000).toISOString() },
+        { ...LAPTOP, device_uuid: '00000000-0000-4000-8000-00000000d003', name: 'Old laptop', platform: 'windows', kind: 'laptop', last_seen: new Date(Date.now() - 40 * 86_400_000).toISOString() },
       ],
     },
     pickedFolder: 'E:/OneDrive/Worldline',

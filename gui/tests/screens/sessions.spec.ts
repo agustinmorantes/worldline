@@ -9,7 +9,7 @@ test.describe('sessions list', () => {
     const list = page.getByLabel('Timeline. Arrow keys move between checkpoints.');
     await expect(list.getByRole('heading', { name: 'Today' })).toBeVisible();
     await expect(list.getByText('Elysium', { exact: true })).toBeVisible();
-    await expect(list.getByRole('img', { name: 'Played on Steam Deck' })).toBeVisible();
+    await expect(list.getByRole('img', { name: 'Played on Laptop' })).toBeVisible();
     await expect(page.getByRole('main').getByText('In the cloud')).toBeVisible();
     // Played time sums the gaps within sessions.
     await expect(page.getByText(/^~\dh \d\dm$/)).toBeVisible();
@@ -96,8 +96,8 @@ test.describe('progress from another device', () => {
 
   test('shows a ghost row that continues here', async ({ page }) => {
     await page.goto('/game/1');
-    await expect(page.getByRole('main').getByText('New from Steam Deck')).toBeVisible();
-    await expect(page.getByText('Played on Steam Deck')).toBeVisible();
+    await expect(page.getByRole('main').getByText('New from Laptop')).toBeVisible();
+    await expect(page.getByText('Played on Laptop')).toBeVisible();
     await page.getByRole('button', { name: 'Continue here' }).click();
     await expect(page.getByRole('button', { name: 'Continue here' })).toHaveCount(0);
     await expect(page.getByLabel('Timeline. Arrow keys move between checkpoints.').getByText('Styx', { exact: true })).toBeVisible();
@@ -106,7 +106,7 @@ test.describe('progress from another device', () => {
   test('warns that rewinding moves that progress aside', async ({ page }) => {
     await page.goto('/game/1');
     await page.getByRole('button', { name: /^Elysium/ }).click();
-    await expect(page.getByText('Steam Deck’s newer progress moves to its own timeline')).toBeVisible();
+    await expect(page.getByText('Laptop’s newer progress moves to its own timeline')).toBeVisible();
   });
 });
 
@@ -125,9 +125,9 @@ test.describe('diverged', () => {
 
   test('opens the other device’s timeline from the sync chip', async ({ page }) => {
     await page.goto('/game/1');
-    const stub = page.getByRole('button', { name: /steam deck’s timeline/i });
+    const stub = page.getByRole('button', { name: /laptop’s timeline/i });
     await expect(stub).toHaveAttribute('aria-expanded', 'false');
-    await page.getByRole('button', { name: 'Steam Deck played too' }).click();
+    await page.getByRole('button', { name: 'Laptop played too' }).click();
     await expect(stub).toHaveAttribute('aria-expanded', 'true');
     await expect(page.getByLabel('Timeline. Arrow keys move between checkpoints.').getByText('Styx', { exact: true })).toBeVisible();
   });

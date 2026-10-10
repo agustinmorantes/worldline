@@ -62,8 +62,8 @@ anti-cheat or frame pacing, so the shape is fixed here.
 
 - Exclusive-fullscreen games get no popup. The hotkeys still work there: Quick keep with sound
   only, Name it through the main window.
-- Linux is out for now: Wayland can't guarantee always-on-top, and Steam Deck Gaming Mode is
-  gamescope. The overlay code is `cfg(windows)` and a no-op elsewhere.
+- Linux is out for now: Wayland can't guarantee always-on-top, and gamescope sessions
+  don't allow other windows over the game. The overlay code is `cfg(windows)` and a no-op elsewhere.
 - Full-screen captures (streams) show the popup; window captures don't. Quiet mode exists for
   that.
 - A game that raises itself often makes the overlay restack often; a game that is topmost in odd

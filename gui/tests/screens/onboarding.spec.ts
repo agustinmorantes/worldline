@@ -131,7 +131,7 @@ test.describe('second device', () => {
 
   test('points out progress from another device once', async ({ page }) => {
     await page.goto('/');
-    const hint = page.getByRole('status').filter({ hasText: 'Progress from Steam Deck shows up here' });
+    const hint = page.getByRole('status').filter({ hasText: 'Progress from Laptop shows up here' });
     await expect(hint).toBeVisible();
     const stored = await page.evaluate(() => localStorage.getItem('worldline-mock-store'));
     expect(JSON.parse(stored ?? '{}')).toMatchObject({ prefs: { hints: { secondDevice: true } } });

@@ -16,13 +16,13 @@ Made a bad call? Rewind. Want the other path too? Keep both.
 
 [Download](#installation) · [How it works](#how-it-works) · [Features](#features) · [Build from source](#building-from-source) · [Docs](docs/)
 
-<img src="docs/media/sessions.png" alt="A game's timeline in Worldline: today's session, yesterday's with a branch to another timeline, and a session played on a Steam Deck" width="100%">
+<img src="docs/media/sessions.png" alt="A game's timeline in Worldline: today's session, yesterday's with a branch to another timeline, and a session played on another device" width="100%">
 
 </div>
 
 ## Why
 
-Games save over your old file, even after a disaster. Overwrite a save after a bad choice, a corrupted autosave or a boss fight gone wrong, and that progress is gone. Moving between a PC and a handheld means copying save folders by hand and hoping you picked the newer one.
+Games save over your old file, even after a disaster. Overwrite a save after a bad choice, a corrupted autosave or a boss fight gone wrong, and that progress is gone. Playing on more than one device means copying save folders by hand and hoping you picked the newer one.
 
 Worldline watches your games' save folders and keeps every save as a **checkpoint** on a timeline. You don't press anything. When you want to go back, hold a button. Nothing is ever overwritten: if you rewind and play on, the old run splits off into its own **timeline**, and you can switch back whenever you like.
 
@@ -45,7 +45,7 @@ Name a checkpoint ("Before Malenia") to keep it forever. Unnamed ones are thinne
 - **Branching timelines.** Nothing is overwritten. Rewinding and playing on, or playing offline on two devices, keeps both lines.
 - **Two views.** *Sessions* groups checkpoints by when you played; *Graph* shows every timeline on one axis.
 - **Finds your games.** Scans Steam, Epic and your own folders, and knows where thousands of games keep their saves thanks to the [Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest).
-- **Sync between devices** through any folder you already sync (Dropbox, OneDrive, Google Drive, Syncthing, a NAS). No account and no server. Progress from your Steam Deck shows up on your PC; if both moved on, both runs are kept and you choose.
+- **Sync between devices** through any folder you already sync (Dropbox, OneDrive, Google Drive, Syncthing, a NAS). No account and no server. Progress from your other devices shows up wherever you play next; if two of them moved on, both runs are kept and you choose.
 - **Playthroughs.** Keep separate histories for separate runs of the same game.
 - **In-game popup and hotkeys** (Windows). A small popup tells you when a checkpoint was kept. *Quick keep* and *Name it* hotkeys save a moment without leaving the game. The popup is a separate window: nothing is injected into the game.
 - **A screenshot of each checkpoint** (Windows 11), so you can see where you were.
@@ -62,7 +62,7 @@ Name a checkpoint ("Before Malenia") to keep it forever. Unnamed ones are thinne
 <table>
   <tr>
     <td width="50%"><img src="docs/media/graph.png" alt="Graph view of a game's timelines"><br><sub><b>Graph view.</b> Every timeline on one axis, named checkpoints as labels.</sub></td>
-    <td width="50%"><img src="docs/media/sync.png" alt="A game where a Steam Deck played too"><br><sub><b>Sync.</b> The Steam Deck played on; its run shows up as its own timeline.</sub></td>
+    <td width="50%"><img src="docs/media/sync.png" alt="A game where another device played too"><br><sub><b>Sync.</b> The laptop played on too; its run shows up as its own timeline.</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/add-games.png" alt="Add games: games in the cloud and installed games found on this PC"><br><sub><b>Add games.</b> Games from your other devices, and the ones installed here.</sub></td>
