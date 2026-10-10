@@ -9,7 +9,7 @@
 Worldline backs up your game saves while you play and lets you rewind to any of them.<br>
 Made a bad call? Rewind. Want the other path too? Keep both.
 
-[![CI](https://github.com/agustinmorantes/savegame-timeline/actions/workflows/ci.yml/badge.svg)](https://github.com/agustinmorantes/savegame-timeline/actions/workflows/ci.yml)
+[![CI](https://github.com/agustinmorantes/worldline/actions/workflows/ci.yml/badge.svg)](https://github.com/agustinmorantes/worldline/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platforms: Windows | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational)
 ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?logo=tauri&logoColor=white)
@@ -72,7 +72,7 @@ Name a checkpoint ("Before Malenia") to keep it forever. Unnamed ones are thinne
 
 ## Installation
 
-Download the latest installer from [**Releases**](https://github.com/agustinmorantes/savegame-timeline/releases):
+Download the latest installer from [**Releases**](https://github.com/agustinmorantes/worldline/releases):
 
 | Platform | Package |
 |---|---|
@@ -113,8 +113,8 @@ History is stored in `%LOCALAPPDATA%\agustinmorantes.worldline` on Windows and `
 You need a current [Rust](https://rustup.rs/) toolchain and [Bun](https://bun.sh/). On Linux, also install the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your distribution, including WebKitGTK 4.1 and the appindicator development library.
 
 ```sh
-git clone https://github.com/agustinmorantes/savegame-timeline.git
-cd savegame-timeline/gui
+git clone https://github.com/agustinmorantes/worldline.git
+cd worldline/gui
 bun install --frozen-lockfile
 bun run tauri dev      # run the app
 bun run tauri build    # build an installer into target/release/bundle/
