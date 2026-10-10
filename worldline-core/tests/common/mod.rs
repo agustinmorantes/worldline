@@ -19,6 +19,12 @@ impl Device {
     pub fn new() -> Self {
         let data = tempfile::tempdir().unwrap();
         let saves = tempfile::tempdir().unwrap();
+        // A fresh, empty manifest cache: a sync that needs the install scan
+        // would otherwise download the real manifest and match this
+        // machine's games, which is slow and makes the timed tests flaky.
+        let cache = data.path().join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("manifest.yaml"), "{}").unwrap();
         let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
         Self { core, data, saves }
     }
