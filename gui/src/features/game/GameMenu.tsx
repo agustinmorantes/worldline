@@ -183,7 +183,7 @@ export function GameMenu({ game, inCloud }: {
             <DialogTitle className="text-lg font-bold tracking-tight">{t.game.saveFolders}</DialogTitle>
             <DialogDescription className="text-tx3">{t.game.saveFoldersHint}</DialogDescription>
           </DialogHeader>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex min-w-0 flex-col gap-2">
             {dirs.length === 0 && <li className="text-sm text-tx3">{t.game.noFolders}</li>}
             {dirs.map((path) => (
               <li key={path} className="flex items-center gap-2 rounded-xl bg-el py-2 pl-3 pr-1.5">
