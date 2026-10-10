@@ -6,12 +6,14 @@ import {
   durationParts,
   layoutSessions,
   lineage,
+  minutesUntil,
   navOrder,
   playedMs,
   sessionGapMs,
   splitSessions,
   trackPosition,
   trackWidth,
+  withUnrecorded,
 } from './sessions';
 
 const MIN = 60_000;
@@ -203,5 +205,27 @@ describe('trackPosition', () => {
     const session = line(1, null, [0, 10, 40]);
     expect(session.map((x) => trackPosition(x, session))).toEqual([0, 0.25, 1]);
     expect(trackPosition(session[0], [session[0]])).toBe(0.5);
+  });
+});
+
+describe('withUnrecorded', () => {
+  it('sets, updates and clears a game’s entry', () => {
+    const set = withUnrecorded([[2, '2026-10-10T12:00:00']], 1, '2026-10-10T12:30:00');
+    expect(set).toEqual([[2, '2026-10-10T12:00:00'], [1, '2026-10-10T12:30:00']]);
+    expect(withUnrecorded(set, 1, '2026-10-10T12:31:00')).toEqual([[2, '2026-10-10T12:00:00'], [1, '2026-10-10T12:31:00']]);
+    expect(withUnrecorded(set, 1, null)).toEqual([[2, '2026-10-10T12:00:00']]);
+    expect(withUnrecorded([], 1, null)).toEqual([]);
+  });
+
+  it('leaves a list that hasn’t been read alone', () => {
+    expect(withUnrecorded(undefined, 1, '2026-10-10T12:30:00')).toBeUndefined();
+  });
+});
+
+describe('minutesUntil', () => {
+  it('rounds to whole minutes, 0 under a minute or past due', () => {
+    expect(minutesUntil(new Date(T0 + 12 * MIN + 10_000), new Date(T0))).toBe(12);
+    expect(minutesUntil(new Date(T0 + 59_000), new Date(T0))).toBe(0);
+    expect(minutesUntil(new Date(T0 - MIN), new Date(T0))).toBe(0);
   });
 });

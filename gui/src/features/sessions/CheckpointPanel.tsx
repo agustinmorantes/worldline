@@ -14,13 +14,15 @@ import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { HoldButton } from '@/shared/ui/HoldButton';
 import { formatDuration } from './Timeline';
 import { useScreenshot } from './queries';
-import { timeOf } from './sessions';
+import { minutesUntil, timeOf } from './sessions';
 
-export function CheckpointPanel({ game, version, active, onLine, device, lessPlayMs, aheadDevice, busy, running, onName, onRewind, onClose, now }: {
+export function CheckpointPanel({ game, version, active, unrecorded, onLine, device, lessPlayMs, aheadDevice, busy, running, onName, onRewind, onClose, now }: {
   game: FullGame;
   version: Version;
   /** The checkpoint you are on. */
   active: Version | null;
+  /** The saves changed since `active` and wait to be recorded: you can go back to it. */
+  unrecorded: { dueAt: Date } | null;
   /** On your current line: rewinding, not switching timelines. */
   onLine: boolean;
   device: CheckpointDevice;
@@ -39,7 +41,9 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
 }): ReactElement {
   const t = useT();
   const locale = useLocale();
+  const reduced = useMotionReduced();
   const here = active?.id === version.id;
+  const back = here && unrecorded !== null;
   const [draft, setDraft] = useState(version.tag ?? '');
   // Another checkpoint, or the name changed underneath: start the field over.
   const source = `${version.id.toString()}:${version.tag ?? ''}`;
@@ -52,7 +56,12 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
   const date = new Date(timeOf(version));
   const tagged = version.tag !== null && version.tag !== '';
   const title = tagged ? (version.tag ?? '') : t.sessions.autosave;
-  const eyebrow = here ? t.checkpoint.youAreHere : onLine ? t.checkpoint.rewindTo : t.checkpoint.switchTo;
+  const eyebrow = back ? t.checkpoint.goBackTo : here ? t.checkpoint.youAreHere : onLine ? t.checkpoint.rewindTo : t.checkpoint.switchTo;
+  /** The "Now" row: the checkpoint you are on, or the progress since it that isn't recorded yet. */
+  const current = back
+    ? { name: t.sessions.notRecorded, when: t.sessions.dueIn(minutesUntil(unrecorded.dueAt, now)) }
+    : !here && active !== null ? { name: active.tag ?? t.sessions.autosave, when: formatRelative(new Date(timeOf(active)), locale, now) } : null;
+  const fold = reduced ? { duration: 0 } : { duration: duration.base, ease };
   const tint = here ? 'var(--acc)' : onLine ? 'var(--tx3)' : 'var(--deck)';
 
   function commit(): void {
@@ -62,25 +71,28 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
 
   return (
     <motion.div key={version.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.38, ease }}>
-      {!here && active !== null && (
-        <>
-          <div className="flex h-11 items-center gap-2.5 rounded-[14px] bg-sf px-3.5">
-            <GameIcon title={game.title} hue={game.accent_hue} iconPath={game.icon_path ?? undefined} size={22} className="text-[9px]" />
-            <span className="text-[13px] font-bold">{t.checkpoint.now}</span>
-            <span className="min-w-0 flex-1 truncate text-[13px] text-tx2">{active.tag ?? t.sessions.autosave}</span>
-            <span className="font-mono text-xs text-tx3">{formatRelative(new Date(timeOf(active)), locale, now)}</span>
-          </div>
-          <div className="relative flex h-[46px] items-center">
-            <span aria-hidden="true" className="absolute inset-y-1 left-6 border-l-2 border-dashed border-acc-line" />
-            {onLine && lessPlayMs >= 60_000 && (
-              <span className="ml-[42px] flex h-[26px] items-center gap-[7px] rounded-lg bg-acc-soft px-2.5 font-mono text-[12.5px] font-semibold text-acc">
-                <ArrowDown size={13} strokeWidth={2.6} aria-hidden="true" />
-                {t.checkpoint.lessPlay(formatDuration(lessPlayMs, t))}
-              </span>
-            )}
-          </div>
-        </>
-      )}
+      {/* On the checkpoint you are on, the "Now" row and the hold button fold in and out with its unrecorded changes. */}
+      <AnimatePresence initial={false}>
+        {current !== null && (
+          <motion.div key="now" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={fold}>
+            <div className="flex h-11 items-center gap-2.5 rounded-[14px] bg-sf px-3.5">
+              <GameIcon title={game.title} hue={game.accent_hue} iconPath={game.icon_path ?? undefined} size={22} className="text-[9px]" />
+              <span className="text-[13px] font-bold">{t.checkpoint.now}</span>
+              <span className="min-w-0 flex-1 truncate text-[13px] text-tx2">{current.name}</span>
+              <span className="font-mono text-xs text-tx3">{current.when}</span>
+            </div>
+            <div className="relative flex h-[46px] items-center">
+              <span aria-hidden="true" className="absolute inset-y-1 left-6 border-l-2 border-dashed border-acc-line" />
+              {onLine && lessPlayMs >= 60_000 && (
+                <span className="ml-[42px] flex h-[26px] items-center gap-[7px] rounded-lg bg-acc-soft px-2.5 font-mono text-[12.5px] font-semibold text-acc">
+                  <ArrowDown size={13} strokeWidth={2.6} aria-hidden="true" />
+                  {t.checkpoint.lessPlay(formatDuration(lessPlayMs, t))}
+                </span>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <div className="overflow-hidden rounded-[20px] bg-sf shadow-[0_24px_48px_-24px_oklch(0%_0_0/0.6)]">
         <ScreenshotSlot versionId={version.id} tint={tint} />
         <div className="px-[18px] pb-[18px] pt-4">
@@ -119,31 +131,34 @@ export function CheckpointPanel({ game, version, active, onLine, device, lessPla
           </label>
         </div>
       </div>
-      {!here && (
-        <>
-          <HoldButton
-            label={onLine ? t.checkpoint.holdToRewind : t.checkpoint.holdToSwitch}
-            hint={t.checkpoint.holdHint}
-            disabled={busy || running}
-            onComplete={onRewind}
-            rumble
-          />
-          {running ? (
-            <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-warn">
-              <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-warn" />
-              {t.checkpoint.running(game.title)}
-            </div>
-          ) : (
-            <div className="mt-3 text-center text-xs text-tx3">{t.checkpoint.closeFirst}</div>
-          )}
-          {aheadDevice !== null && (
-            <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-warn">
-              <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-warn" />
-              {t.checkpoint.aheadWarning(aheadDevice)}
-            </div>
-          )}
-        </>
-      )}
+      <AnimatePresence initial={false}>
+        {(!here || back) && (
+          <motion.div key="hold" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={fold}>
+            <HoldButton
+              label={back ? t.checkpoint.holdToGoBack : onLine ? t.checkpoint.holdToRewind : t.checkpoint.holdToSwitch}
+              hint={t.checkpoint.holdHint}
+              disabled={busy || running}
+              onComplete={onRewind}
+              rumble
+            />
+            {back && <div className="mt-3 text-center text-xs text-tx2">{t.checkpoint.keptFirst}</div>}
+            {running ? (
+              <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-warn">
+                <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-warn" />
+                {t.checkpoint.running(game.title)}
+              </div>
+            ) : (
+              <div className="mt-3 text-center text-xs text-tx3">{t.checkpoint.closeFirst}</div>
+            )}
+            {aheadDevice !== null && (
+              <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-warn">
+                <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-warn" />
+                {t.checkpoint.aheadWarning(aheadDevice)}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

@@ -12,7 +12,7 @@ import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { dayLabel, type Fork, playedMs, type SessionsLayout, timeOf, trackPosition, trackWidth } from './sessions';
-import { Diamond, Dot, formatDuration } from './Timeline';
+import { Diamond, Dot, formatDuration, PendingDot } from './Timeline';
 
 /** Time column + device column, before a track starts. */
 const TRACK_LEFT = 96;
@@ -33,6 +33,10 @@ interface SessionListProps {
   deviceOf: (version: Version) => CheckpointDevice;
   /** Where the last rewind landed, for the burst. */
   landedId: number | null;
+  /** The saves changed since the active checkpoint and wait to be recorded. */
+  unrecorded: { dueAt: Date } | null;
+  /** The game is running here. */
+  running: boolean;
   now: Date;
 }
 
@@ -65,7 +69,7 @@ export function SessionList(props: SessionListProps): ReactElement {
   );
 }
 
-function SessionRowView({ game, session, durationMs, side, activeId, selectedId, onSelect, deviceOf, landedId, now }: SessionListProps & {
+function SessionRowView({ game, session, durationMs, side, activeId, selectedId, onSelect, deviceOf, landedId, unrecorded, running, now }: SessionListProps & {
   session: Version[];
   durationMs: number;
   /** A row of another timeline, inside its open fork. */
@@ -79,6 +83,7 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
   const tagged = session.filter((v) => v.tag !== null && v.tag !== '');
   const width = trackWidth(durationMs);
   const holdsSelection = selectedId !== null && session.some((v) => v.id === selectedId);
+  const pending = !side && unrecorded !== null && session.some((v) => v.id === activeId) ? unrecorded : null;
 
   return (
     <motion.div
@@ -130,6 +135,9 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
           />
         ))}
       </span>
+      <AnimatePresence>
+        {pending !== null && <PendingDot key="pending" dueAt={pending.dueAt} running={running} now={now} />}
+      </AnimatePresence>
       {tagged.length > 0 && (
         <span
           // The naming card's tile flies here (`NamingHost`).

@@ -5,6 +5,7 @@ const COMMANDS: &[&str] = &[
     "get_games",
     "get_game",
     "get_running_games",
+    "get_unrecorded_changes",
     "save_game",
     "delete_game",
     "untrack_game",

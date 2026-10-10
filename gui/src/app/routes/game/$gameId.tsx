@@ -11,7 +11,7 @@ import { SessionList } from '@/features/sessions/SessionList';
 import { EmptyGame, formatDuration, GhostRow, TimelineFrame } from '@/features/sessions/Timeline';
 import { GraphView } from '@/features/graph/GraphView';
 import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
-import { useDevice, useMonitoringSettings } from '@/features/sessions/queries';
+import { useDevice, useMonitoringSettings, useUnrecorded } from '@/features/sessions/queries';
 import { layoutSessions, navOrder, playedMs, sessionGapMs } from '@/features/sessions/sessions';
 import type { Version } from '@/ipc/bindings/Version';
 import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
@@ -53,6 +53,7 @@ export function GameDetail(): ReactElement {
   const { data: retiredIds = [] } = useRetiredVersions();
   const { data: monitoring } = useMonitoringSettings();
   const { data: here } = useDevice();
+  const unrecorded = useUnrecorded(id);
   const now = useNow(60_000);
 
   // Rewinds, switches and slot changes all rewrite the live save folder: one at a time.
@@ -253,6 +254,8 @@ export function GameDetail(): ReactElement {
                     onToggleFork={toggleFork}
                     deviceOf={deviceOf}
                     landedId={landedId}
+                    unrecorded={unrecorded}
+                    running={gameRunning}
                     now={now}
                   />
                 </motion.div>
@@ -287,6 +290,7 @@ export function GameDetail(): ReactElement {
               game={game}
               version={selected}
               active={head}
+              unrecorded={unrecorded}
               onLine={onLine}
               device={deviceOf(selected)}
               lessPlayMs={lessPlay}

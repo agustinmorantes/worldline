@@ -200,3 +200,19 @@ export function navOrder(layout: SessionsLayout, openForks: ReadonlySet<number>)
   }
   return out;
 }
+
+/**
+ * The unrecorded changes after `unrecorded-changes` for `gameId`: a due time sets its entry,
+ * `null` drops it. Nothing while the list hasn't been read; reading it gets the change too.
+ */
+export function withUnrecorded(entries: [number, string][] | undefined, gameId: number, dueAt: string | null): [number, string][] | undefined {
+  if (entries === undefined) return undefined;
+  const rest = entries.filter(([id]) => id !== gameId);
+  return dueAt === null ? rest : [...rest, [gameId, dueAt]];
+}
+
+/** Whole minutes until `due`, 0 under a minute (or past it). */
+export function minutesUntil(due: Date, now: Date): number {
+  const ms = due.getTime() - now.getTime();
+  return ms < MINUTE ? 0 : Math.round(ms / MINUTE);
+}

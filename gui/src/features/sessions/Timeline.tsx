@@ -9,12 +9,12 @@ import type { Version } from '@/ipc/bindings/Version';
 import { GameIcon } from '@/features/library/GameIcon';
 import type { CheckpointDevice } from '@/features/game/game-view';
 import { formatRelative, formatTime, type Messages, useLocale, useT } from '@/shared/i18n';
-import { ease, spring } from '@/shared/motion/motion';
+import { ease, spring, useMotionReduced } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { useScreenshotPreview } from './queries';
-import { dayLabel, durationParts, timeOf } from './sessions';
+import { dayLabel, durationParts, minutesUntil, timeOf } from './sessions';
 
 export function formatDuration(ms: number, t: Messages): string {
   const { hours, minutes } = durationParts(ms);
@@ -154,6 +154,47 @@ export function Dot({ game, version, left, top, side, elsewhere, graph = false, 
         </motion.span>
       )}
     </>
+  );
+}
+
+/**
+ * After the checkpoint you are on, while the game's saves changed since it and the watcher
+ * hasn't recorded them yet. Its slot opens after the track; when the changes are recorded or
+ * cleared it folds back into the track's end, where the new checkpoint's dot springs in.
+ */
+export function PendingDot({ dueAt, running, now }: {
+  dueAt: Date;
+  /** The game is running: closing it records the changes sooner. */
+  running: boolean;
+  now: Date;
+}): ReactElement {
+  const t = useT();
+  const reduced = useMotionReduced();
+  const label = t.sessions.pending(t.sessions.dueIn(minutesUntil(dueAt, now)), running);
+  const fold = reduced ? { duration: 0 } : { duration: 0.38, ease };
+
+  return (
+    <motion.span
+      className="relative h-[22px] shrink-0"
+      initial={{ width: 0 }}
+      animate={{ width: 30 }}
+      exit={{ width: 0 }}
+      transition={fold}
+    >
+      <Tooltip content={label}>
+        <motion.span
+          role="img"
+          aria-label={label}
+          className="absolute right-0 top-0 flex size-[22px] items-center justify-center"
+          initial={{ scale: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.6, opacity: 0 }}
+          transition={reduced ? { duration: 0 } : { scale: spring, opacity: fold }}
+        >
+          <span className="block size-[11px] rounded-full border-[1.5px] border-dashed border-acc" />
+        </motion.span>
+      </Tooltip>
+    </motion.span>
   );
 }
 
