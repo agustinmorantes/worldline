@@ -918,6 +918,8 @@ mod tests {
 
     const DIR: &str = r"C:\Games\Lantern Knight";
 
+    // Windows paths: elsewhere `\` isn't a separator. The overlay is Windows-only.
+    #[cfg(windows)]
     #[test]
     fn the_front_window_belongs_to_the_game_it_runs_from() {
         let mut games = Games::default();
