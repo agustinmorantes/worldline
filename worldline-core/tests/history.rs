@@ -86,14 +86,15 @@ fn keep_captures_changed_saves_now_and_tags_the_new_version() {
 }
 
 #[test]
-fn keep_tags_the_active_slots_latest_version_when_the_saves_havent_changed() {
+fn keep_tags_the_active_version_when_the_saves_havent_changed() {
     let device = Device::new();
     device.write("save.dat", "old");
     let game = device.add_game("Celeste");
     let old = device.active_version(game.game.id);
     device.write("save.dat", "new");
     let latest = device.checkpoint(game.game.id);
-    // After a restore the saves match the old version, but the slot's latest is the one kept.
+    // After a restore the saves match the old version, the one the player is on: it's the one
+    // kept, not the slot's newest, which is on the branch they left.
     device.core.restore_version(old.id).unwrap();
     let versions = device.game(game.game.id).versions.len();
 
@@ -101,12 +102,12 @@ fn keep_tags_the_active_slots_latest_version_when_the_saves_havent_changed() {
     let CheckpointOutcome::Unchanged(kept) = outcome else {
         panic!("unchanged: {outcome:?}");
     };
-    assert_eq!(kept.id, latest.id);
+    assert_eq!(kept.id, old.id);
     assert_eq!(
-        tag_of(&device, latest.id).as_deref(),
+        tag_of(&device, old.id).as_deref(),
         Some("Kept in game, 21:04")
     );
-    assert_eq!(tag_of(&device, old.id), None);
+    assert_eq!(tag_of(&device, latest.id), None);
     assert_eq!(device.active_version(game.game.id).id, old.id);
     assert_eq!(device.game(game.game.id).versions.len(), versions);
 }

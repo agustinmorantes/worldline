@@ -466,7 +466,7 @@ impl WorldlineCore {
 
     /// Checkpoints the live saves now, like `checkpoint`, and tags the new
     /// version with `tag`, which keeps it forever; when the saves haven't
-    /// changed, the active slot's latest version. A version that already
+    /// changed, the active version. A version that already
     /// has a tag keeps it. One repository lock covers both, and every tag
     /// write takes it, so nothing lands, prunes or renames in between. Only a
     /// failed capture is an error: a created version is reported even when
@@ -508,12 +508,11 @@ impl WorldlineCore {
                 }
                 _ => None,
             };
-            // Unchanged keeps the active slot's latest version (handoff, "Hotkeys"), which after
-            // a restore is newer than the one the saves match.
+            // Unchanged keeps the active version, the one the saves match. After a restore the
+            // slot's newest is on the branch the player left.
             let target = match &checkpoint {
-                CheckpointOutcome::Created(version) => Some(version.id),
-                CheckpointOutcome::Unchanged(active) => {
-                    Some(game.versions.first().map_or(active.id, |latest| latest.id))
+                CheckpointOutcome::Created(version) | CheckpointOutcome::Unchanged(version) => {
+                    Some(version.id)
                 }
                 CheckpointOutcome::Empty => None,
             };
