@@ -1,6 +1,6 @@
-//! The overlay's Win32 side, as S0 measured it: the foreground gate, the client area and DPI,
+//! The overlay's Win32 side, as measured on Windows: the foreground gate, the client area and DPI,
 //! and showing the window without activating it, directly above the game in the z-order. Also
-//! the hook that reports each new foreground window. For the naming card (O4), the overlay over
+//! the hook that reports each new foreground window. For the naming card, the overlay over
 //! the whole client area, taking the focus, and the focus handed back to the game.
 
 use super::decide::Rect;
@@ -164,7 +164,7 @@ pub fn scale(hwnd: isize) -> f64 {
 }
 
 /// Keeps the overlay out of Alt+Tab and the taskbar, and never activated. Call it after Tauri's
-/// own style changes, which rewrite these bits (S0).
+/// own style changes, which rewrite these bits.
 pub fn passive(window: &WebviewWindow) {
     let hwnd = hwnd(window);
     unsafe {

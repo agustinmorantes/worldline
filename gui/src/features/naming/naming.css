@@ -1,5 +1,4 @@
-/* The naming card, from `docs/design/mocks/overlay-main.dc.html` (over the game) and
-   `overlay-inapp.dc.html` (in the app), and the handoff's "Naming card". The same card in both
+/* The naming card. The same card in both
    windows; in the app it starts 200 ms later, after the window restores, and flies to its row. */
 @import "@fontsource/figtree/latin-700.css";
 

@@ -1,4 +1,4 @@
-//! NFR 4.2.2.1: history must take less than 50% of storing every version as
+//! History must take less than 50% of storing every version as
 //! a full copy. Three fixtures cover the cases that matter (ADR 0003); each
 //! prints its measured ratio.
 

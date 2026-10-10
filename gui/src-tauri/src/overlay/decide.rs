@@ -54,9 +54,9 @@ pub struct Rect {
     pub h: i32,
 }
 
-/// The largest popup, in logical px: the 48 px tall pill at its widest (handoff, "Anatomy").
+/// The largest popup, in logical px: the 48 px tall pill at its widest.
 pub const POPUP: (f64, f64) = (300.0, 48.0);
-/// The popup's distance from the client area's edges (handoff, "Placement").
+/// The popup's distance from the client area's edges.
 const INSET: f64 = 16.0;
 /// Transparent room on every side of the popup, so the rise's overshoot and the halo aren't cut
 /// off. The webview pads the popup by the same amount.
@@ -79,13 +79,13 @@ pub fn place(client: Rect, popup: (f64, f64), scale: f64, corner: Corner) -> Rec
     Rect { x, y, w, h }
 }
 
-/// What a popup is about (handoff, "Events").
+/// What a popup is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Checkpoint,
     SessionStart,
     NewTimeline,
-    /// The Quick keep and Name it hotkeys (O3, O4) trigger it.
+    /// The Quick keep and Name it hotkeys trigger it.
     Kept,
     /// A warning.
     DeviceAhead,
@@ -94,7 +94,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Warnings and errors, which nothing else replaces (handoff, "Rules"). They're about the
+    /// Warnings and errors, which nothing else replaces. They're about the
     /// user's data, so quiet mode shows them in full.
     pub fn urgent(self) -> bool {
         matches!(self, Kind::DeviceAhead | Kind::CaptureFailed)
@@ -141,7 +141,7 @@ pub fn outcome(showing: Option<Kind>, incoming: Kind, quiet: bool) -> Outcome {
     }
 }
 
-/// One marimba sound per event (handoff, "Sound"). Session start has none.
+/// One marimba sound per event. Session start has none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sound {
     Checkpoint,
@@ -612,7 +612,7 @@ mod tests {
     const KINDS: [Kind; 6] = [Cp, Ss, Tl, Kept, Warn, Fail];
     const CP: Kind = Cp;
 
-    /// Every (showing, incoming) pair, against the handoff's "Rules": one popup that swaps, never
+    /// Every (showing, incoming) pair, against the popup rules: one popup that swaps, never
     /// stacks; warnings and errors drop the rest, and replace each other and themselves.
     #[test]
     fn every_event_against_every_popup_on_screen() {

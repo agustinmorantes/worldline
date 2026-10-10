@@ -1,5 +1,4 @@
-// Builds the app and tray icons from the small design in docs/design/mocks
-// (icon-small.dc.html), frozen at its default hue, then lets `tauri icon` fan it out.
+// Builds the app and tray icons from the small icon design, frozen at its default hue, then lets `tauri icon` fan it out.
 // The main design (with the memory card) turns to mud at icon sizes, so it is not used here.
 import { writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';

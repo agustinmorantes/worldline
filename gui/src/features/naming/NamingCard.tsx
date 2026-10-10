@@ -1,4 +1,4 @@
-// The naming card the Name it hotkey opens (O4): over the game in the overlay window, or in the
+// The naming card the Name it hotkey opens: over the game in the overlay window, or in the
 // app when it can't show there. The checkpoint is kept before it opens; the card only renames it.
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react';
 import { Dialog } from 'radix-ui';

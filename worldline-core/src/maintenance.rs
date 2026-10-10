@@ -1,6 +1,5 @@
 //! Retention (which versions to retire) and garbage collection (which chunks
-//! to delete), identical for the local store and the remote. See
-//! `docs/pruning-plan.md` and ADR 0002.
+//! to delete), identical for the local store and the remote. See ADR 0002.
 
 use crate::store::{GameRecord, RetirementMarker, Store, read_json, write_json};
 use anyhow::{Context, Result, bail};

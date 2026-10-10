@@ -43,7 +43,7 @@ fn screenshot_in(root: &Path, device: &Device, version_id: i32) -> PathBuf {
     )
 }
 
-/// What the save-storage ratio (NFR 4.2.2.1) and retention planning count:
+/// What the save-storage ratio (see `storage_ratio.rs`) and retention planning count:
 /// the stored chunks.
 fn save_bytes(device: &Device) -> u64 {
     Store::open_existing(device.core.repository_root())

@@ -1,4 +1,4 @@
-//! The overlay's hotkeys (handoff, "Hotkeys"): registered only while a tracked game with an install
+//! The overlay's hotkeys: registered only while a tracked game with an install
 //! dir is the window in front, so other apps keep those keys the rest of the time. Each entry in
 //! `wanted` is an `(action, shortcut)`.
 //!

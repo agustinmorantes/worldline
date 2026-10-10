@@ -1,4 +1,4 @@
-//! The keep both hotkeys share (handoff, "Hotkeys"): capture the game's saves at the press and tag
+//! The keep both hotkeys share: capture the game's saves at the press and tag
 //! that version with the automatic name, which keeps it forever. The name's template comes in the
 //! app language with the config (ADR 0007); only the time is filled in here.
 

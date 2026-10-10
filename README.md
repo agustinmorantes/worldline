@@ -1,53 +1,128 @@
+<div align="center">
+
+<img src="gui/src-tauri/icons/128x128@2x.png" width="112" alt="Worldline logo">
+
 # Worldline
 
-Worldline keeps a history of game save folders. It watches tracked folders, creates checkpoints, and lets you browse branches and restore an earlier state. The desktop app and CLI use the same local repository. Optional sync copies history through a user-selected shared folder while preserving divergent progress.
+**Every save. Every timeline.**
 
-## Build and run
+Worldline backs up your game saves while you play and lets you rewind to any of them.<br>
+Made a bad call? Rewind. Want the other path too? Keep both.
 
-Install a current Rust toolchain and [Bun](https://bun.sh/). On Linux, install the [Tauri v2 system prerequisites](https://v2.tauri.app/start/prerequisites/) for your distribution, including WebKitGTK 4.1 and the appindicator development library.
+[![CI](https://github.com/agustinmorantes/savegame-timeline/actions/workflows/ci.yml/badge.svg)](https://github.com/agustinmorantes/savegame-timeline/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platforms: Windows | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational)
+![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?logo=tauri&logoColor=white)
 
-```sh
-cd gui
-bun install --frozen-lockfile
-bun run tauri dev
-```
+[Download](#installation) · [How it works](#how-it-works) · [Features](#features) · [Build from source](#building-from-source) · [Docs](docs/)
 
-Build an installer or Linux package with `bun run tauri build` from `gui/`. Tauri places the result under `target/release/bundle/` (or the configured Cargo target directory). The GUI targets Windows and Linux; Linux packages should be built on Linux.
+<img src="docs/media/sessions.png" alt="A game's timeline in Worldline: today's session, yesterday's with a branch to another timeline, and a session played on a Steam Deck" width="100%">
 
-The CLI can be run from the repository root:
+</div>
+
+## Why
+
+Games save over your old file, even after a disaster. Overwrite a save after a bad choice, a corrupted autosave or a boss fight gone wrong, and that progress is gone. Moving between a PC and a handheld means copying save folders by hand and hoping you picked the newer one.
+
+Worldline watches your games' save folders and keeps every save as a **checkpoint** on a timeline. You don't press anything. When you want to go back, hold a button. Nothing is ever overwritten: if you rewind and play on, the old run splits off into its own **timeline**, and you can switch back whenever you like.
+
+## How it works
+
+<div align="center">
+<img src="docs/media/rewind.gif" alt="Selecting the 'Before Hydra' checkpoint, holding to rewind, and the later play splitting off as 'where you left off'" width="80%">
+</div>
+
+1. **Just play.** Every time the game saves, Worldline keeps a copy. Saves in quick succession become one checkpoint, and unchanged saves aren't stored again.
+2. **Made a bad call?** Pick an earlier checkpoint and hold to rewind. Worldline checkpoints what you have now first, so a rewind can always be undone.
+3. **Take the other path.** Play on from there and your new saves start a new timeline next to the old one. Jump between them at any time.
+
+Name a checkpoint ("Before Malenia") to keep it forever. Unnamed ones are thinned out over time according to your retention settings.
+
+## Features
+
+- **Automatic checkpoints.** Watches save folders and captures them as the game writes, with no setup per game beyond picking it.
+- **Rewind safely.** Restores are all-or-nothing: if the game holds a file, your saves stay exactly as they were ([how](docs/adr/0008-live-saves-change-atomically-or-not-at-all.md)).
+- **Branching timelines.** Nothing is overwritten. Rewinding and playing on, or playing offline on two devices, keeps both lines.
+- **Two views.** *Sessions* groups checkpoints by when you played; *Graph* shows every timeline on one axis.
+- **Finds your games.** Scans Steam, Epic and your own folders, and knows where thousands of games keep their saves thanks to the [Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest).
+- **Sync between devices** through any folder you already sync (Dropbox, OneDrive, Google Drive, Syncthing, a NAS). No account and no server. Progress from your Steam Deck shows up on your PC; if both moved on, both runs are kept and you choose.
+- **Playthroughs.** Keep separate histories for separate runs of the same game.
+- **In-game popup and hotkeys** (Windows). A small popup tells you when a checkpoint was kept. *Quick keep* and *Name it* hotkeys save a moment without leaving the game. The popup is a separate window: nothing is injected into the game.
+- **A screenshot of each checkpoint** (Windows 11), so you can see where you were.
+- **Small on disk.** Saves are deduplicated, chunked and compressed with zstd. Unchanged data is stored once across every checkpoint.
+- **Your data stays readable.** History is plain files and zstd chunks. You can [recover a save by hand](docs/storage-format.md) without the app.
+- **Export and import** a game's whole history as a portable `.zip`.
+- **A full CLI** for everything the app does, plus repository checks and recovery tools.
+- English and Spanish. Lives in the tray.
+
+<div align="center">
+<img src="docs/media/views.gif" alt="Switching a game's history between the Sessions view and the Graph view" width="80%">
+</div>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/graph.png" alt="Graph view of a game's timelines"><br><sub><b>Graph view.</b> Every timeline on one axis, named checkpoints as labels.</sub></td>
+    <td width="50%"><img src="docs/media/sync.png" alt="A game where a Steam Deck played too"><br><sub><b>Sync.</b> The Steam Deck played on; its run shows up as its own timeline.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/add-games.png" alt="Add games: games in the cloud and installed games found on this PC"><br><sub><b>Add games.</b> Games from your other devices, and the ones installed here.</sub></td>
+    <td width="50%"><img src="docs/media/settings.png" alt="Settings: capture, in-game popup, cloud devices and appearance"><br><sub><b>Settings.</b> Capture timing, the in-game popup, devices and appearance.</sub></td>
+  </tr>
+</table>
+
+## Installation
+
+Download the latest installer from [**Releases**](https://github.com/agustinmorantes/savegame-timeline/releases):
+
+| Platform | Package |
+|---|---|
+| Windows 10 and 11 | the `x64-setup.exe` installer |
+| Linux (Debian, Ubuntu and derivatives) | the `amd64.deb` package |
+
+The Windows installer isn't code-signed yet, so SmartScreen may warn you: choose **More info → Run anyway**. On other Linux distributions, [build from source](#building-from-source).
+
+## Getting started
+
+1. Open Worldline. A 30-second tour shows the basics; replay it any time from **?** in the title bar.
+2. Click **Add games** and **Look for installed games**. Pick the ones you want; Worldline fills in their save folders. You can also add a game by hand and choose its save folders.
+3. Play. Checkpoints appear on the game's timeline as it saves. Closing the window keeps Worldline running in the tray; right-click the tray icon to exit.
+4. To go back, select a checkpoint and **hold to rewind**. Close the game first: Worldline refuses to rewind a game it sees running, since the game could save over the result.
+
+### Syncing between devices
+
+In **Settings → Cloud**, choose a folder that your sync tool of choice keeps in step between devices, and do the same on each device. From then on it's automatic: new checkpoints reach the folder as they're created, and other devices' progress is picked up every few minutes. When another device simply played further, its progress is applied here. Games installed on this device that another one tracks are added for you. If two devices both played on from the same point, both runs are kept as timelines and you choose which one to continue; nothing is merged or discarded for you.
+
+### Command line
+
+Everything the app does is also available from the CLI, which works on the same data:
 
 ```sh
 cargo run -p cli -- games list
+cargo run -p cli -- watch          # capture without the app
 cargo run -p cli -- --help
 ```
 
-Use `--data-dir <path>` before the command to keep a test repository separate from your normal app data. Without it, the CLI uses the desktop app's local data directory.
+See [docs/cli.md](docs/cli.md) for every command.
 
-## Using the app
+## Where your data lives
 
-Add a game and choose its save folders, or use the installed-game import screen to discover games. Checkpoints are created when monitored save files change. The timeline shows slot histories and branches; restoring a checkpoint writes its saved files to the tracked folders, so inspect the selected version first.
+History is stored in `%LOCALAPPDATA%\agustinmorantes.worldline` on Windows and `~/.local/share/agustinmorantes.worldline` on Linux. It is plain files plus compressed chunks; the database next to it is only an index that can be rebuilt. [docs/storage-format.md](docs/storage-format.md) describes the layout and how to rebuild a save with nothing but `zstd`.
 
-In Settings, choose a shared folder to sync between devices. Each device keeps its own active slot and version pointers. History cleanup can retire eligible checkpoints while preserving graph links. Export History on a game's detail screen creates a portable `.zip` bundle; Import History in Settings inspects a bundle and asks where each tracked save folder belongs on this machine. Importing history does not restore live save files.
+## Building from source
 
-The CLI also supports `history inspect`, `history export`, and `history import --map UUID=/absolute/path`. Run `cargo run -p cli -- history --help` for the exact arguments. `sync configure|status|adopt`, `devices list|remove` and `prune settings|preview|run` cover sync and history cleanup.
-
-Sync is automatic: while the app or `watch` runs, new versions reach the sync folder as they are created, other devices' progress is picked up every five minutes, and pruning runs when due. `sync` with no subcommand is the manual fallback for when nothing runs in the background. Only a divergence (two devices moved the same slot) needs you; it is reported, never auto-resolved.
-
-## Storage and recovering files by hand
-
-History lives in `repository/` inside the app data directory; the SQLite database next to it is only an index (`repo reindex` rebuilds it). Each checkpoint is a `metadata.json` under `repository/games/<game>/slots/<slot>/versions/<version>/`. Its `files` list gives, for each saved file, its path, its SHA-256 and the `chunks` that rebuild it. Every chunk is stored once, zstd-compressed, at `repository/chunks/<first 2 hex digits>/<remaining 62>`.
-
-Without the app, a file is rebuilt by decompressing its chunks in order and concatenating them:
+You need a current [Rust](https://rustup.rs/) toolchain and [Bun](https://bun.sh/). On Linux, also install the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your distribution, including WebKitGTK 4.1 and the appindicator development library.
 
 ```sh
-for chunk in <hashes from "chunks", in order>; do
-  hex=${chunk#sha256:}
-  zstd -d -c "repository/chunks/${hex:0:2}/${hex:2}"
-done > save.dat
-sha256sum save.dat   # compare with the file's "sha256"
+git clone https://github.com/agustinmorantes/savegame-timeline.git
+cd savegame-timeline/gui
+bun install --frozen-lockfile
+bun run tauri dev      # run the app
+bun run tauri build    # build an installer into target/release/bundle/
 ```
 
-`cargo run -p cli -- repo extract <version-id> <folder>` does the same for a whole checkpoint, and `repo check --deep` verifies every stored chunk.
+Linux packages should be built on Linux. The checked-in Ludusavi manifest is an empty placeholder; release builds fetch the real one (see [`.github/workflows/bundles.yml`](.github/workflows/bundles.yml)), and the app downloads it at runtime otherwise.
+
+To work on the UI without the Rust backend, `bun run dev:mock` serves it in a browser with made-up data.
 
 ## Development
 
@@ -56,13 +131,20 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cd gui
-bun run check
-bun run test -- --run
+bun run check          # eslint + tsc
+bun run test -- --run  # unit tests (Vitest)
+bun run test:screens   # screen tests on the mocked UI (Playwright)
 bun run build
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the workspace layout and contribution process.
+The workspace has three parts: `worldline-core/` owns all behavior, and `cli/` and `gui/src-tauri/` are thin adapters over it. The React UI is in `gui/src/`. Read [docs/architecture.md](docs/architecture.md) for the big picture, the [decision records](docs/adr/) for the reasoning, and [CONTRIBUTING.md](CONTRIBUTING.md) before sending a change.
+
+## Acknowledgements
+
+Worldline was built by [Agustín Morantes](https://github.com/agustinmorantes) as a final project at [ITBA](https://www.itba.edu.ar/) (Instituto Tecnológico de Buenos Aires), with Federico Bond as academic advisor.
+
+Game discovery relies on the [Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest) by Matthew T. Kennerly and its contributors.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE)

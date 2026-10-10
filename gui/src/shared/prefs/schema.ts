@@ -12,7 +12,7 @@ export type Corner = (typeof CORNERS)[number];
 /** A game's own popup corner, or no popups while it plays. */
 export type GameCorner = Corner | 'off';
 
-/** The in-game popup (`docs/game-overlay-handoff.md`); pushed to Rust on every change. */
+/** The in-game popup (ADR 0009); pushed to Rust on every change. */
 export interface OverlayPrefs {
   enabled: boolean;
   sound: boolean;

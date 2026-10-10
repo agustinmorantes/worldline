@@ -1,6 +1,5 @@
-/* The popup, from `docs/design/mocks/overlay-main.dc.html` and the handoff's
-   "Anatomy" and "Motion". The window is the popup plus a 16px margin on every side, flush with
-   the game's client corner, so the popup sits at the handoff's 16px inset. */
+/* The popup. The window is the popup plus a 16px margin on every side, flush with
+   the game's client corner, so the popup sits at a 16px inset. */
 @import "@fontsource/figtree/latin-500.css";
 @import "@fontsource/figtree/latin-600.css";
 @import "@fontsource/jetbrains-mono/latin-600.css";

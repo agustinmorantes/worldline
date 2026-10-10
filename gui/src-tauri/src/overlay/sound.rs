@@ -1,4 +1,4 @@
-//! The popup's sounds, played from Rust so they work with or without a webview (handoff, "Sound").
+//! The popup's sounds, played from Rust so they work with or without a webview.
 
 use super::decide::Sound;
 use tauri_plugin_log::log::warn;
@@ -41,7 +41,7 @@ mod tests {
         (short(22), long(24), short(34), millis)
     }
 
-    /// The handoff's files: stereo, 44.1 kHz, 16-bit, each 0.75–0.92 s.
+    /// The bundled files: stereo, 44.1 kHz, 16-bit, each 0.75–0.92 s.
     #[test]
     fn the_sounds_are_short_wavs() {
         for (name, wav) in [

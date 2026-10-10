@@ -1,4 +1,4 @@
-//! WebView2's memory target, lowered while a window is hidden (task W1).
+//! WebView2's memory target, lowered while a window is hidden.
 
 use tauri::WebviewWindow;
 

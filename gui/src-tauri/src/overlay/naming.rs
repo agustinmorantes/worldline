@@ -1,4 +1,4 @@
-//! Name it (O4, handoff "Naming card"): the press keeps the checkpoint first, then a card asks for
+//! Name it: the press keeps the checkpoint first, then a card asks for
 //! a name, over the game when it can show there, otherwise in Worldline. The decisions here are
 //! pure; `mod.rs` does the windows and the renaming.
 

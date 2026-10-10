@@ -295,6 +295,31 @@ function settings(): Fixture {
   };
 }
 
+/** The README's screenshots: the Sessions view's Hades in a library where each game has its own color. */
+function showcase(): Fixture {
+  const state = sessions();
+  const [hadesGame, celesteGame] = state.games;
+  const hued = (game: FullGame, hue: number): FullGame => ({ ...game, accent_hue: hue });
+  const games = [
+    hued(hadesGame, 12),
+    hued(savedGame(3, 'Hollow Knight', 60 * 5), 215),
+    hued(savedGame(4, 'Elden Ring', 60 * 26), 45),
+    hued(celesteGame, 330),
+    hued(savedGame(5, 'Stardew Valley', 60 * 24 * 9), 120),
+    hued(savedGame(6, 'Outer Wilds', 60 * 24 * 30), 25),
+  ];
+  const report = state.syncReport as SyncReport;
+  const synced = games.slice(1).map((game): GameSyncStatus => ({
+    game_uuid: game.uuid,
+    relation: 'in_sync',
+    remote_device: null,
+    remote_version_uuid: null,
+    remote_version_id: null,
+    auto_applied: false,
+  }));
+  return { ...state, games, syncReport: { ...report, games: [...report.games, ...synced] } };
+}
+
 export const FIXTURES = {
   default: () => base([eldenRing(), hollowKnight()]),
   empty: () => base([]),
@@ -305,6 +330,7 @@ export const FIXTURES = {
   /** Sync on, but syncing fails for another reason than the folder. */
   syncFailed: () => ({ ...library(), syncReport: undefined }),
   sessions: () => sessions(),
+  showcase,
   ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
   diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),
   oneFork: () => forks(1),

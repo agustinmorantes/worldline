@@ -44,7 +44,7 @@ export interface Events {
   'name-it-open': NamingCard;
 }
 
-/** The naming card (O4): its checkpoint, already kept under `auto`, and how to show it. */
+/** The naming card: its checkpoint, already kept under `auto`, and how to show it. */
 export interface NamingCard {
   session: number;
   gameId: number;
@@ -87,7 +87,7 @@ interface OverlayBase {
 export type OverlayDetail =
   | { kind: 'checkpoint'; version: number }
   | { kind: 'newTimeline'; version: number; from: BranchFrom }
-  /** The hotkeys' (O3, O4); `name` once it's named. */
+  /** The hotkeys' (Quick keep, Name it); `name` once it's named. */
   | { kind: 'kept'; version: number; name: string | null }
   /** `lastAt`: the game's latest checkpoint, Unix ms. */
   | { kind: 'sessionStart'; lastAt: number | null }
