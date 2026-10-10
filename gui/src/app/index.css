@@ -80,6 +80,13 @@
     outline-offset: 2px;
   }
 
+  /* Tooltips never take the pointer: one that grows (a screenshot loading) or flips under the
+     cursor would otherwise take the hover from its target, which closes it at once. The wrapper
+     is Radix's positioning box around the content, hit-testable even where it's empty. */
+  [data-radix-popper-content-wrapper]:has(> [data-tooltip]) {
+    pointer-events: none;
+  }
+
   /* The page behind the app, so nothing white shows before the body paints. */
   html {
     background: var(--bg);

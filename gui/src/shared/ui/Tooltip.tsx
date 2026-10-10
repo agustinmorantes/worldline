@@ -47,6 +47,7 @@ export function Tooltip({ content, label, side = 'top', mono = false, children }
           sideOffset={6}
           collisionPadding={8}
           aria-label={label}
+          data-tooltip=""
           className={cn(
             'z-[60] max-w-[min(360px,calc(100vw-16px))] origin-(--radix-tooltip-content-transform-origin) rounded-lg bg-tx px-2 py-1 text-xs font-semibold text-bg shadow-[0_12px_32px_oklch(0%_0_0/0.45)] [overflow-wrap:anywhere] animate-in fade-in-0 zoom-in-95 duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
             mono && 'font-mono',

@@ -29,6 +29,12 @@ describe('Tooltip', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent('Settings');
   });
 
+  it('marks its content so the stylesheet keeps it from taking the pointer', () => {
+    fireEvent.pointerMove(setup());
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(document.querySelector('[data-radix-popper-content-wrapper] > [data-tooltip]')).toHaveTextContent('Settings');
+  });
+
   it('closes when its target is activated, even if the target prevents default', () => {
     const button = setup();
     fireEvent.pointerMove(button);
