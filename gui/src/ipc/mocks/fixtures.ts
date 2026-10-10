@@ -216,6 +216,31 @@ function sessions(relation: Divergence = 'in_sync', extra: Checkpoint[] = []): F
   };
 }
 
+/** Silksong rewound to its starting point, two days back: up to three timelines leave from there, today's the newest. */
+function forks(count: number): Fixture {
+  const DAY = 60 * 24;
+  const checkpoints: Checkpoint[] = [
+    [1, null, 2 * DAY + 200],
+    [2, 1, 2 * DAY + 180, 'Starting point'],
+    // Today, where you left off.
+    [3, 2, 150],
+    [4, 3, 130, 'Bone bottom'],
+    [5, 4, 110],
+    [6, 5, 40, 'Deep docks'],
+    [7, 6, 20, 'Bellhart'],
+    // Thursday.
+    [8, 2, 2 * DAY + 140],
+    [9, 8, 2 * DAY + 95, 'Marrow 2'],
+    // Yesterday.
+    [10, 2, DAY + 60, 'Mosshome'],
+  ];
+  const kept = new Set([1, 2, ...[[3, 4, 5, 6, 7], [8, 9], [10]].slice(0, count).flat()]);
+  const main = makeSlot({ id: 1, game_id: 1, name: 'Main', active_version_id: 2 });
+  const versions = checkpoints.filter(([id]) => kept.has(id)).map(([id, parent, minutes, tag = null]) => makeVersion({
+    id, slot_id: 1, parent_id: parent, version_number: id, tag, created_at: minutesAgo(minutes),
+  }));
+  return base([makeGame({ id: 1, title: 'Hollow Knight: Silksong', active_slot_id: 1, active_slot: main, slots: [main], versions, last_version: versions[versions.length - 1] })]);
+}
 
 /** The Add games view: three games in the cloud and a scan that finds a few more. */
 function addGames(scan: Fixture['scan']): Fixture {
@@ -282,6 +307,9 @@ export const FIXTURES = {
   sessions: () => sessions(),
   ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
   diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),
+  oneFork: () => forks(1),
+  forks: () => forks(2),
+  threeForks: () => forks(3),
   addGames: () => addGames(undefined),
   scanning: () => addGames('pending'),
   scanned: () => addGames(SCANNED),

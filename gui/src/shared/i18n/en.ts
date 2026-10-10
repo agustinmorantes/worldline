@@ -186,6 +186,7 @@ export const en = {
     cleanedUp: 'Cleaned up',
     dotLabel: (name: string, when: string): string => `${name}, ${when}`,
     anotherTimeline: 'Another timeline',
+    leftOff: 'Where you left off',
     deviceTimeline: (device: string): string => `${device}’s timeline`,
     sessionCount: (n: number): string => plural('en', n, { one: '# session', other: '# sessions' }),
     playedOn: (device: string): string => `Played on ${device}`,

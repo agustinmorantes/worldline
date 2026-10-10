@@ -12,7 +12,7 @@ import { EmptyGame, formatDuration, GhostRow, TimelineFrame } from '@/features/s
 import { GraphView } from '@/features/graph/GraphView';
 import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
 import { useDevice, useMonitoringSettings, useUnrecorded } from '@/features/sessions/queries';
-import { layoutSessions, navOrder, playedMs, sessionGapMs } from '@/features/sessions/sessions';
+import { layoutSessions, navOrder, playedMs, sessionGapMs, splitSessions } from '@/features/sessions/sessions';
 import type { Version } from '@/ipc/bindings/Version';
 import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
@@ -109,7 +109,8 @@ export function GameDetail(): ReactElement {
   const head = layout.lineage.length > 0 ? layout.lineage[layout.lineage.length - 1] : null;
   const selected = versions.find((v) => v.id === search.v) ?? head;
   const onLine = selected !== null && layout.lineage.some((v) => v.id === selected.id);
-  const sessions = layout.days.reduce((n, day) => n + day.rows.length, 0);
+  // Every timeline counts: a rewind doesn't take back the time you played.
+  const sessions = splitSessions(versions, gapMs).length;
   const lessPlay = selected === null || !onLine ? 0 : playedMs(layout.lineage.slice(layout.lineage.findIndex((v) => v.id === selected.id) + 1), versions, gapMs);
 
   const refresh = (): Promise<unknown> => Promise.all([
@@ -210,7 +211,7 @@ export function GameDetail(): ReactElement {
         inCloud={syncOn && report.data?.remote_games.some((g) => g.uuid === game.uuid) === true}
         syncDevice={remoteKind}
         onSyncChip={onSyncChip}
-        played={versions.length === 0 ? null : formatDuration(playedMs(layout.lineage, versions, gapMs), t)}
+        played={versions.length === 0 ? null : formatDuration(playedMs(versions, versions, gapMs), t)}
         sessions={sessions}
         view={search.view ?? 'sessions'}
         onView={(view) => { void navigate({ search: (prev) => ({ ...prev, view: view === 'graph' ? view : undefined }) }); }}

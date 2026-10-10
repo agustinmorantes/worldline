@@ -184,6 +184,7 @@ export const es: Messages = {
     cleanedUp: 'Limpiado',
     dotLabel: (name, when) => `${name}, ${when}`,
     anotherTimeline: 'Otra línea temporal',
+    leftOff: 'Donde lo dejaste',
     deviceTimeline: (device) => `Línea temporal de ${device}`,
     sessionCount: (n) => plural('es', n, { one: '# sesión', other: '# sesiones' }),
     playedOn: (device) => `Jugado en ${device}`,

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeGame, makeVersion, naive } from '@/ipc/builders';
 import type { Version } from '@/ipc/bindings/Version';
@@ -128,5 +128,58 @@ describe('Pending dot', () => {
   it('says closing the game records it while the game is running', () => {
     setup({ dueAt: new Date(NOW.getTime() + 3 * MIN) }, true);
     expect(screen.getByRole('img', { name: 'Not recorded yet · recorded in ~3 min or when you close the game' })).toBeInTheDocument();
+  });
+});
+
+describe('Fork chips', () => {
+  const NOW = new Date(Date.UTC(2026, 9, 10, 12, 0)); // Saturday
+  const MIN = 60_000;
+  const at = (minutesAgo: number): string => naive(new Date(NOW.getTime() - minutesAgo * MIN));
+
+  /** Rewound to 2, Thursday: 3─4 left from it that day, 5─6 today. */
+  function setup(openForks: number[] = []): void {
+    vi.mocked(useScreenshotPreview).mockReturnValue({ data: null } as unknown as ReturnType<typeof useScreenshotPreview>);
+    const versions = [
+      makeVersion({ id: 1, created_at: at(2 * 1440 + 60) }),
+      makeVersion({ id: 2, parent_id: 1, created_at: at(2 * 1440 + 50), tag: 'Starting point' }),
+      makeVersion({ id: 3, parent_id: 2, created_at: at(2 * 1440 + 40) }),
+      makeVersion({ id: 4, parent_id: 3, created_at: at(2 * 1440 + 10), tag: 'Marrow' }),
+      makeVersion({ id: 5, parent_id: 2, created_at: at(45) }),
+      makeVersion({ id: 6, parent_id: 5, created_at: at(15), tag: 'Deep docks' }),
+    ];
+    render(
+      <TooltipProvider>
+        <SessionList
+          game={makeGame({ id: 1, title: 'Silksong' })}
+          layout={layoutSessions({ versions, activeId: 2, gapMs: 40 * MIN })}
+          versions={versions}
+          gapMs={40 * MIN}
+          activeId={2}
+          selectedId={null}
+          onSelect={vi.fn()}
+          openForks={new Set(openForks)}
+          onToggleFork={vi.fn()}
+          deviceOf={() => ({ here: true, name: null, kind: 'desktop' })}
+          landedId={null}
+          unrecorded={null}
+          running={false}
+          now={NOW}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  it('say when each timeline was last played, where you left off first', () => {
+    setup();
+    expect(screen.getAllByRole('button', { expanded: false }).map((b) => b.textContent)).toEqual([
+      'Where you left off · today · 1 session · 30m',
+      'Another timeline · Thursday · 1 session · 40m',
+    ]);
+  });
+
+  it('open into their sessions under day headers', () => {
+    setup([5]);
+    const drawer = screen.getByRole('group', { name: 'Where you left off' });
+    expect(within(drawer).getByRole('region', { name: 'Today' })).toHaveTextContent('Deep docks');
   });
 });

@@ -98,6 +98,8 @@ export interface Fork {
   line: Version[];
   /** Its sessions, oldest first. */
   sessions: Version[][];
+  /** It holds the playthrough's newest checkpoint: where you left off before coming back. */
+  latest: boolean;
 }
 
 export interface SessionRow {
@@ -133,7 +135,8 @@ export function layoutSessions({ versions, activeId, gapMs, pendingId = null }: 
 }): SessionsLayout {
   if (versions.length === 0) return { lineage: [], days: [], ghost: null };
   const byId = new Map(versions.map((x) => [x.id, x]));
-  const head = activeId !== null && byId.has(activeId) ? activeId : [...versions].sort(byTime)[versions.length - 1].id;
+  const newest = [...versions].sort(byTime)[versions.length - 1];
+  const head = activeId !== null && byId.has(activeId) ? activeId : newest.id;
   const mine = lineage(versions, head);
   const onLine = new Set(mine.map((x) => x.id));
 
@@ -163,7 +166,7 @@ export function layoutSessions({ versions, activeId, gapMs, pendingId = null }: 
         ghost = lineage(versions, pendingId).filter((x) => !onLine.has(x.id));
         continue;
       }
-      const fork = { root, from: parent === null ? null : (byId.get(parent) ?? null), line, sessions: splitSessions(line, gapMs) };
+      const fork = { root, from: parent === null ? null : (byId.get(parent) ?? null), line, sessions: splitSessions(line, gapMs), latest: line.includes(newest) };
       forksFrom.set(parent, [...(forksFrom.get(parent) ?? []), fork]);
     }
   }
@@ -172,16 +175,22 @@ export function layoutSessions({ versions, activeId, gapMs, pendingId = null }: 
   const rows = sessions.map((list, i): SessionRow => ({
     versions: list,
     durationMs: timeOf(list[list.length - 1]) - timeOf(list[0]),
-    forks: [...(i === 0 ? forksFrom.get(null) ?? [] : []), ...list.flatMap((x) => forksFrom.get(x.id) ?? [])],
+    // Newest first, like the column.
+    forks: [...(i === 0 ? forksFrom.get(null) ?? [] : []), ...list.flatMap((x) => forksFrom.get(x.id) ?? [])]
+      .sort((a, b) => byTime(b.line[b.line.length - 1], a.line[a.line.length - 1])),
   }));
+  return { lineage: mine, days: byDay(rows.reverse(), (row) => row.versions[0]), ghost };
+}
 
-  const days: DayGroup[] = [];
-  for (const row of rows.reverse()) {
-    const day = startOfDay(new Date(timeOf(row.versions[0])));
+/** `rows` under day headers, in the order given, by the day `start` of each falls on. */
+export function byDay<T>(rows: T[], start: (row: T) => Version): { day: number; rows: T[] }[] {
+  const days: { day: number; rows: T[] }[] = [];
+  for (const row of rows) {
+    const day = startOfDay(new Date(timeOf(start(row))));
     if (days.length === 0 || days[days.length - 1].day !== day) days.push({ day, rows: [] });
     days[days.length - 1].rows.push(row);
   }
-  return { lineage: mine, days, ghost };
+  return days;
 }
 
 /** Checkpoints in keyboard order: top to bottom, newest first within a row, open forks included. */
