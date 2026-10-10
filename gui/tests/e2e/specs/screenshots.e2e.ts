@@ -50,9 +50,9 @@ async function jpeg(): Promise<Buffer> {
 
 describe('Screenshots', () => {
   before(async function () {
+    await $('button=Skip, I’ll explore').click();
     // Linux, and Windows before 11 (CI runners included), have no screenshots.
     if (!(await invoke<boolean>('screenshots_supported'))) this.skip();
-    await $('button=Skip, I’ll explore').click();
   });
 
   it('offers the screenshot setting on Windows 11, off until turned on', async () => {

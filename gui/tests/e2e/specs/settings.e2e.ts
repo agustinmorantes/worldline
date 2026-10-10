@@ -73,14 +73,15 @@ describe('Settings', () => {
     renameSync(remote, away);
     try {
       await card.click();
-      await expect(card).toHaveText(/Cloud folder not available/);
+      // Its state, not its text: on a small screen the rail folds the status line away.
+      await expect(card).toHaveAttribute('data-state', 'unavailable');
       await expect(unavailable).toBeDisplayed();
     } finally {
       renameSync(away, remote);
     }
 
     await card.click();
-    await expect(card).toHaveText(/Synced/);
+    await expect(card).toHaveAttribute('data-state', 'synced');
     await expect(unavailable).not.toBeDisplayed();
   });
 
