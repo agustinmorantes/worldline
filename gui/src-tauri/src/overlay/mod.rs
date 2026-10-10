@@ -409,6 +409,10 @@ mod windows {
         let Some(id) = lock(&overlay.naming).focus_lost(win::root(hwnd)) else {
             return;
         };
+        info!(
+            "overlay: the naming card lost the focus to {}",
+            win::exe_of(hwnd).unwrap_or_default()
+        );
         if let Err(err) = app.emit_to(LABEL, "naming-leave", id) {
             warn!("overlay: couldn't close the naming card: {err}");
         }
@@ -744,6 +748,7 @@ mod windows {
         let Some(session) = lock(&overlay.naming).close(id, Place::Overlay, how) else {
             return;
         };
+        info!("overlay: the naming card closed: {how:?}");
         // Unrenamed, it keeps the press's name: the Kept popup then shows no name, which is true.
         let name = rename(app, &session, how, typed).unwrap_or_else(|_| session.auto.clone());
         lock(&overlay.naming).named(id, name);
