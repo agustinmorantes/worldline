@@ -261,7 +261,7 @@ main { position: relative; overflow-x: clip; }
 .stepHi { fill: none; stroke: oklch(100% 0 0 / .1); stroke-width: 1.5; }
 .grip { fill: oklch(0% 0 0 / .22); stroke: oklch(100% 0 0 / .07); stroke-width: 1.5; }
 .ridge { fill: none; stroke: oklch(0% 0 0 / .45); stroke-width: 3; }
-.engr { font: 700 14px Figtree, sans-serif; letter-spacing: 4px; text-anchor: middle; fill: oklch(100% 0 0 / .32); }
+.engr { font: 700 10px Figtree, sans-serif; letter-spacing: 3px; text-anchor: middle; fill: oklch(100% 0 0 / .32); }
 .emb { font: 800 20px 'Bricolage Grotesque', sans-serif; letter-spacing: 5px; text-anchor: middle; fill: oklch(100% 0 0 / .24); }
 .glassTube { fill: none; stroke: oklch(100% 0 0 / .1); stroke-width: 20; stroke-linecap: round; }
 .core { fill: none; stroke: url(#wTube); stroke-width: 8; stroke-linecap: round; transition: opacity 500ms; }
@@ -548,7 +548,7 @@ main { position: relative; overflow-x: clip; }
 .sync .nb { width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: var(--el); color: var(--tx); }
 .sync .nb svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .sync .hub .nb { background: var(--acc-soft); color: var(--acc); box-shadow: inset 0 0 0 1.5px var(--acc-line); }
-.sync .deckn .nb { color: var(--deck); }
+.sync .devn .nb { color: var(--deck); }
 .wire { position: relative; height: 2px; margin-bottom: 26px; background: repeating-linear-gradient(90deg, var(--ln) 0 6px, transparent 6px 10px); }
 .wire i { position: absolute; top: -3px; left: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 10px var(--acc); animation: travel 2.2s var(--ez) infinite; }
 .wire.rev i { background: var(--deck); box-shadow: 0 0 10px var(--deck); animation-direction: reverse; animation-delay: 1.1s; }
