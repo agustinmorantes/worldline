@@ -136,7 +136,8 @@ fn running_games(dirs: &[(i32, String)], executables: &[(u32, &Path)]) -> HashMa
         .collect()
 }
 
-/// The processes whose executable lives under `dir`.
+/// The processes whose executable lives under `dir`. Only screenshots need it.
+#[cfg(windows)]
 pub fn pids_under(dir: &str) -> Vec<u32> {
     let mut system = sysinfo::System::new();
     system.refresh_processes_specifics(
