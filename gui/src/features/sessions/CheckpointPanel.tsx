@@ -184,12 +184,14 @@ export function ScreenshotSlot({ versionId, tint }: { versionId: number; tint: s
 
   return (
     <motion.div
-      className="relative overflow-hidden transition-[background] duration-500"
-      style={{ background: tint }}
+      className="relative overflow-hidden"
       initial={false}
       animate={{ height: open ? SHOT.height : LINE }}
       transition={transition}
     >
+      {/* The tint stays under the image's bottom edge: behind the card's rounded corners it
+          would bleed through their antialiasing. */}
+      <span aria-hidden="true" className="absolute inset-x-0 bottom-0 transition-[background] duration-500" style={{ height: LINE, background: tint }} />
       {/* Cleanup can take the screenshot away; it fades as the slot folds back into the line. */}
       <AnimatePresence initial={false}>
         {src !== null && (
