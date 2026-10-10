@@ -168,9 +168,11 @@ impl Loop {
         self.reload(&mut debouncer, false);
         self.set_worker(self.settings.screenshots_enabled);
         // One checkpoint per game on startup catches edits made while closed;
-        // it is a no-op when nothing changed.
+        // it is a no-op when nothing changed. One the cooldown defers still
+        // shows them as unrecorded.
         for game in &self.games {
             self.scheduler.changed(game.game.id);
+            self.check_unrecorded(game.game.id);
         }
         loop {
             let now = Utc::now().naive_utc();
@@ -200,12 +202,20 @@ impl Loop {
                         - self.settings.snapshot_debounce_seconds)
                         .abs()
                         > f32::EPSILON;
+                    let cooldown =
+                        settings.version_cooldown_minutes != self.settings.version_cooldown_minutes;
                     self.settings = settings;
                     if rebuild {
                         debouncer = self.debouncer();
                         self.reload(&mut debouncer, false);
                     }
                     self.set_worker(settings.screenshots_enabled);
+                    // A new cooldown moves when pending games are due.
+                    if cooldown {
+                        for game_id in self.scheduler.pending() {
+                            self.check_unrecorded(game_id);
+                        }
+                    }
                 }
                 Ok(event @ (Event::Checkpointed { .. } | Event::Shot { .. })) => self.settle(event),
                 Ok(Event::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
@@ -240,6 +250,7 @@ impl Loop {
                         self.scheduler.completed(game);
                     } else {
                         self.scheduler.failed(game, Utc::now().naive_utc());
+                        self.check_unrecorded(game);
                     }
                 }
             }
@@ -325,7 +336,34 @@ impl Loop {
             self.scheduler.changed(game_id);
             self.notify(Notification::ChangeDetected { game_id });
             self.request_shot(game_id, !rescan);
+            self.check_unrecorded(game_id);
         }
+    }
+
+    /// Records whether the game's live saves differ from its active version,
+    /// unless its capture runs now and settles that itself. They're due at the
+    /// latest of the cooldown's end, a failed capture's retry and the debounce's end.
+    fn check_unrecorded(&self, game_id: i32) {
+        let now = Utc::now().naive_utc();
+        let Some(eligible) = self.eligible_at(game_id) else {
+            return;
+        };
+        let retry = self.scheduler.retry_at(game_id);
+        if !self.suppression.is_active() && retry.is_none() && eligible.is_none_or(|at| at <= now) {
+            return;
+        }
+        let due_at = eligible
+            .unwrap_or(now)
+            .max(retry.unwrap_or(now))
+            .max(now + self.debounce());
+        // A check that fails keeps what the last one found; the capture reports real trouble.
+        if let Err(error) = self.target.check_unrecorded(game_id, due_at) {
+            eprintln!("Cannot check game {game_id} for unrecorded changes: {error:#}");
+        }
+    }
+
+    fn debounce(&self) -> Duration {
+        Duration::milliseconds((self.settings.snapshot_debounce_seconds * 1000.0) as i64)
     }
 
     /// Starts the screenshot worker while screenshots are on (and supported),
@@ -358,10 +396,9 @@ impl Loop {
                 created,
                 started,
             } => {
-                let debounce = Duration::milliseconds(
-                    (self.settings.snapshot_debounce_seconds * 1000.0) as i64,
-                );
-                let attach = self.shots.checkpointed(game_id, created, started, debounce);
+                let attach = self
+                    .shots
+                    .checkpointed(game_id, created, started, self.debounce());
                 attach.map(|attach| (game_id, attach))
             }
             Event::Shot { game_id, jpeg } => self
@@ -498,6 +535,10 @@ mod tests {
         fn attach_screenshot(&self, _version_id: i32, _jpeg: &[u8]) -> anyhow::Result<()> {
             Ok(())
         }
+
+        fn check_unrecorded(&self, _game_id: i32, _due_at: NaiveDateTime) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     /// Events still inside the debouncer never reach the scheduler, so
@@ -578,6 +619,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .send((version_id, jpeg.to_vec()));
+            Ok(())
+        }
+
+        fn check_unrecorded(&self, _game_id: i32, _due_at: NaiveDateTime) -> anyhow::Result<()> {
             Ok(())
         }
     }

@@ -64,6 +64,8 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
   switch (cmd) {
     case 'get_running_games':
       return [...(state.running ?? [])];
+    case 'get_unrecorded_changes':
+      return [...(state.unrecorded ?? [])];
     case 'get_games':
       return structuredClone(state.games);
     case 'get_game':
@@ -74,6 +76,11 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       const slot = state.games.find((g) => g.versions.some((v) => v.id === versionId))?.active_slot ?? null;
       if (slot === null) throw new Error(`Version ${String(versionId)} not found`);
       slot.active_version_id = versionId as number;
+      // The live saves now match a checkpoint: nothing left to record.
+      if (state.unrecorded?.some(([id]) => id === slot.game_id) === true) {
+        state.unrecorded = state.unrecorded.filter(([id]) => id !== slot.game_id);
+        void emit('unrecorded-changes', [slot.game_id, null]);
+      }
       return null;
     }
     case 'tag_version': {

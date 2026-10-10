@@ -18,7 +18,7 @@ use crate::sync::{
 use crate::sync_loop::{SyncLoop, Trigger};
 use crate::transfer::{Completeness, Heal, Transfer};
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use diesel::SqliteConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel_migrations::MigrationHarness;
@@ -94,6 +94,12 @@ struct Inner {
     sync_trigger: mpsc::Sender<Trigger>,
     /// Tells the watcher, when it runs, that a checkpoint completed.
     checkpoints: OnceLock<Checkpoints>,
+    /// Games whose live saves differ from their active version, with when the
+    /// watcher captures them. Device-local.
+    unrecorded: Mutex<HashMap<i32, NaiveDateTime>>,
+    /// Where changes to `unrecorded` are notified, while the watcher runs;
+    /// dropped on shutdown so the notifications end.
+    notifications: Mutex<Option<mpsc::Sender<Notification>>>,
 }
 
 impl Inner {
@@ -120,7 +126,26 @@ impl Inner {
         if let Some(checkpoints) = self.checkpoints.get() {
             checkpoints.completed(game.game.id, started, &outcome);
         }
+        // Whatever the outcome, the active version now holds the live saves.
+        self.set_unrecorded(game.game.id, None);
         Ok(outcome)
+    }
+
+    /// Sets the game's unrecorded changes to `due_at`, or clears them with
+    /// `None`, and notifies when that changes them.
+    fn set_unrecorded(&self, game_id: i32, due_at: Option<NaiveDateTime>) {
+        let mut unrecorded = self.unrecorded.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = match due_at {
+            Some(due_at) => unrecorded.insert(game_id, due_at) != Some(due_at),
+            None => unrecorded.remove(&game_id).is_some(),
+        };
+        // Still under the lock, so notifications arrive in the order of the changes.
+        if changed
+            && let Some(notifications) =
+                &*self.notifications.lock().unwrap_or_else(|e| e.into_inner())
+        {
+            let _ = notifications.send(Notification::UnrecordedChanges { game_id, due_at });
+        }
     }
 }
 
@@ -151,6 +176,17 @@ impl CaptureTarget for Inner {
     fn attach_screenshot(&self, version_id: i32, jpeg: &[u8]) -> Result<()> {
         store::with_lock(self.history.root(), || {
             self.history.write_screenshot(version_id, jpeg)
+        })
+    }
+
+    /// Under the repository lock, so no checkpoint lands between the check
+    /// and the update.
+    fn check_unrecorded(&self, game_id: i32, due_at: NaiveDateTime) -> Result<()> {
+        store::with_lock(self.history.root(), || {
+            let game = self.history.index.get_game(game_id)?;
+            let differs = self.history.live_differs(&game)?;
+            self.set_unrecorded(game_id, differs.then_some(due_at));
+            Ok(())
         })
     }
 }
@@ -231,14 +267,16 @@ impl WorldlineCore {
                 .context("Failed to settle an interrupted restore")?
                 .rolled_back;
         let (sync_trigger, triggers) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
         let inner = Arc::new(Inner {
             history,
             suppression: Suppression::default(),
             txn_root: data_dir.join("txn"),
             sync_trigger,
             checkpoints: OnceLock::new(),
+            unrecorded: Mutex::new(HashMap::new()),
+            notifications: Mutex::new(None),
         });
-        let (tx, rx) = mpsc::channel();
         let core = Self {
             inner,
             watcher: Mutex::new(None),
@@ -259,6 +297,11 @@ impl WorldlineCore {
             if let Some(seconds) = options.debounce_seconds {
                 settings.snapshot_debounce_seconds = seconds;
             }
+            *core
+                .inner
+                .notifications
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
             let target: Arc<dyn CaptureTarget> = core.inner.clone();
             let watcher = Watcher::start(
                 target,
@@ -329,6 +372,11 @@ impl WorldlineCore {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         drop(watcher);
+        self.inner
+            .notifications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         let sync_loop = self
             .sync_loop
             .lock()
@@ -349,6 +397,20 @@ impl WorldlineCore {
     /// opened with `watch`. Starts and stops are also notified.
     pub fn running_games(&self) -> Vec<i32> {
         self.running_games.ids()
+    }
+
+    /// The games whose live saves differ from their active version, with when
+    /// the watcher captures them; empty unless opened with `watch`. Changes
+    /// are also notified; every checkpoint and restore clears its game's.
+    pub fn unrecorded_changes(&self) -> Vec<(i32, NaiveDateTime)> {
+        let unrecorded = self
+            .inner
+            .unrecorded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut changes: Vec<_> = unrecorded.iter().map(|(&id, &at)| (id, at)).collect();
+        changes.sort_unstable();
+        changes
     }
 
     /// Whether screenshots can be taken on this device (Windows 11 or later).
@@ -2370,6 +2432,50 @@ mod tests {
         };
         let active = core.get_game(game_id).unwrap().last_version.unwrap();
         (core.get_version(created.id).unwrap().version, active)
+    }
+
+    #[test]
+    fn live_saves_differ_by_content_as_a_checkpoint_would_see_them() {
+        let (core, game_id, _data, saves) = changed_game();
+        let differs = || {
+            core.history()
+                .live_differs(&core.get_game(game_id).unwrap())
+                .unwrap()
+        };
+        let save = saves.path().join("save.dat");
+        assert!(differs(), "content changed");
+        core.checkpoint(game_id).unwrap();
+        assert!(!differs(), "unchanged");
+        // The same bytes, written later.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&save, "level 2").unwrap();
+        assert!(!differs(), "same bytes rewritten");
+        std::fs::write(saves.path().join("output.log"), "noise").unwrap();
+        assert!(!differs(), "an excluded file");
+        std::fs::write(saves.path().join("extra.dat"), "new").unwrap();
+        assert!(differs(), "a file added");
+        core.checkpoint(game_id).unwrap();
+        std::fs::remove_file(&save).unwrap();
+        assert!(differs(), "a file removed");
+    }
+
+    #[test]
+    fn an_empty_game_without_versions_has_nothing_unrecorded() {
+        let data = tempfile::tempdir().unwrap();
+        let saves = tempfile::tempdir().unwrap();
+        let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+        let game = core
+            .save_game(
+                GameForm {
+                    id: None,
+                    title: "Empty".into(),
+                },
+                Some(vec![saves.path().to_string_lossy().into_owned()]),
+            )
+            .unwrap();
+        let game = core.get_game(game.id).unwrap();
+        assert!(game.last_version.is_none());
+        assert!(!core.history().live_differs(&game).unwrap());
     }
 
     #[test]

@@ -28,6 +28,8 @@ export interface Fixture {
   takenShortcuts?: string[];
   /** What `get_running_games` answers: ids of the games running now. */
   running?: number[];
+  /** What `get_unrecorded_changes` answers: [game id, due] for the saves not recorded yet. */
+  unrecorded?: [number, string][];
 }
 
 const minutesAgo = (minutes: number): string => naive(new Date(Date.now() - minutes * 60_000));
@@ -292,6 +294,8 @@ export const FIXTURES = {
   cloudOff: () => ({ ...base([eldenRing(), hollowKnight()]), pickedFolder: 'D:/Dropbox/Worldline' }),
   /** Elden Ring is running; its row and header say "Recording". */
   running: () => ({ ...base([eldenRing(), hollowKnight()]), running: [1] }),
+  /** Elden Ring saved since its checkpoint; the watcher records it in 12 minutes. */
+  unrecorded: () => ({ ...base([eldenRing(), hollowKnight()]), running: [1], unrecorded: [[1, minutesAgo(-12)]] as [number, string][] }),
 } satisfies Record<string, () => Fixture>;
 
 export type FixtureName = keyof typeof FIXTURES;

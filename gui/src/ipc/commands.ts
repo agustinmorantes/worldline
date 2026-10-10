@@ -26,6 +26,8 @@ import type { OverlayPrefs } from '@/shared/prefs/schema';
 export const getGames = (): Promise<FullGame[]> => invoke('get_games');
 export const getGame = (id: number): Promise<FullGame> => invoke('get_game', { id });
 export const getRunningGames = (): Promise<number[]> => invoke('get_running_games');
+/** [game id, due (naive UTC)] for the games whose saves changed since their current checkpoint. */
+export const getUnrecordedChanges = (): Promise<[number, string][]> => invoke('get_unrecorded_changes');
 /** Creates or updates a game; `dirs` replaces its tracked directories when given. */
 export const saveGame = (game: GameForm, dirs: string[] | null): Promise<Game> =>
   invoke('save_game', { game, dirs });

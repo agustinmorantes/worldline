@@ -27,6 +27,16 @@ impl Scheduler {
         self.pending.contains_key(&game)
     }
 
+    /// The games awaiting capture.
+    pub fn pending(&self) -> Vec<i32> {
+        self.pending.keys().copied().collect()
+    }
+
+    /// When a failed game is retried, if it failed.
+    pub fn retry_at(&self, game: i32) -> Option<NaiveDateTime> {
+        self.pending.get(&game).and_then(|pending| pending.retry_at)
+    }
+
     /// Games to capture now. `eligible_at` gives the end of a game's cooldown,
     /// or `None` when the game no longer exists (it is then dropped).
     pub fn due(

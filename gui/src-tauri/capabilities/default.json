@@ -20,6 +20,7 @@
     "allow-get-games",
     "allow-get-game",
     "allow-get-running-games",
+    "allow-get-unrecorded-changes",
     "allow-save-game",
     "allow-delete-game",
     "allow-untrack-game",

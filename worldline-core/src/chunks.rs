@@ -26,6 +26,30 @@ pub struct CaptureRoot<'a> {
 /// Captures every regular file below `roots` into `store` and returns the
 /// canonical manifest (sorted by tracked dir, then path).
 pub fn capture(store: &Store, roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
+    manifest(Some(store), roots)
+}
+
+/// The manifest `capture` would return, without chunk hashes and without
+/// writing anything. A file that keeps changing while it is read is a
+/// `KeptChanging` error.
+pub fn hash(roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
+    manifest(None, roots)
+}
+
+/// A file the game kept writing while it was read.
+#[derive(Debug)]
+pub struct KeptChanging(PathBuf);
+
+impl std::fmt::Display for KeptChanging {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} kept changing while it was read", self.0.display())
+    }
+}
+
+impl std::error::Error for KeptChanging {}
+
+/// `store`: where the chunks go; `None` only hashes the files.
+fn manifest(store: Option<&Store>, roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
     for root in roots {
         let mut files = Vec::new();
@@ -47,7 +71,7 @@ pub fn capture(store: &Store, roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
 /// Captures `source`, reading it again when its size or modified time changed
 /// during the read (the game was writing it), so a torn file is never recorded.
 fn capture_stable(
-    store: &Store,
+    store: Option<&Store>,
     tracked_dir_uuid: Uuid,
     path: String,
     source: &Path,
@@ -62,7 +86,7 @@ fn capture_stable(
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    bail!("{} kept changing while it was read", source.display())
+    Err(KeptChanging(source.to_path_buf()).into())
 }
 
 fn stamp(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
@@ -72,7 +96,7 @@ fn stamp(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
 }
 
 fn capture_file(
-    store: &Store,
+    store: Option<&Store>,
     tracked_dir_uuid: Uuid,
     path: String,
     source: &Path,
@@ -86,9 +110,11 @@ fn capture_file(
     let mut store_chunk = |data: &[u8]| -> Result<()> {
         whole.update(data);
         total += data.len() as u64;
-        let hash = format_hash(&Sha256::digest(data));
-        put_chunk(store, &hash, data)?;
-        chunks.push(hash);
+        if let Some(store) = store {
+            let hash = format_hash(&Sha256::digest(data));
+            put_chunk(store, &hash, data)?;
+            chunks.push(hash);
+        }
         Ok(())
     };
     if size < SINGLE_CHUNK_LIMIT {

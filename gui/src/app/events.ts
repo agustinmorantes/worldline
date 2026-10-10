@@ -6,6 +6,7 @@ import {reportError} from "@/shared/errors/report";
 import {getT} from "@/shared/i18n";
 import {isFolderUnreachable, setSyncOutcome, setSyncRunning} from "@/features/library/sync-activity";
 import {withRunning} from "@/features/library/library";
+import {withUnrecorded} from "@/features/sessions/sessions";
 
 export function listenNotifications(): void {
   void on("version-created", ([gameId, versionNumber]) => {
@@ -45,6 +46,15 @@ export function listenNotifications(): void {
 
   void on('game-stopped', (gameId) => {
     queryClient.setQueryData<number[]>(['running-games'], (ids) => withRunning(ids, gameId, false));
+  });
+
+  void on('unrecorded-changes', ([gameId, dueAt]) => {
+    // A read on its way may predate the change; reading again gets it.
+    if (queryClient.isFetching({ queryKey: ['unrecorded-changes'] }) > 0) {
+      void queryClient.invalidateQueries({ queryKey: ['unrecorded-changes'] });
+      return;
+    }
+    queryClient.setQueryData<[number, string][]>(['unrecorded-changes'], (entries) => withUnrecorded(entries, gameId, dueAt));
   });
 
   void on('sync-started', () => {

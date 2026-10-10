@@ -29,6 +29,9 @@ export interface Events {
   /** A game's process started or its last one exited; the payload is the game id. */
   'game-started': number;
   'game-stopped': number;
+  /** [game id, due]: the saves changed since the current checkpoint and the watcher records them
+   * at `due` (naive UTC, see `utcDate`); `null` once they match it again or were recorded. */
+  'unrecorded-changes': [number, string | null];
   /** To the overlay webview: show a popup, or swap the one showing. */
   'overlay-show': OverlayShow;
   /** To the overlay webview: play popup `id`'s exit; `fast` when the game left the front. */
