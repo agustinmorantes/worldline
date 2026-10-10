@@ -9,6 +9,8 @@ npx serve .     # or: python -m http.server
 - The download buttons point at `/releases/latest` and, once the repository is public, `main.js` asks the GitHub API for the latest release and links the installer for the visitor's OS directly (`*-setup.exe`/`.msi` on Windows, `.AppImage`/`.deb` on Linux).
 - Once the repository is public, the GitHub links show the live star count, and a one-time prompt asks visitors to star the repo after they finish the demo or reach the end of the page (dismissal is remembered in `localStorage`).
 - If the repository is renamed, update `REPO` in `main.js` and the `github.com/...` links in `index.html`.
+- The page assumes it lives at `https://agustinmorantes.github.io/worldline/`. If that changes (a rename or a custom domain), update the canonical, `og:url`, `og:image` and JSON-LD URLs in `index.html`, plus `robots.txt` and `sitemap.xml`.
+- `og-image.jpg` is the 1200×630 link preview: a screenshot of the hero without the title bar or buttons. Retake it if the hero changes.
 - Colors and type follow the app's design tokens. The whole page is driven by one hue (`--h`), like a game's accent in the app.
 
 ## Deploy
