@@ -365,7 +365,11 @@ fn change(
     panic!("{contents:?} was not reported unrecorded");
 }
 
-fn add_watched_game(core: &WorldlineCore, saves: &std::path::Path) -> i32 {
+/// Adds the game before any watcher runs: a watcher starting while the game is
+/// added can see it without its first version, and capture the next change
+/// at once instead of leaving it unrecorded.
+fn add_game(data: &std::path::Path, saves: &std::path::Path) -> i32 {
+    let (core, _) = WorldlineCore::open(data, OpenOptions::default()).unwrap();
     core.save_game(
         GameForm {
             id: None,
@@ -382,9 +386,9 @@ fn a_change_inside_the_cooldown_is_unrecorded_until_captured() {
     let data = tempfile::tempdir().unwrap();
     let saves = tempfile::tempdir().unwrap();
     let save = saves.path().join("save.dat");
-    let (core, rx) = open_cooling(data.path());
     fs::write(&save, "before the death").unwrap();
-    let game = add_watched_game(&core, saves.path());
+    let game = add_game(data.path(), saves.path());
+    let (core, rx) = open_cooling(data.path());
     let first = core.get_game(game).unwrap().last_version.unwrap();
 
     let due_at = change(&rx, game, &save, "after the death");
@@ -403,9 +407,9 @@ fn a_new_cooldown_moves_when_unrecorded_changes_are_due() {
     let data = tempfile::tempdir().unwrap();
     let saves = tempfile::tempdir().unwrap();
     let save = saves.path().join("save.dat");
-    let (core, rx) = open_cooling(data.path());
     fs::write(&save, "before the death").unwrap();
-    let game = add_watched_game(&core, saves.path());
+    let game = add_game(data.path(), saves.path());
+    let (core, rx) = open_cooling(data.path());
     let first = core.get_game(game).unwrap().last_version.unwrap();
     change(&rx, game, &save, "after the death");
 
@@ -425,9 +429,9 @@ fn the_same_bytes_written_again_are_not_unrecorded() {
     let data = tempfile::tempdir().unwrap();
     let saves = tempfile::tempdir().unwrap();
     let save = saves.path().join("save.dat");
-    let (core, rx) = open_cooling(data.path());
     fs::write(&save, "same").unwrap();
-    let game = add_watched_game(&core, saves.path());
+    let game = add_game(data.path(), saves.path());
+    let (core, rx) = open_cooling(data.path());
 
     let mut seen = false;
     for _ in 0..20 {
@@ -457,9 +461,9 @@ fn a_change_made_while_the_app_was_closed_is_unrecorded_on_start() {
     let data = tempfile::tempdir().unwrap();
     let saves = tempfile::tempdir().unwrap();
     let save = saves.path().join("save.dat");
-    let (core, _) = open_cooling(data.path());
     fs::write(&save, "before").unwrap();
-    let game = add_watched_game(&core, saves.path());
+    let game = add_game(data.path(), saves.path());
+    let (core, _) = open_cooling(data.path());
     let first = core.get_game(game).unwrap().last_version.unwrap();
     drop(core);
 
@@ -475,9 +479,9 @@ fn checkpoint_keep_and_restore_clear_unrecorded_changes() {
     let data = tempfile::tempdir().unwrap();
     let saves = tempfile::tempdir().unwrap();
     let save = saves.path().join("save.dat");
-    let (core, rx) = open_cooling(data.path());
     fs::write(&save, "first").unwrap();
-    let game = add_watched_game(&core, saves.path());
+    let game = add_game(data.path(), saves.path());
+    let (core, rx) = open_cooling(data.path());
     let first = core.get_game(game).unwrap().last_version.unwrap();
 
     change(&rx, game, &save, "second");
