@@ -329,6 +329,7 @@ function initDemo() {
       await walkTo(CPS.c5.x, wait);
       await save('c5', wait);
       Object.assign(s, { step: 4, phase: 'done' });
+      document.dispatchEvent(new Event('demo-done'));
     }),
   };
 
@@ -386,7 +387,63 @@ function reveals() {
   });
 }
 
+/* ---------- Stars ---------- */
+
+const fmtStars = (n) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(n < 10000 ? 1 : 0).replace(/\.0$/, '')}k`);
+
+async function wireStars() {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}`, {
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (!res.ok) return; // private or rate-limited: the badges stay hidden
+    const n = (await res.json()).stargazers_count;
+    if (typeof n !== 'number') return;
+    $$('[data-stars]').forEach((el) => {
+      el.querySelector('b').textContent = fmtStars(n);
+      el.hidden = false;
+      if (!reduced) el.classList.add('bump');
+    });
+  } catch {}
+}
+
+// A one-time nudge once the visitor has seen the demo through or reached the end of the page.
+function starPrompt() {
+  const KEY = 'wl-star-ask';
+  const ask = $('[data-star-ask]');
+  try {
+    if (localStorage.getItem(KEY)) return;
+  } catch {}
+
+  let shown = false;
+  const show = () => {
+    if (shown) return;
+    shown = true;
+    setTimeout(() => (ask.hidden = false), 1200);
+  };
+  const dismiss = () => {
+    try { localStorage.setItem(KEY, '1'); } catch {}
+    if (reduced) return void (ask.hidden = true);
+    ask.classList.add('out');
+    ask.addEventListener('animationend', () => (ask.hidden = true), { once: true });
+  };
+
+  document.addEventListener('demo-done', show, { once: true });
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { io.disconnect(); show(); }
+    }, { threshold: 0.6 });
+    io.observe($('.outro'));
+  }
+
+  $('[data-star-close]').addEventListener('click', dismiss);
+  $('[data-star-go]').addEventListener('click', dismiss);
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && !ask.hidden && dismiss());
+}
+
 wireDownloads();
+wireStars();
+starPrompt();
 animateIcon();
 wireLibrary();
 initDemo();
