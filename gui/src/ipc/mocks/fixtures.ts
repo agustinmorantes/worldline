@@ -24,6 +24,8 @@ export interface Fixture {
   scanRoots?: string[];
   /** What `pick_folder` answers; unset, the picker is cancelled. */
   pickedFolder?: string;
+  /** Shortcuts `check_shortcut` refuses, as if another app held them. */
+  takenShortcuts?: string[];
   /** What `get_running_games` answers: ids of the games running now. */
   running?: number[];
 }

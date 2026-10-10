@@ -2,6 +2,7 @@ mod common;
 
 use common::Device;
 use std::fs;
+use worldline_core::detection::BranchFrom;
 use worldline_core::history::CheckpointOutcome;
 use worldline_core::models::GameForm;
 use worldline_core::{OpenOptions, WorldlineCore};
@@ -34,6 +35,169 @@ fn an_empty_folder_without_history_records_nothing() {
         device.core.checkpoint(game.game.id).unwrap(),
         CheckpointOutcome::Empty
     ));
+}
+
+/// Keeps and returns the outcome holding the version as tagged, which must succeed.
+fn keep(device: &Device, game_id: i32) -> (CheckpointOutcome, Option<BranchFrom>) {
+    let kept = device
+        .core
+        .keep(game_id, "Kept in game, 21:04", || true)
+        .unwrap()
+        .expect("the keep stands");
+    let outcome = match (kept.checkpoint, kept.tagged) {
+        (CheckpointOutcome::Created(_), Some(tagged)) => {
+            CheckpointOutcome::Created(tagged.unwrap())
+        }
+        (CheckpointOutcome::Unchanged(_), Some(tagged)) => {
+            CheckpointOutcome::Unchanged(tagged.unwrap())
+        }
+        (outcome, tagged) => {
+            assert!(tagged.is_none(), "nothing captured, nothing tagged");
+            outcome
+        }
+    };
+    (outcome, kept.branch_from)
+}
+
+fn tag_of(device: &Device, version_id: i32) -> Option<String> {
+    device.core.get_version(version_id).unwrap().version.tag
+}
+
+#[test]
+fn keep_captures_changed_saves_now_and_tags_the_new_version() {
+    let device = Device::new();
+    device.write("save.dat", "level 1");
+    let game = device.add_game("Hollow Knight");
+    device.write("save.dat", "level 2");
+    let (outcome, branch_from) = keep(&device, game.game.id);
+    let CheckpointOutcome::Created(kept) = outcome else {
+        panic!("a new version: {outcome:?}");
+    };
+    assert_eq!(kept.tag.as_deref(), Some("Kept in game, 21:04"));
+    assert_eq!(tag_of(&device, kept.id), kept.tag);
+    assert_eq!(device.active_version(game.game.id).id, kept.id);
+    assert_eq!(branch_from, None);
+    // No cooldown between presses: the next change is captured at once.
+    device.write("save.dat", "level 3");
+    assert!(matches!(
+        keep(&device, game.game.id).0,
+        CheckpointOutcome::Created(v) if v.id != kept.id
+    ));
+}
+
+#[test]
+fn keep_tags_the_active_slots_latest_version_when_the_saves_havent_changed() {
+    let device = Device::new();
+    device.write("save.dat", "old");
+    let game = device.add_game("Celeste");
+    let old = device.active_version(game.game.id);
+    device.write("save.dat", "new");
+    let latest = device.checkpoint(game.game.id);
+    // After a restore the saves match the old version, but the slot's latest is the one kept.
+    device.core.restore_version(old.id).unwrap();
+    let versions = device.game(game.game.id).versions.len();
+
+    let (outcome, _) = keep(&device, game.game.id);
+    let CheckpointOutcome::Unchanged(kept) = outcome else {
+        panic!("unchanged: {outcome:?}");
+    };
+    assert_eq!(kept.id, latest.id);
+    assert_eq!(
+        tag_of(&device, latest.id).as_deref(),
+        Some("Kept in game, 21:04")
+    );
+    assert_eq!(tag_of(&device, old.id), None);
+    assert_eq!(device.active_version(game.game.id).id, old.id);
+    assert_eq!(device.game(game.game.id).versions.len(), versions);
+}
+
+#[test]
+fn keep_leaves_an_existing_tag_alone() {
+    let device = Device::new();
+    device.write("save.dat", "x");
+    let game = device.add_game("Hades");
+    let tip = device.active_version(game.game.id);
+    device
+        .core
+        .tag_version(tip.id, "Before the boss".into())
+        .unwrap();
+
+    let (outcome, _) = keep(&device, game.game.id);
+    assert_eq!(
+        outcome.version().and_then(|v| v.tag.as_deref()),
+        Some("Before the boss")
+    );
+    assert_eq!(tag_of(&device, tip.id).as_deref(), Some("Before the boss"));
+}
+
+#[test]
+fn a_rename_waits_for_the_keep_lock_and_keep_then_leaves_the_name_alone() {
+    let device = Device::new();
+    device.write("save.dat", "x");
+    let game = device.add_game("Hades");
+    let tip = device.active_version(game.game.id);
+    let renamed = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        // Held as keep holds it, between its capture and its tag.
+        worldline_core::store::with_lock(device.core.repository_root(), || {
+            let rename = scope.spawn(|| {
+                device
+                    .core
+                    .tag_version(tip.id, "Before the boss".into())
+                    .unwrap();
+                renamed.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(!renamed.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(!rename.is_finished(), "the rename waits for the lock");
+            Ok(())
+        })
+        .unwrap();
+    });
+    assert!(renamed.load(std::sync::atomic::Ordering::SeqCst));
+    let (outcome, _) = keep(&device, game.game.id);
+    assert_eq!(
+        outcome.version().and_then(|v| v.tag.as_deref()),
+        Some("Before the boss")
+    );
+    assert_eq!(tag_of(&device, tip.id).as_deref(), Some("Before the boss"));
+}
+
+#[test]
+fn keep_with_nothing_to_capture_or_a_blank_tag_changes_nothing() {
+    let device = Device::new();
+    let game = device.add_game("Empty");
+    assert!(matches!(
+        keep(&device, game.game.id).0,
+        CheckpointOutcome::Empty
+    ));
+    assert!(device.game(game.game.id).versions.is_empty());
+
+    let device = Device::new();
+    device.write("save.dat", "x");
+    let game = device.add_game("Untagged");
+    let tip = device.active_version(game.game.id);
+    device.write("save.dat", "y");
+    assert!(device.core.keep(game.game.id, "  ", || true).is_err());
+    // Refused before anything was captured or tagged.
+    assert_eq!(device.game(game.game.id).versions.len(), 1);
+    assert_eq!(tag_of(&device, tip.id), None);
+}
+
+#[test]
+fn a_keep_that_no_longer_stands_under_the_lock_changes_nothing() {
+    let device = Device::new();
+    device.write("save.dat", "x");
+    let game = device.add_game("Untagged");
+    let tip = device.active_version(game.game.id);
+    device.write("save.dat", "y");
+    let kept = device
+        .core
+        .keep(game.game.id, "Kept in game, 21:04", || false)
+        .unwrap();
+    assert!(kept.is_none());
+    assert_eq!(device.game(game.game.id).versions.len(), 1);
+    assert_eq!(tag_of(&device, tip.id), None);
 }
 
 #[test]

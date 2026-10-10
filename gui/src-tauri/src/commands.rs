@@ -382,8 +382,17 @@ fn set_tray_labels(labels: crate::tray::TrayLabels, app: tauri::AppHandle) -> Re
 fn set_overlay_config(
     config: crate::overlay::OverlayConfig,
     overlay: State<crate::overlay::Overlay>,
+    app: tauri::AppHandle,
 ) {
     overlay.set_config(config);
+    crate::overlay::config_changed(&app);
+}
+
+/// Settings' hotkey recorder: fails if another app holds `accelerator`. Async, so it runs off the
+/// main thread, which registering waits for.
+#[tauri::command]
+async fn check_shortcut(accelerator: String, app: tauri::AppHandle) -> Result<(), String> {
+    crate::overlay::check_shortcut(&app, &accelerator)
 }
 
 /// The GUI preferences file, kept with the rest of the app data.
@@ -441,6 +450,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         crate::dialogs::confirm,
         set_tray_labels,
         set_overlay_config,
+        check_shortcut,
         #[cfg(feature = "e2e")]
         crate::tray::e2e_tray_labels,
     ])

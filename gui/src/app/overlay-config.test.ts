@@ -12,10 +12,20 @@ import { setOverlayConfig } from '@/ipc/commands';
 
 describe('overlayConfig', () => {
   it('sends the overlay prefs with the resolved motion and language', () => {
-    expect(overlayConfig(DEFAULT_PREFS, false, ['es-AR'])).toEqual({ ...DEFAULT_PREFS.overlay, motion: 'full', language: 'es' });
+    expect(overlayConfig(DEFAULT_PREFS, false, ['es-AR'])).toEqual({
+      ...DEFAULT_PREFS.overlay,
+      motion: 'full',
+      language: 'es',
+      keptTagTemplate: 'Conservado en el juego, {time}',
+    });
     expect(overlayConfig(DEFAULT_PREFS, true, ['fr'])).toMatchObject({ motion: 'reduced', language: 'en' });
     expect(overlayConfig({ ...DEFAULT_PREFS, motion: 'full', language: 'en' }, true, ['es'])).toMatchObject({ motion: 'full', language: 'en' });
     expect(overlayConfig({ ...DEFAULT_PREFS, motion: 'reduced' }, false, [])).toMatchObject({ motion: 'reduced' });
+  });
+
+  it('sends the automatic tag in the resolved language, with the time left for Rust', () => {
+    expect(overlayConfig(DEFAULT_PREFS, false, ['fr'])).toMatchObject({ keptTagTemplate: 'Kept in game, {time}' });
+    expect(overlayConfig({ ...DEFAULT_PREFS, language: 'es' }, false, ['en'])).toMatchObject({ keptTagTemplate: 'Conservado en el juego, {time}' });
   });
 });
 
@@ -33,7 +43,7 @@ describe('pushOverlayConfig', () => {
     setPref('motion', 'reduced');
     expect(setOverlayConfig).toHaveBeenLastCalledWith(expect.objectContaining({ motion: 'reduced' }));
     setPref('language', 'es');
-    expect(setOverlayConfig).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'es' }));
+    expect(setOverlayConfig).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'es', keptTagTemplate: 'Conservado en el juego, {time}' }));
     expect(setOverlayConfig).toHaveBeenCalledTimes(4);
 
     // Preferences the overlay doesn't use push nothing.

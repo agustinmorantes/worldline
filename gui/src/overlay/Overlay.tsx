@@ -60,8 +60,10 @@ function linesOf(show: OverlayShow): [string, string] {
       ];
     case 'deviceAhead':
       return [t.ahead(show.device), t.aheadDetail(show.count)];
-    case 'captureFailed':
-      return [t.notSaved, `${show.reason === 'disk_full' ? t.diskFull : t.couldntWrite} · ${t.untouched}`];
+    case 'captureFailed': {
+      const reason = show.reason === 'disk_full' ? t.diskFull : t.couldntWrite;
+      return show.version === null ? [t.notSaved, `${reason} · ${t.untouched}`] : [t.notKept, `${reason} · ${t.savedAs(show.version)}`];
+    }
   }
 }
 

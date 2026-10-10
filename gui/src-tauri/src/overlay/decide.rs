@@ -86,7 +86,6 @@ pub enum Kind {
     SessionStart,
     NewTimeline,
     /// The Quick keep and Name it hotkeys (O3, O4) trigger it.
-    #[allow(dead_code)]
     Kept,
     /// A warning.
     DeviceAhead,
@@ -165,6 +164,37 @@ pub fn sound(kind: Kind, outcome: Outcome) -> Option<Sound> {
             Kind::DeviceAhead => Some(Sound::DeviceAhead),
             Kind::CaptureFailed => Some(Sound::CaptureFailed),
         },
+    }
+}
+
+/// What became of an event offered to the popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presented {
+    /// It showed or swapped in, with its sound.
+    Shown,
+    /// The popup turned it away (`Outcome::Drop` or `Skip`): it plays nothing.
+    Dropped,
+    /// No popup could show at all: off, globally or for the game, the game not in front, or no
+    /// window ready.
+    Unavailable,
+}
+
+impl From<Outcome> for Presented {
+    fn from(outcome: Outcome) -> Self {
+        match outcome {
+            Outcome::Show | Outcome::Swap => Presented::Shown,
+            Outcome::Drop | Outcome::Skip => Presented::Dropped,
+        }
+    }
+}
+
+/// The sound a hotkey still owes the player once its result was `presented`: its kind's, once,
+/// only when no popup could show and `sound` (the setting as it is now) is on. A popup that showed
+/// played its own; a dropped one stays silent.
+pub fn hotkey_sound(kind: Kind, presented: Presented, sound_on: bool) -> Option<Sound> {
+    match presented {
+        Presented::Unavailable if sound_on => sound(kind, Outcome::Show),
+        _ => None,
     }
 }
 
@@ -259,6 +289,11 @@ impl Popup {
         leaving
     }
 
+    /// The overlay webview listens for popups.
+    pub fn is_ready(&self) -> bool {
+        self.ready
+    }
+
     pub fn set_ready(&mut self) {
         self.ready = true;
     }
@@ -271,6 +306,9 @@ impl Popup {
         self.ready = false;
     }
 }
+
+/// A running game and its run: the one in front, for the hotkeys.
+pub type Front = (i32, u64);
 
 /// The running games that can get a popup: tracked, with an install dir. The overlay window
 /// exists while there is one. Each run of a game is armed for one session start.
@@ -325,6 +363,11 @@ impl Games {
     pub fn take_session(&mut self, game_id: i32) -> Option<u64> {
         let run = self.running.get_mut(&game_id)?;
         std::mem::take(&mut run.armed).then_some(run.id)
+    }
+
+    /// The game's current run, if it's running.
+    pub fn run(&self, game_id: i32) -> Option<u64> {
+        self.running.get(&game_id).map(|run| run.id)
     }
 
     /// The install dir of the game's run `run`, or `None` once that run has stopped.
@@ -650,6 +693,54 @@ mod tests {
             assert_eq!(sound(kind, D), None, "{kind:?}");
             assert_eq!(sound(kind, Sk), None, "{kind:?}");
         }
+    }
+
+    /// Quick keep's feedback: `present` turns admit's outcome into `Presented`, then the hotkey
+    /// plays what it still owes.
+    fn quick_keep_feedback(popup: &mut Popup, sound_on: bool) -> (Presented, Option<Sound>) {
+        let presented = if popup.is_ready() {
+            Presented::from(admit(&Games::default(), popup, Kept, None, false).0)
+        } else {
+            Presented::Unavailable
+        };
+        (presented, hotkey_sound(Kept, presented, sound_on))
+    }
+
+    #[test]
+    fn a_kept_result_dropped_under_a_warning_or_error_plays_nothing() {
+        for urgent in [Warn, Fail] {
+            let mut popup = ready();
+            assert_eq!(popup.offer(urgent, false).0, Sh);
+            assert_eq!(
+                quick_keep_feedback(&mut popup, true),
+                (Presented::Dropped, None)
+            );
+        }
+        // Over a checkpoint it swaps in and the popup plays the chime, so the hotkey doesn't.
+        let mut popup = ready();
+        popup.offer(Cp, false);
+        assert_eq!(
+            quick_keep_feedback(&mut popup, true),
+            (Presented::Shown, None)
+        );
+    }
+
+    #[test]
+    fn with_no_popup_possible_the_kept_sound_plays_once_if_the_sound_is_on() {
+        let mut popup = Popup::default();
+        assert_eq!(
+            quick_keep_feedback(&mut popup, true),
+            (Presented::Unavailable, Some(Sound::Kept))
+        );
+        assert_eq!(
+            quick_keep_feedback(&mut popup, false),
+            (Presented::Unavailable, None)
+        );
+        assert_eq!(
+            hotkey_sound(Fail, Presented::Unavailable, true),
+            Some(Sound::CaptureFailed)
+        );
+        assert_eq!(hotkey_sound(Fail, Presented::Shown, true), None);
     }
 
     #[test]

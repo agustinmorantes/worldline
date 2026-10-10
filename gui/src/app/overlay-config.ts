@@ -2,6 +2,8 @@
 // whenever they, the motion or the language change. Rust never reads `prefs.json`.
 import { error as logError } from '@tauri-apps/plugin-log';
 import { setOverlayConfig, type OverlayConfig } from '@/ipc/commands';
+import { en } from '@/shared/i18n/en';
+import { es } from '@/shared/i18n/es';
 import { resolveLocale } from '@/shared/i18n/locale';
 import { getPrefs, subscribePrefs } from '@/shared/prefs/prefs';
 import type { Prefs } from '@/shared/prefs/schema';
@@ -11,10 +13,12 @@ const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
 /** The config for `prefs`, with the motion and language resolved the way the app resolves them. */
 export function overlayConfig(prefs: Prefs, systemReduced: boolean, languages: readonly string[]): OverlayConfig {
   const reduced = prefs.motion === 'reduced' || (prefs.motion === 'system' && systemReduced);
+  const language = resolveLocale(prefs.language, languages);
   return {
     ...prefs.overlay,
     motion: reduced ? 'reduced' : 'full',
-    language: resolveLocale(prefs.language, languages),
+    language,
+    keptTagTemplate: { en, es }[language].overlay.keptTag('{time}'),
   };
 }
 

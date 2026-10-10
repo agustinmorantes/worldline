@@ -3,14 +3,19 @@
 //! placement and sound. The overlay webview (`gui/overlay.html`) only renders what it's sent,
 //! and says when its exit animation has ended.
 //!
-//! Windows only; elsewhere every entry point is a no-op. The hotkeys (O3, O4) build on the same
-//! popup and on the game in front.
+//! Windows only; elsewhere every entry point is a no-op. The hotkeys (`hotkeys.rs`) follow the
+//! game in front and share the popup.
 //!
-//! Never take `front`, `games` or `popup` on the main thread: window calls from other threads
-//! wait for the main thread, so a lock held there would deadlock them. Take them in that order.
+//! Never take `hotkeys`, `front`, `games` or `popup` on the main thread: window calls from other
+//! threads wait for the main thread, so a lock held there would deadlock them. Take them in that
+//! order.
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod decide;
+#[cfg(windows)]
+mod hotkeys;
+#[cfg(windows)]
+mod keep;
 #[cfg(windows)]
 mod sound;
 #[cfg(windows)]
@@ -35,11 +40,13 @@ pub struct OverlayConfig {
     per_game: HashMap<String, GameCorner>,
     quiet: bool,
     warn_ahead: bool,
-    /// The hotkeys (O3, O4).
-    #[allow(dead_code)]
+    /// The hotkeys' accelerators (`hotkeys::parse`); `""` is off.
     quick_keep_key: String,
+    /// Name it (O4).
     #[allow(dead_code)]
     name_it_key: String,
+    /// The hotkeys' automatic tag in the app language, with `{time}` to fill in.
+    kept_tag_template: String,
     motion: Motion,
     language: String,
 }
@@ -56,9 +63,9 @@ pub enum Motion {
 pub struct Overlay {
     /// `None` until the GUI pushes it; no popup shows before that.
     config: Mutex<Option<OverlayConfig>>,
-    /// The running game whose window is in front, if any.
+    /// The running game whose window is in front, if any, and its run.
     #[cfg_attr(not(windows), allow(dead_code))]
-    front: Mutex<Option<i32>>,
+    front: Mutex<Option<decide::Front>>,
     /// Also the lifecycle lock: the window and the foreground hook are only created or destroyed
     /// while it's held.
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -67,6 +74,14 @@ pub struct Overlay {
     popup: Mutex<decide::Popup>,
     #[cfg(windows)]
     hook: Mutex<Option<win::ForegroundHook>>,
+    /// The hotkeys registered now.
+    #[cfg(windows)]
+    hotkeys: Mutex<Vec<hotkeys::Entry>>,
+    #[cfg(windows)]
+    cooldown: Mutex<hotkeys::Cooldown>,
+    /// Moves on whenever the front, a run or the hotkeys change, so a late press is stale.
+    #[cfg(windows)]
+    generation: hotkeys::Generation,
 }
 
 impl Overlay {
@@ -80,7 +95,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[cfg(windows)]
-pub use windows::{checkpoint_failed, game_started, game_stopped, setup, version_created};
+use windows::pressed;
+#[cfg(windows)]
+pub use windows::{
+    check_shortcut, checkpoint_failed, config_changed, game_started, game_stopped, setup,
+    version_created,
+};
 
 #[cfg(not(windows))]
 pub fn setup(app: &tauri::App) {
@@ -106,10 +126,20 @@ pub fn version_created(
 #[cfg(not(windows))]
 pub fn checkpoint_failed(_app: &tauri::AppHandle, _game_id: i32, _reason: CaptureFailure) {}
 
+#[cfg(not(windows))]
+pub fn config_changed(_app: &tauri::AppHandle) {}
+
+/// No hotkeys here, so none is taken.
+#[cfg(not(windows))]
+pub fn check_shortcut(_app: &tauri::AppHandle, _accelerator: &str) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(windows)]
 mod windows {
-    use super::decide::{self, Kind, Outcome, Rect, Watch};
-    use super::{lock, sound, win, BranchFrom, CaptureFailure, Corner, Motion, Overlay};
+    use super::decide::{self, Kind, Outcome, Presented, Rect, Watch};
+    use super::hotkeys::{self, Action, Press};
+    use super::{keep, lock, sound, win, BranchFrom, CaptureFailure, Corner, Motion, Overlay};
     use crate::webview_memory::set_low_memory;
     use serde::Serialize;
     use std::sync::Arc;
@@ -172,6 +202,13 @@ mod windows {
         },
         CaptureFailed {
             reason: CaptureFailure,
+            /// A keep's version, captured but then not tagged; `None` when nothing was saved.
+            version: Option<i32>,
+        },
+        Kept {
+            version: i32,
+            /// What the player typed in the naming card (O4).
+            name: Option<String>,
         },
     }
 
@@ -183,6 +220,7 @@ mod windows {
                 Detail::SessionStart { .. } => Kind::SessionStart,
                 Detail::DeviceAhead { .. } => Kind::DeviceAhead,
                 Detail::CaptureFailed { .. } => Kind::CaptureFailed,
+                Detail::Kept { .. } => Kind::Kept,
             }
         }
     }
@@ -246,7 +284,10 @@ mod windows {
     pub fn game_stopped(app: &AppHandle, game_id: i32) {
         let overlay = app.state::<Overlay>();
         let mut games = lock(&overlay.games);
-        if games.stopped(game_id) {
+        let last = games.stopped(game_id);
+        // A press for that run, still on its way, is stale now.
+        overlay.generation.advance();
+        if last {
             *lock(&overlay.hook) = None;
             lock(&overlay.popup).reset();
             if let Some(window) = app.get_webview_window(LABEL) {
@@ -259,25 +300,126 @@ mod windows {
         foreground_changed(app, win::foreground());
     }
 
-    /// A new window is in front: records which running game it belongs to, if any. A game's
-    /// first time in front after it starts brings its session start.
+    /// A new window is in front: records which running game it belongs to, if any, and gives the
+    /// hotkeys to that game or back to other apps.
     fn foreground_changed(app: &AppHandle, hwnd: isize) {
+        if front_changed(app, hwnd) {
+            hotkeys::sync(app);
+        }
+    }
+
+    /// Records the game run in front; true if that changed. A game's first time in front after it
+    /// starts brings its session start.
+    fn front_changed(app: &AppHandle, hwnd: isize) -> bool {
         let overlay = app.state::<Overlay>();
         let mut front = lock(&overlay.front);
         let exe = win::exe_of(hwnd);
         let mut games = lock(&overlay.games);
-        let game = exe.and_then(|exe| games.running_from(&exe));
-        if *front == game {
-            return;
+        let game = exe
+            .and_then(|exe| games.running_from(&exe))
+            .and_then(|game_id| Some((game_id, games.run(game_id)?)));
+        if !hotkeys::set_front(&mut front, game, &overlay.generation) {
+            return false;
         }
-        *front = game;
-        // The hotkeys (O3, O4) follow the game in front from here.
-        let Some(game_id) = game else {
+        if let Some((game_id, _)) = game {
+            if let Some(run) = games.take_session(game_id) {
+                let app = app.clone();
+                std::thread::spawn(move || session_start(&app, game_id, run));
+            }
+        }
+        true
+    }
+
+    /// The GUI pushed a new config, maybe with other hotkeys. Synced off the main thread, which
+    /// the plugin waits for.
+    pub fn config_changed(app: &AppHandle) {
+        let app = app.clone();
+        std::thread::spawn(move || hotkeys::sync(&app));
+    }
+
+    /// Settings' recorder: whether `accelerator` is free to use (`hotkeys::check`).
+    pub fn check_shortcut(app: &AppHandle, accelerator: &str) -> Result<(), String> {
+        hotkeys::check(app, accelerator)
+    }
+
+    /// A hotkey was pressed, on a thread of its own. It counts only for the game run that was in
+    /// front when it was pressed, while that game is still in front and the hotkey still set, and
+    /// not within the hotkey's cooldown from the press: an ignored press does nothing at all.
+    pub fn pressed(app: &AppHandle, press: Press) {
+        let overlay = app.state::<Overlay>();
+        // Read with the generation under the front lock, which `set_front` moves it under: the
+        // run in front when the press was made, or nothing.
+        let front = {
+            let front = lock(&overlay.front);
+            front.filter(|_| overlay.generation.current() == press.generation)
+        };
+        let Some((game_id, run)) = front else {
             return;
         };
-        if let Some(run) = games.take_session(game_id) {
-            let app = app.clone();
-            std::thread::spawn(move || session_start(&app, game_id, run));
+        let Some(config) = lock(&overlay.config).clone() else {
+            return;
+        };
+        if !press.stands(&overlay.generation, &config)
+            || lock(&overlay.games).install_dir(game_id, run).is_none()
+        {
+            return;
+        }
+        let Ok(full) = app.state::<Arc<WorldlineCore>>().get_game(game_id) else {
+            return;
+        };
+        // The game may have left the front since the press.
+        let in_front = full
+            .game
+            .install_dir
+            .as_deref()
+            .and_then(win::foreground_from);
+        if in_front.is_none() || !lock(&overlay.cooldown).accept(press.action, press.at) {
+            return;
+        }
+        match press.action {
+            Action::QuickKeep => quick_keep(app, full.game, press, &config.kept_tag_template),
+        }
+    }
+
+    /// Keeps the checkpoint of `game`, the game `press` was made for, and says so without taking
+    /// focus: the Kept popup, or the capture-failed one, if it can show. With no popup possible,
+    /// only its sound; a popup dropped under a warning or error, nothing.
+    fn quick_keep(app: &AppHandle, game: Game, press: Press, template: &str) {
+        let overlay = app.state::<Overlay>();
+        let install_dir = game.install_dir.clone();
+        // Asked again under the repository lock, right before the capture. No overlay lock but
+        // the config's, which nothing holds while it waits.
+        let still = || {
+            let stands = lock(&overlay.config)
+                .as_ref()
+                .is_some_and(|config| press.stands(&overlay.generation, config));
+            stands
+                && install_dir
+                    .as_deref()
+                    .and_then(win::foreground_from)
+                    .is_some()
+        };
+        let Some(result) = keep::keep(app, game.id, template, still) else {
+            info!("overlay: a hotkey press for game {} went stale", game.id);
+            return;
+        };
+        let detail = match result {
+            Ok(version) => Detail::Kept {
+                version: version.version_number,
+                name: None,
+            },
+            Err(not_kept) => Detail::CaptureFailed {
+                reason: not_kept.reason,
+                version: not_kept.captured,
+            },
+        };
+        let kind = detail.kind();
+        let presented = present(app, game, detail, None);
+        let sound_on = lock(&overlay.config)
+            .as_ref()
+            .is_some_and(|config| config.sound);
+        if let Some(sound) = decide::hotkey_sound(kind, presented, sound_on) {
+            sound::play(sound);
         }
     }
 
@@ -394,18 +536,23 @@ mod windows {
         let Ok(full) = app.state::<Arc<WorldlineCore>>().get_game(game_id) else {
             return;
         };
-        present(app, full.game, Detail::CaptureFailed { reason }, None);
+        let detail = Detail::CaptureFailed {
+            reason,
+            version: None,
+        };
+        present(app, full.game, detail, None);
     }
 
     /// Shows the popup if `game` is the window in front; otherwise it's dropped, not queued.
     /// `run` names the run a session start belongs to; it's dropped if that run has ended.
-    fn present(app: &AppHandle, game: Game, detail: Detail, run: Option<u64>) {
+    /// Whether it showed, with its sound, was turned away, or couldn't show at all.
+    fn present(app: &AppHandle, game: Game, detail: Detail, run: Option<u64>) -> Presented {
         let overlay = app.state::<Overlay>();
         let Some(config) = lock(&overlay.config).clone() else {
-            return;
+            return Presented::Unavailable;
         };
         let Some(install_dir) = game.install_dir.as_deref() else {
-            return;
+            return Presented::Unavailable;
         };
         let corner = decide::corner(
             config.enabled,
@@ -413,15 +560,15 @@ mod windows {
             config.per_game.get(&game.uuid).copied(),
         );
         let Some(corner) = corner else {
-            return;
+            return Presented::Unavailable;
         };
         // Only over the game, only while it's in front; dropped otherwise, not queued.
         let Some(hwnd) = win::foreground_from(install_dir) else {
             info!("overlay: game {} isn't in front; no popup", game.id);
-            return;
+            return Presented::Unavailable;
         };
         let Some(client) = win::client_rect(hwnd) else {
-            return;
+            return Presented::Unavailable;
         };
         let rect = decide::place(client, decide::POPUP, win::scale(hwnd), corner);
 
@@ -430,12 +577,15 @@ mod windows {
         let games = lock(&overlay.games);
         let mut popup = lock(&overlay.popup);
         let Some(window) = app.get_webview_window(LABEL) else {
-            return;
+            return Presented::Unavailable;
         };
+        if !popup.is_ready() {
+            return Presented::Unavailable;
+        }
         let session = run.map(|run| (game.id, run));
         let (outcome, id) = decide::admit(&games, &mut popup, kind, session, config.quiet);
         if !matches!(outcome, Outcome::Show | Outcome::Swap) {
-            return;
+            return outcome.into();
         }
         let duration = kind.duration(config.quiet);
         set_low_memory(&window, false);
@@ -465,6 +615,7 @@ mod windows {
 
         let app = app.clone();
         std::thread::spawn(move || watch(&app, id, hwnd, client, duration));
+        Presented::Shown
     }
 
     /// Keeps popup `id` above the game until its time is up, or at once when the game leaves the

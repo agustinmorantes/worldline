@@ -64,6 +64,7 @@
     "allow-confirm",
     "allow-set-tray-labels",
     "allow-set-overlay-config",
+    "allow-check-shortcut",
     "allow-e2e-tray-labels"
   ]
 }

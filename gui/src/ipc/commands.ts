@@ -96,14 +96,19 @@ export interface TrayLabels {
 
 export const setTrayLabels = (labels: TrayLabels): Promise<void> =>
   invoke('set_tray_labels', { labels });
-/** The in-game popup's preferences, with the motion and language the GUI resolved. */
+/** The in-game popup's preferences, with the motion and language the GUI resolved, and the
+ *  hotkeys' automatic tag in that language, `{time}` for Rust to fill in (ADR 0007). */
 export interface OverlayConfig extends OverlayPrefs {
   motion: 'full' | 'reduced';
   language: Locale;
+  keptTagTemplate: string;
 }
 
 export const setOverlayConfig = (config: OverlayConfig): Promise<void> =>
   invoke('set_overlay_config', { config });
+/** Rejects when a hotkey can't be registered, most often because another app holds it. */
+export const checkShortcut = (accelerator: string): Promise<void> =>
+  invoke('check_shortcut', { accelerator });
 /** Absolute path of the GUI preferences file. */
 export const getPrefsPath = (): Promise<string> => invoke('get_prefs_path');
 

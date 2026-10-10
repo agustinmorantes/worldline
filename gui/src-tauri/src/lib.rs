@@ -28,6 +28,9 @@ pub fn run() {
                 .build(),
         )
         .setup(init);
+    // The overlay's hotkeys, registered from Rust only: no capability grants its commands.
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
     let builder = add_handlers(builder);
 

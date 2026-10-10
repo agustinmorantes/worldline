@@ -88,12 +88,21 @@ describe('Overlay', () => {
 
   it('says a failed checkpoint left the game save untouched, with why', async () => {
     await mount();
-    emit('overlay-show', show({ kind: 'captureFailed', reason: 'disk_full' }));
+    emit('overlay-show', show({ kind: 'captureFailed', reason: 'disk_full', version: null }));
     expect(popup()).toHaveClass('k-failed');
     expect(popup()).toHaveTextContent('Checkpoint not savedDisk full · your game save is untouched');
     expect(popup().querySelector('.badge path')).toHaveAttribute('d', 'M4.5 4.5l5 5M9.5 4.5l-5 5');
-    emit('overlay-show', show({ id: 2, kind: 'captureFailed', reason: 'other', language: 'es' }));
+    emit('overlay-show', show({ id: 2, kind: 'captureFailed', reason: 'other', version: null, language: 'es' }));
     expect(popup()).toHaveTextContent('No se guardó el punto de controlNo se pudo escribir · tu partida está intacta');
+  });
+
+  it('says a kept checkpoint that was saved but couldn’t be named wasn’t kept, and where it is', async () => {
+    await mount();
+    emit('overlay-show', show({ kind: 'captureFailed', reason: 'disk_full', version: 13 }));
+    expect(popup()).toHaveClass('k-failed');
+    expect(popup()).toHaveTextContent('Checkpoint not keptDisk full · saved as #13');
+    emit('overlay-show', show({ id: 2, kind: 'captureFailed', reason: 'other', version: 13, language: 'es' }));
+    expect(popup()).toHaveTextContent('No se conservó el punto de controlNo se pudo escribir · guardado como #13');
   });
 
   it('shows a kept checkpoint as a diamond, its number still', async () => {

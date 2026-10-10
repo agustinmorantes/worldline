@@ -49,6 +49,7 @@ const COMMANDS: &[&str] = &[
     "confirm",
     "set_tray_labels",
     "set_overlay_config",
+    "check_shortcut",
     "e2e_tray_labels",
 ];
 

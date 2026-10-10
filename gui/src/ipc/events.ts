@@ -16,6 +16,8 @@ export interface Events {
   'version-created': [number, number, BranchFrom | null];
   /** [game id, version id]: the version's screenshot arrived, usually seconds after it. */
   'screenshot-attached': [number, number];
+  /** [game id, version id]: a hotkey kept the version under its automatic tag. */
+  'version-kept': [number, number];
   'detection-error': string;
   /** [game id, reason]: an automatic capture failed; `detection-error` carries the details. */
   'checkpoint-failed': [number, CaptureFailure];
@@ -60,7 +62,8 @@ export type OverlayDetail =
   /** `lastAt`: the game's latest checkpoint, Unix ms. */
   | { kind: 'sessionStart'; lastAt: number | null }
   | { kind: 'deviceAhead'; device: string; count: number }
-  | { kind: 'captureFailed'; reason: CaptureFailure };
+  /** `version`: a keep's checkpoint, saved but then not kept; `null` when nothing was saved. */
+  | { kind: 'captureFailed'; reason: CaptureFailure; version: number | null };
 
 /** What the overlay webview tells Rust: it listens now, and a popup's exit animation ended. */
 export interface OverlaySignals {
