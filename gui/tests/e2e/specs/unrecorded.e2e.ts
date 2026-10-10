@@ -43,7 +43,7 @@ describe('Unrecorded changes', () => {
     const hold = panel.$('button*=Hold to go back');
     await hold.waitForEnabled();
     // Held with Space: it just slid in, and WebKit's driver can press the pointer beside it.
-    await browser.execute((el) => { el.focus(); }, await hold);
+    await browser.execute((el) => { (el as unknown as { focus: () => void }).focus(); }, await hold);
     await browser.action('key').down(' ').pause(1300).up(' ').perform();
 
     await browser.waitUntil(() => readFileSync(save, 'utf8') === 'before the boss', { timeoutMsg: 'the save file was not restored' });
