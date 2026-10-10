@@ -218,6 +218,7 @@ export const es: Messages = {
     thisDevice: 'Esta PC',
     close: 'Cerrar',
     screenshot: 'Captura de pantalla de este punto de control',
+    enlargeScreenshot: 'Ampliar la captura de pantalla',
     screenshotFailed: 'No se pudo cargar la captura de pantalla de este punto de control.',
   },
   settings: {

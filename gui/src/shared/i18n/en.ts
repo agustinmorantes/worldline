@@ -221,6 +221,7 @@ export const en = {
     thisDevice: 'This PC',
     close: 'Close',
     screenshot: 'Screenshot of this checkpoint',
+    enlargeScreenshot: 'Enlarge the screenshot',
     screenshotFailed: 'Couldn’t load this checkpoint’s screenshot.',
   },
   settings: {

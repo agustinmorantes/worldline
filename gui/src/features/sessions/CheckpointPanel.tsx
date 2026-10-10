@@ -1,15 +1,16 @@
 // The selected checkpoint: its screenshot, when and where it was made, its name, and the
 // hold-to-rewind button.
-import { type ReactElement, useState } from 'react';
+import { type ReactElement, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { ArrowDown, X } from 'lucide-react';
+import { Dialog as DialogPrimitive } from 'radix-ui';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { Version } from '@/ipc/bindings/Version';
 import { GameIcon } from '@/features/library/GameIcon';
 import type { CheckpointDevice } from '@/features/game/game-view';
 import { formatRelative, formatTime, useLocale, useT } from '@/shared/i18n';
-import { duration, ease, useMotionReduced } from '@/shared/motion/motion';
+import { duration, ease, spring, useMotionReduced } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { HoldButton } from '@/shared/ui/HoldButton';
 import { formatDuration } from './Timeline';
@@ -168,9 +169,36 @@ const SHOT = { width: 336, height: 189 };
 /** The tint line under it, and all of the slot while there is no screenshot. */
 const LINE = 4;
 
+/** The enlarged screenshot's margin from the window's edges. */
+const ZOOM_MARGIN = 32;
+
+interface Box { left: number; top: number; width: number; height: number }
+
+function boxOf(el: HTMLElement): Box {
+  const { left, top, width, height } = el.getBoundingClientRect();
+  return { left, top, width, height };
+}
+
+/**
+ * Where the enlarged screenshot sits: at its own aspect, as large as the window allows inside the
+ * margin but never past its natural size, centred.
+ */
+export function zoomBox(natural: { width: number; height: number }, view: { width: number; height: number }): Box {
+  const scale = Math.min(
+    1,
+    (view.width - 2 * ZOOM_MARGIN) / natural.width,
+    (view.height - 2 * ZOOM_MARGIN) / natural.height,
+  );
+  const width = natural.width * scale;
+  const height = natural.height * scale;
+  return { left: (view.width - width) / 2, top: (view.height - height) / 2, width, height };
+}
+
 /**
  * The tint line on top of the card. When the checkpoint's screenshot exists, the line grows
- * into it once the image has loaded, and the image settles in above the line.
+ * into it once the image has loaded, and the image settles in above the line. Clicking it lifts
+ * the image out of the card and grows it to fill the window; a click anywhere or Esc settles it
+ * back into the card.
  */
 export function ScreenshotSlot({ versionId, tint }: { versionId: number; tint: string }): ReactElement {
   const t = useT();
@@ -181,6 +209,31 @@ export function ScreenshotSlot({ versionId, tint }: { versionId: number; tint: s
   const [loaded, setLoaded] = useState<string | null>(null);
   const open = src !== null && loaded === src;
   const transition = reduced ? { duration: 0 } : { duration: duration.slow, ease };
+  const thumbRef = useRef<HTMLImageElement>(null);
+  /**
+   * Enlarged: the image's place in the card and in the window. While `closing` it flies back
+   * to the card, and only then is it gone and the card's image shown again.
+   */
+  const [zoom, setZoom] = useState<{ from: Box; to: Box; closing: boolean } | null>(null);
+  // Another checkpoint, or the screenshot gone: nothing stays enlarged.
+  const [zoomed, setZoomed] = useState(src);
+  if (zoomed !== src) {
+    setZoomed(src);
+    setZoom(null);
+  }
+
+  function enlarge(): void {
+    const img = thumbRef.current;
+    if (img === null || img.naturalWidth === 0) return;
+    const view = { width: window.innerWidth, height: window.innerHeight };
+    setZoom({ from: boxOf(img), to: zoomBox({ width: img.naturalWidth, height: img.naturalHeight }, view), closing: false });
+  }
+
+  function settle(): void {
+    const img = thumbRef.current;
+    // Back to where the card's image is now, in case the panel moved meanwhile.
+    setZoom((z) => (z === null ? null : { ...z, from: img === null ? z.from : boxOf(img), closing: true }));
+  }
 
   return (
     <motion.div
@@ -196,6 +249,7 @@ export function ScreenshotSlot({ versionId, tint }: { versionId: number; tint: s
       <AnimatePresence initial={false}>
         {src !== null && (
           <motion.img
+            ref={thumbRef}
             key={src}
             src={src}
             alt={t.checkpoint.screenshot}
@@ -207,7 +261,7 @@ export function ScreenshotSlot({ versionId, tint }: { versionId: number; tint: s
             aria-hidden={!open}
             onLoad={() => { setLoaded(src); }}
             className="absolute inset-x-0 top-0 w-full object-cover"
-            style={{ height: SHOT.height - LINE }}
+            style={{ height: SHOT.height - LINE, visibility: zoom === null ? 'visible' : 'hidden' }}
             initial={false}
             animate={open ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.04 }}
             exit={{ opacity: 0 }}
@@ -215,6 +269,46 @@ export function ScreenshotSlot({ versionId, tint }: { versionId: number; tint: s
           />
         )}
       </AnimatePresence>
+      {open && (
+        <button
+          type="button"
+          aria-label={t.checkpoint.enlargeScreenshot}
+          onClick={enlarge}
+          className="absolute inset-x-0 top-0 cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-acc"
+          style={{ height: SHOT.height - LINE }}
+        />
+      )}
+      <DialogPrimitive.Root open={zoom !== null} onOpenChange={(next) => { if (!next) settle(); }}>
+        {zoom !== null && src !== null && (
+          <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay asChild>
+              <motion.div
+                className="pointer-events-auto fixed inset-0 z-50 bg-black/70"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: zoom.closing ? 0 : 1 }}
+                transition={transition}
+              />
+            </DialogPrimitive.Overlay>
+            <DialogPrimitive.Content
+              aria-describedby={undefined}
+              onClick={settle}
+              className="pointer-events-auto fixed inset-0 z-50 cursor-zoom-out outline-none"
+            >
+              <DialogPrimitive.Title className="sr-only">{t.checkpoint.screenshot}</DialogPrimitive.Title>
+              <motion.img
+                src={src}
+                alt={t.checkpoint.screenshot}
+                draggable={false}
+                className="fixed max-w-none object-cover shadow-[0_24px_64px_-16px_oklch(0%_0_0/0.7)]"
+                initial={{ ...zoom.from, borderRadius: 0 }}
+                animate={zoom.closing ? { ...zoom.from, borderRadius: 0 } : { ...zoom.to, borderRadius: 14 }}
+                transition={reduced ? { duration: 0 } : spring}
+                onAnimationComplete={() => { if (zoom.closing) setZoom(null); }}
+              />
+            </DialogPrimitive.Content>
+          </DialogPrimitive.Portal>
+        )}
+      </DialogPrimitive.Root>
     </motion.div>
   );
 }

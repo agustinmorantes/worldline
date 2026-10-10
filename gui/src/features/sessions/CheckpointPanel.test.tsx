@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeGame, makeVersion } from '@/ipc/builders';
-import { CheckpointPanel, ScreenshotSlot } from './CheckpointPanel';
+import { CheckpointPanel, ScreenshotSlot, zoomBox } from './CheckpointPanel';
 
 vi.mock('./queries', () => ({
   useScreenshot: vi.fn(),
@@ -23,6 +23,10 @@ function setup(path: string | null | undefined): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('ScreenshotSlot', () => {
@@ -47,6 +51,27 @@ describe('ScreenshotSlot', () => {
     expect(img).toHaveAttribute('src', 'asset://C:/data/repository/games/g/slots/s/versions/v/screenshot.jpg');
     expect(img).toHaveAttribute('loading', 'lazy');
     expect(img).toHaveAttribute('decoding', 'async');
+  });
+
+  it('can only be enlarged once the image has loaded', () => {
+    setup('C:/shot.jpg');
+    expect(screen.queryByRole('button', { name: 'Enlarge the screenshot' })).not.toBeInTheDocument();
+    fireEvent.load(screen.getByAltText('Screenshot of this checkpoint'));
+    expect(screen.getByRole('button', { name: 'Enlarge the screenshot' })).toBeInTheDocument();
+  });
+
+  it('enlarges the image over the app, lifting it out of the card', () => {
+    vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(1280);
+    vi.spyOn(HTMLImageElement.prototype, 'naturalHeight', 'get').mockReturnValue(720);
+    setup('C:/shot.jpg');
+    fireEvent.load(screen.getByAltText('Screenshot of this checkpoint'));
+    fireEvent.click(screen.getByRole('button', { name: 'Enlarge the screenshot' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Screenshot of this checkpoint' });
+    expect(within(dialog).getByRole('img')).toHaveAttribute('src', 'asset://C:/shot.jpg');
+    // The test's motion stub remounts the card's image on every render: look it up again.
+    const thumb = screen.getAllByAltText('Screenshot of this checkpoint').find((img) => !dialog.contains(img));
+    expect(thumb).toHaveStyle({ visibility: 'hidden' });
   });
 
   it('keeps the image from assistive tech until it has loaded', () => {
@@ -105,5 +130,19 @@ describe('CheckpointPanel on the checkpoint you are on', () => {
     const onRewind = setup({ dueAt: NOW });
     fireEvent.click(screen.getByRole('button', { name: 'Hold to go back' }));
     expect(onRewind).toHaveBeenCalledOnce();
+  });
+});
+
+describe('zoomBox', () => {
+  it('fills the window inside the margin at the image’s aspect, centred', () => {
+    expect(zoomBox({ width: 1280, height: 720 }, { width: 1064, height: 800 })).toEqual({
+      left: 32, top: 400 - 562.5 / 2, width: 1000, height: 562.5,
+    });
+  });
+
+  it('never grows past the image’s natural size', () => {
+    expect(zoomBox({ width: 1280, height: 720 }, { width: 2560, height: 1440 })).toEqual({
+      left: 640, top: 360, width: 1280, height: 720,
+    });
   });
 });
