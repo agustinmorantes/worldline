@@ -43,12 +43,19 @@ fn get_unrecorded_changes(core: State<Arc<WorldlineCore>>) -> Vec<(i32, chrono::
 async fn save_game(
     game: GameForm,
     dirs: Option<Vec<String>>,
+    allow_large: Option<bool>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<Game, Failure> {
     let core = Arc::clone(&core);
-    off_main(move || core.save_game(game, dirs))
-        .await
-        .map_err(|e| Failure::from(&e))
+    off_main(move || {
+        if allow_large == Some(true) {
+            core.save_large_game(game, dirs)
+        } else {
+            core.save_game(game, dirs)
+        }
+    })
+    .await
+    .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]

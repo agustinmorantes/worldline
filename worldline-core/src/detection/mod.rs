@@ -96,6 +96,8 @@ pub struct BranchFrom {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum CaptureFailure {
     DiskFull,
+    /// The saves hold far more than usual (`ErrorKind::TooLarge`).
+    TooLarge,
     Other,
 }
 
@@ -104,6 +106,9 @@ const SQLITE_FULL: &str = "database or disk is full";
 
 impl From<&anyhow::Error> for CaptureFailure {
     fn from(error: &anyhow::Error) -> Self {
+        if crate::error::error_kind(error) == Some(crate::error::ErrorKind::TooLarge) {
+            return Self::TooLarge;
+        }
         let full = error.chain().any(|cause| {
             cause
                 .downcast_ref::<std::io::Error>()

@@ -370,6 +370,7 @@ mod tests {
                 path: live.path(),
                 exclusions: &[],
             }],
+            None,
         )
         .unwrap();
         let parent = version(&game, &slot, None, files.clone());

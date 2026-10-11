@@ -24,6 +24,8 @@ pub enum ErrorKind {
     FolderTaken,
     /// The folder holds other apps' files too (the home folder, AppData...).
     SharedFolder,
+    /// The save folders hold far more than the game's saves usually take.
+    TooLarge,
 }
 
 impl fmt::Display for ErrorKind {
@@ -36,6 +38,7 @@ impl fmt::Display for ErrorKind {
             Self::NameTaken => "Another game has this name",
             Self::FolderTaken => "Another game tracks this folder",
             Self::SharedFolder => "Other apps keep files in this folder",
+            Self::TooLarge => "The save folders are unusually large",
         })
     }
 }

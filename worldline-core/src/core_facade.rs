@@ -108,7 +108,14 @@ impl Inner {
     /// First it finishes putting back saves a failed write left half
     /// written; while that can't finish, the game isn't captured, so the
     /// half-written folder is never recorded, and the watcher retries.
-    fn checkpoint(&self, game: &FullGame, reason: VersionReason) -> Result<CheckpointOutcome> {
+    /// `limited` refuses saves far larger than usual: for the captures nobody
+    /// asked for, and a new game's first one until the user confirms its size.
+    fn checkpoint(
+        &self,
+        game: &FullGame,
+        reason: VersionReason,
+        limited: bool,
+    ) -> Result<CheckpointOutcome> {
         let recovery = restore::recover(&self.txn_root)?;
         if recovery.pending.iter().any(|root| {
             game.tracked_dirs
@@ -119,7 +126,7 @@ impl Inner {
                 .context("The saves are still being put back"));
         }
         let started = chrono::Utc::now().naive_utc();
-        let outcome = self.history.checkpoint_locked(game, reason)?;
+        let outcome = self.history.checkpoint_locked(game, reason, limited)?;
         if matches!(outcome, CheckpointOutcome::Created(_)) {
             let _ = self.sync_trigger.send(Trigger::Push);
         }
@@ -161,7 +168,7 @@ impl CaptureTarget for Inner {
     fn capture(&self, game_id: i32) -> Result<(CheckpointOutcome, Option<BranchFrom>)> {
         store::with_lock(self.history.root(), || {
             let game = self.history.index.get_game(game_id)?;
-            let outcome = self.checkpoint(&game, VersionReason::Watcher)?;
+            let outcome = self.checkpoint(&game, VersionReason::Watcher, true)?;
             // The version exists either way: a failed lookup only loses the hint.
             let branch_from = match &outcome {
                 CheckpointOutcome::Created(version) => {
@@ -482,9 +489,27 @@ impl WorldlineCore {
     /// Creates a game (capturing its current saves as the first version) or
     /// edits one. `dirs`, when given, becomes the set of tracked directories.
     /// Under the repository lock, so two adds can't both pass the name and
-    /// folder checks before either is written.
+    /// folder checks before either is written. Saves far larger than a game's
+    /// usually are refuse the add with `ErrorKind::TooLarge`; `save_large_game`
+    /// takes them anyway.
     pub fn save_game(&self, form: GameForm, dirs: Option<Vec<String>>) -> Result<Game> {
-        let game = store::with_lock(self.repository_root(), || self.write_game(form, dirs))?;
+        self.save_game_limited(form, dirs, true)
+    }
+
+    /// `save_game` for saves the user confirmed are this large.
+    pub fn save_large_game(&self, form: GameForm, dirs: Option<Vec<String>>) -> Result<Game> {
+        self.save_game_limited(form, dirs, false)
+    }
+
+    fn save_game_limited(
+        &self,
+        form: GameForm,
+        dirs: Option<Vec<String>>,
+        limited: bool,
+    ) -> Result<Game> {
+        let game = store::with_lock(self.repository_root(), || {
+            self.write_game(form, dirs, limited)
+        })?;
         self.reload_watcher();
         // A game added from the scan, or renamed to an installed title, gets its install dir.
         self.refresh_install_dirs()?;
@@ -492,14 +517,21 @@ impl WorldlineCore {
     }
 
     /// `save_game`'s writes; the caller holds the repository lock.
-    fn write_game(&self, form: GameForm, dirs: Option<Vec<String>>) -> Result<FullGame> {
+    fn write_game(
+        &self,
+        form: GameForm,
+        dirs: Option<Vec<String>>,
+        limited: bool,
+    ) -> Result<FullGame> {
         Ok(match form.id {
             None => {
                 let game = self
                     .history()
                     .create_game(&form.title, dirs.as_deref().unwrap_or_default())?;
                 if !game.tracked_dirs.is_empty() {
-                    let first = self.inner.checkpoint(&game, VersionReason::Initial);
+                    let first = self
+                        .inner
+                        .checkpoint(&game, VersionReason::Initial, limited);
                     if let Err(error) = first {
                         // Not added after all, so trying again isn't blocked by its name or folders.
                         let history = self.history();
@@ -551,7 +583,7 @@ impl WorldlineCore {
         self.exclusive(|| {
             if !game.tracked_dirs.is_empty() {
                 self.inner
-                    .checkpoint(&self.get_game(id)?, VersionReason::Watcher)
+                    .checkpoint(&self.get_game(id)?, VersionReason::Watcher, false)
                     .context("Failed to checkpoint the current saves first")?;
             }
             self.history().set_untracked(uuid, true)?;
@@ -575,7 +607,7 @@ impl WorldlineCore {
     pub fn checkpoint(&self, game_id: i32) -> Result<CheckpointOutcome> {
         store::with_lock(self.repository_root(), || {
             let game = self.get_game(game_id)?;
-            self.inner.checkpoint(&game, VersionReason::Manual)
+            self.inner.checkpoint(&game, VersionReason::Manual, false)
         })
     }
 
@@ -615,7 +647,7 @@ impl WorldlineCore {
                 return Ok(None);
             }
             let game = self.get_game(game_id)?;
-            let checkpoint = self.inner.checkpoint(&game, VersionReason::Manual)?;
+            let checkpoint = self.inner.checkpoint(&game, VersionReason::Manual, false)?;
             let branch_from = match &checkpoint {
                 // The version exists either way: a failed lookup only loses the hint.
                 CheckpointOutcome::Created(version) => {
@@ -669,7 +701,7 @@ impl WorldlineCore {
             }
             if !game.tracked_dirs.is_empty() {
                 self.inner
-                    .checkpoint(&game, reason)
+                    .checkpoint(&game, reason, false)
                     .context("Failed to checkpoint the current saves first")?;
             }
             apply(&self.get_game(game_id)?)
@@ -768,7 +800,8 @@ impl WorldlineCore {
             self.history().index.set_active_slot(game_id, slot.id)?;
             let game = self.get_game(game_id)?;
             if !game.tracked_dirs.is_empty() {
-                self.inner.checkpoint(&game, VersionReason::Initial)?;
+                self.inner
+                    .checkpoint(&game, VersionReason::Initial, false)?;
             }
             self.get_game(game_id)
         })
@@ -1309,7 +1342,7 @@ impl WorldlineCore {
             None => None,
         };
         let live = self.covering(game.clone(), target.as_ref())?;
-        let files = history.capture(&live)?;
+        let files = history.capture(&live, None)?;
         let dirs: HashSet<Uuid> = live
             .tracked_dirs
             .iter()
@@ -1405,7 +1438,9 @@ impl WorldlineCore {
             tracked_dirs: live.tracked_dirs,
             ..self.get_game(id)?
         };
-        let outcome = self.inner.checkpoint(&kept, VersionReason::Initial)?;
+        let outcome = self
+            .inner
+            .checkpoint(&kept, VersionReason::Initial, false)?;
         // Emptied saves still get a version: a slot with history but no
         // active version is not monitored.
         if matches!(outcome, CheckpointOutcome::Empty) && !copies.is_empty() {
@@ -1944,7 +1979,8 @@ impl WorldlineCore {
             if saves_exist {
                 // Keep what is on disk: identical saves just join the remote
                 // history; different ones become a new version on top of it.
-                self.inner.checkpoint(&live, VersionReason::Initial)?;
+                self.inner
+                    .checkpoint(&live, VersionReason::Initial, false)?;
                 return Ok(false);
             }
             let Some(version) = version else {
@@ -2538,6 +2574,16 @@ mod tests {
         core.checkpoint(game_id).unwrap();
         std::fs::remove_file(&save).unwrap();
         assert!(differs(), "a file removed");
+    }
+
+    #[test]
+    fn saves_grown_past_the_limit_differ_without_being_read() {
+        let (core, game_id, _data, saves) = changed_game();
+        for n in 0..crate::history::MIN_CAPTURE_LIMIT.files {
+            std::fs::write(saves.path().join(format!("{n}.dat")), "").unwrap();
+        }
+        let game = core.get_game(game_id).unwrap();
+        assert!(core.history().live_differs(&game).unwrap());
     }
 
     #[test]

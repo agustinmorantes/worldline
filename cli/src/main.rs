@@ -90,6 +90,9 @@ enum GamesAction {
         title: String,
         #[arg(long = "dir")]
         dirs: Vec<String>,
+        /// Track the folders even if they hold far more than saves usually do.
+        #[arg(long)]
+        allow_large: bool,
     },
     Edit {
         id: i32,
@@ -475,8 +478,17 @@ fn main() -> Result<()> {
                 )?;
                 println!("Updated game [{}] {}", game.id, game.title);
             }
-            GamesAction::Add { title, dirs } => {
-                let game = core.save_game(GameForm { id: None, title }, Some(dirs))?;
+            GamesAction::Add {
+                title,
+                dirs,
+                allow_large,
+            } => {
+                let form = GameForm { id: None, title };
+                let game = if allow_large {
+                    core.save_large_game(form, Some(dirs))?
+                } else {
+                    core.save_game(form, Some(dirs))?
+                };
                 println!("Added game [{}] {}", game.id, game.title);
             }
             GamesAction::Show { id } => {

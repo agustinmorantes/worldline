@@ -196,7 +196,9 @@ export const en = {
       folderTaken: 'Another game in your library already uses this save folder.',
       sharedFolder: 'That folder also holds other apps’ files. Choose the game’s own save folder inside it.',
       savesInUse: 'The game is using its save files. Close it and try again.',
+      tooLarge: 'That folder holds far more than a game’s saves usually do. Make sure it’s the game’s own save folder.',
     },
+    trackAnyway: 'Track anyway',
   },
   sessions: {
     today: 'Today',
@@ -343,6 +345,7 @@ export const en = {
     notSaved: 'Checkpoint not saved',
     diskFull: 'Disk full',
     couldntWrite: 'Couldn’t write it',
+    tooLarge: 'Saves far larger than usual',
     untouched: 'your game save is untouched',
     notKept: 'Checkpoint not kept',
     savedAs: (n: number): string => `saved as #${n.toString()}`,

@@ -3,4 +3,4 @@
 /**
  * Why an automatic capture failed, as far as a front end tells them apart.
  */
-export type CaptureFailure = "disk_full" | "other";
+export type CaptureFailure = "disk_full" | "too_large" | "other";

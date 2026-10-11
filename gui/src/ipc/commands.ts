@@ -28,9 +28,12 @@ export const getGame = (id: number): Promise<FullGame> => invoke('get_game', { i
 export const getRunningGames = (): Promise<number[]> => invoke('get_running_games');
 /** [game id, due (naive UTC)] for the games whose saves changed since their current checkpoint. */
 export const getUnrecordedChanges = (): Promise<[number, string][]> => invoke('get_unrecorded_changes');
-/** Creates or updates a game; `dirs` replaces its tracked directories when given. */
-export const saveGame = (game: GameForm, dirs: string[] | null): Promise<Game> =>
-  invoke('save_game', { game, dirs });
+/**
+ * Creates or updates a game; `dirs` replaces its tracked directories when given. A new game whose
+ * saves are far larger than usual fails with `too_large` unless `allowLarge`.
+ */
+export const saveGame = (game: GameForm, dirs: string[] | null, allowLarge = false): Promise<Game> =>
+  invoke('save_game', { game, dirs, allowLarge });
 /** Deletes the game everywhere: a tombstone in the remote (ADR 0006). */
 export const deleteGame = (id: number): Promise<void> => invoke('delete_game', { id });
 /** Stops tracking the game on this device; its history stays in the remote (ADR 0006). */

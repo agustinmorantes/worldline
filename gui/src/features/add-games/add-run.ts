@@ -9,7 +9,7 @@ import { saveGame, setGameIcon } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { reportError } from '@/shared/errors/report';
 import { getT } from '@/shared/i18n';
-import { addFailedHint } from './add-games';
+import { addFailedHint, isTooLarge } from './add-games';
 
 export interface AddRun {
   total: number;
@@ -45,15 +45,18 @@ export function onGameAdded(listener: (title: string, game: Game) => void): () =
   return () => { addedListeners.delete(listener); };
 }
 
-/** Adds `items` in order. A no-op while another run is going. */
-export async function addAll(items: InstallScannerItem[]): Promise<void> {
+/**
+ * Adds `items` in order. A no-op while another run is going. `allowLarge` takes saves far larger
+ * than usual; one refused for that offers "Track anyway", a run of its own.
+ */
+export async function addAll(items: InstallScannerItem[], allowLarge = false): Promise<void> {
   if (run?.running === true || items.length === 0) return;
   let state: AddRun = { total: items.length, current: items[0].title, added: new Set(), failed: new Set(), running: true };
   update(state);
   for (const item of items) {
     update(state = { ...state, current: item.title });
     try {
-      const game = await saveGame({ id: null, title: item.title }, item.dirs);
+      const game = await saveGame({ id: null, title: item.title }, item.dirs, allowLarge);
       if (item.icon_path !== null) {
         // The game is added either way; it just keeps its initials.
         game.icon_path = await setGameIcon(game.id, item.icon_path).catch(() => null);
@@ -64,7 +67,8 @@ export async function addAll(items: InstallScannerItem[]): Promise<void> {
     } catch (err) {
       update(state = { ...state, failed: new Set(state.failed).add(item.title) });
       const t = getT();
-      reportError(t.addGames.failed.addNamed(item.title), err, addFailedHint(err, t.addGames.why));
+      const insist = isTooLarge(err) ? { label: t.addGames.trackAnyway, onClick: () => void addAll([item], true) } : undefined;
+      reportError(t.addGames.failed.addNamed(item.title), err, addFailedHint(err, t.addGames.why), insist);
     }
   }
   update(state = { ...state, current: null, running: false });

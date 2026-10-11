@@ -623,6 +623,7 @@ mod tests {
                         path: &dir,
                         exclusions: &[],
                     }],
+                    None,
                 )
                 .unwrap();
                 target.extend(

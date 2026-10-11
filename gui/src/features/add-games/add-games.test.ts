@@ -3,7 +3,7 @@ import { makeGame, makeTrackedDir } from '@/ipc/builders';
 import type { HistoryBundleSummary } from '@/ipc/bindings/HistoryBundleSummary';
 import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
 import { en } from '@/shared/i18n/en';
-import { addFailedHint, dirsToMap, folderName, newScanResults, scanRevealDelay } from './add-games';
+import { addFailedHint, dirsToMap, folderName, isTooLarge, newScanResults, scanRevealDelay } from './add-games';
 
 describe('scanRevealDelay', () => {
   it('keeps the opening beat, accelerates, and stays bounded for large scans', () => {
@@ -74,6 +74,14 @@ describe('dirsToMap', () => {
   });
 });
 
+describe('isTooLarge', () => {
+  it('is only the size refusal', () => {
+    expect(isTooLarge({ message: 'x', kind: 'too_large' })).toBe(true);
+    expect(isTooLarge({ message: 'x', kind: 'shared_folder' })).toBe(false);
+    expect(isTooLarge('plain text error')).toBe(false);
+  });
+});
+
 describe('addFailedHint', () => {
   const why = en.addGames.why;
 
@@ -81,6 +89,7 @@ describe('addFailedHint', () => {
     expect(addFailedHint({ message: 'x', kind: 'folder_taken' }, why)).toBe(why.folderTaken);
     expect(addFailedHint({ message: 'x', kind: 'shared_folder' }, why)).toBe(why.sharedFolder);
     expect(addFailedHint({ message: 'x', kind: 'saves_in_use' }, why)).toBe(why.savesInUse);
+    expect(addFailedHint({ message: 'x', kind: 'too_large' }, why)).toBe(why.tooLarge);
   });
 
   it('has nothing to add for other failures', () => {

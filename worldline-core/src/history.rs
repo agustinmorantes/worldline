@@ -366,16 +366,20 @@ impl History {
     /// Captures the live tracked directories and records a new version on the
     /// active slot unless the content equals the active version. The caller
     /// must hold the repository lock.
+    /// `limited` refuses saves far larger than the game's usually are (see
+    /// `capture_limit`), before any file is read.
     pub fn checkpoint_locked(
         &self,
         game: &FullGame,
         reason: VersionReason,
+        limited: bool,
     ) -> Result<CheckpointOutcome> {
         let slot = game
             .active_slot
             .as_ref()
             .context("game has no active slot")?;
-        let files = self.capture(game)?;
+        let limit = limited.then(|| self.capture_limit(game));
+        let files = self.capture(game, limit)?;
         if game.last_version.is_none() && files.is_empty() {
             return Ok(CheckpointOutcome::Empty);
         }
@@ -400,18 +404,53 @@ impl History {
 
     /// The live contents of the tracked directories, stored as chunks. The
     /// caller must hold the repository lock.
-    pub fn capture(&self, game: &FullGame) -> Result<Vec<FileEntry>> {
-        with_roots(game, |roots| chunks::capture(&self.store, roots))
+    pub fn capture(&self, game: &FullGame, limit: Option<chunks::Limit>) -> Result<Vec<FileEntry>> {
+        with_roots(game, |roots| chunks::capture(&self.store, roots, limit))
             .map_err(crate::error::tag_in_use)
             .context("failed to capture tracked directories")
+    }
+
+    /// How much the game's saves may hold before a capture refuses them: ten
+    /// times its active version, and never less than `MIN_CAPTURE_LIMIT`. Saves
+    /// rarely grow that fast; a mistaken folder (all of AppData) is caught
+    /// before a single file is read.
+    pub fn capture_limit(&self, game: &FullGame) -> chunks::Limit {
+        let active = match (&game.active_slot, &game.last_version) {
+            (Some(slot), Some(version)) => self
+                .store
+                .version_meta(
+                    &game.game.folder_slug,
+                    &slot.folder_slug,
+                    &version.folder_slug,
+                )
+                .ok(),
+            _ => None,
+        };
+        let (bytes, files) = active.map_or((0, 0), |meta| {
+            (
+                meta.files.iter().map(|file| file.size).sum(),
+                meta.files.len(),
+            )
+        });
+        chunks::Limit {
+            bytes: MIN_CAPTURE_LIMIT.bytes.max(bytes.saturating_mul(10)),
+            files: MIN_CAPTURE_LIMIT.files.max(files.saturating_mul(10)),
+        }
     }
 
     /// Whether the live saves differ from the active version, by content, as
     /// a checkpoint would find them; nothing is written. A file being written
     /// while it is read differs.
     pub fn live_differs(&self, game: &FullGame) -> Result<bool> {
-        let files = match with_roots(game, chunks::hash) {
+        let limit = Some(self.capture_limit(game));
+        let files = match with_roots(game, |roots| chunks::hash(roots, limit)) {
             Err(error) if error.is::<chunks::KeptChanging>() => return Ok(true),
+            // Far larger than the active version: they differ, and aren't read.
+            Err(error)
+                if crate::error::error_kind(&error) == Some(crate::error::ErrorKind::TooLarge) =>
+            {
+                return Ok(true);
+            }
             files => files?,
         };
         let (Some(slot), Some(active)) = (&game.active_slot, &game.last_version) else {
@@ -620,6 +659,14 @@ impl History {
         Ok(())
     }
 }
+
+/// The least a capture reads before refusing: game saves are almost always
+/// far smaller (95% of 62 Steam Cloud folders sampled were under 36 MB, the
+/// largest 395 MB in 27 files).
+pub const MIN_CAPTURE_LIMIT: chunks::Limit = chunks::Limit {
+    bytes: 1_000_000_000,
+    files: 10_000,
+};
 
 /// Runs `walk` over the game's tracked directories with their exclusions.
 fn with_roots<T>(game: &FullGame, walk: impl FnOnce(&[CaptureRoot]) -> Result<T>) -> Result<T> {

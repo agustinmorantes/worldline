@@ -22,7 +22,7 @@ describe('ipc commands', () => {
       () => commands.updateMonitoringSettings(monitoring),
       { monitoringSettings: monitoring },
     ],
-    ['save_game', () => commands.saveGame({ id: null, title: 'Celeste' }, ['C:/saves']), { game: { id: null, title: 'Celeste' }, dirs: ['C:/saves'] }],
+    ['save_game', () => commands.saveGame({ id: null, title: 'Celeste' }, ['C:/saves']), { game: { id: null, title: 'Celeste' }, dirs: ['C:/saves'], allowLarge: false }],
     ['delete_slot', () => commands.deleteSlot(2, 1), { slotId: 2, replacementSlotId: 1 }],
     ['switch_slot', () => commands.switchSlot(1, 2), { gameId: 1, slotId: 2 }],
     ['set_game_icon', () => commands.setGameIcon(1, 'C:/icon.png'), { gameId: 1, sourcePath: 'C:/icon.png' }],

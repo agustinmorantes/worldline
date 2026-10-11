@@ -49,8 +49,14 @@ export function addFailedHint(err: unknown, why: Messages['addGames']['why']): s
     name_taken: why.nameTaken,
     folder_taken: why.folderTaken,
     shared_folder: why.sharedFolder,
+    too_large: why.tooLarge,
     saves_in_use: why.savesInUse,
     game_running: why.savesInUse,
   };
   return kind === undefined || kind === null ? undefined : hints[kind];
+}
+
+/** Whether the add failed only because the saves are far larger than usual: the user may insist. */
+export function isTooLarge(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as Partial<Failure>).kind === 'too_large';
 }

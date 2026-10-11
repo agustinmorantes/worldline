@@ -16,7 +16,7 @@ import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { btn, btnQuiet, eyebrow, field } from '@/shared/ui/classes';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
-import { addFailedHint, dirsToMap, folderName } from './add-games';
+import { addFailedHint, dirsToMap, folderName, isTooLarge } from './add-games';
 
 type Draft =
   | { kind: 'folder'; path: string; title: string }
@@ -44,8 +44,11 @@ export function ManualSection({ library }: { library: FullGame[] }): ReactElemen
     }
   }
 
-  /** Runs `action`, then opens the game it returns once the library has it. */
-  async function addThen(action: () => Promise<number | undefined>, failed: string): Promise<void> {
+  /**
+   * Runs `action`, then opens the game it returns once the library has it. `insist`, when given,
+   * is the same add for saves the user confirms are that large.
+   */
+  async function addThen(action: () => Promise<number | undefined>, failed: string, insist?: () => void): Promise<void> {
     setBusy(true);
     try {
       const id = await action();
@@ -53,14 +56,19 @@ export function ManualSection({ library }: { library: FullGame[] }): ReactElemen
       setDraft(null);
       if (id !== undefined) go({ view: 'game', gameId: id });
     } catch (err) {
-      reportError(failed, err, addFailedHint(err, t.addGames.why));
+      const anyway = insist !== undefined && isTooLarge(err) ? { label: t.addGames.trackAnyway, onClick: insist } : undefined;
+      reportError(failed, err, addFailedHint(err, t.addGames.why), anyway);
     } finally {
       setBusy(false);
     }
   }
 
-  function addFromFolder(d: Extract<Draft, { kind: 'folder' }>): void {
-    void addThen(async () => (await saveGame({ id: null, title: d.title.trim() }, [d.path])).id, t.addGames.failed.add);
+  function addFromFolder(d: Extract<Draft, { kind: 'folder' }>, allowLarge = false): void {
+    void addThen(
+      async () => (await saveGame({ id: null, title: d.title.trim() }, [d.path], allowLarge)).id,
+      t.addGames.failed.add,
+      allowLarge ? undefined : () => { addFromFolder(d, true); },
+    );
   }
 
   function importBundle(d: Extract<Draft, { kind: 'bundle' }>): void {

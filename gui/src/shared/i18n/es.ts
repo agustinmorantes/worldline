@@ -193,7 +193,9 @@ export const es: Messages = {
       folderTaken: 'Otro juego de tu biblioteca ya usa esta carpeta de partidas.',
       sharedFolder: 'Esa carpeta también guarda archivos de otras apps. Elige la carpeta de partidas del juego dentro de ella.',
       savesInUse: 'El juego está usando sus archivos de partida. Ciérralo y vuelve a intentarlo.',
+      tooLarge: 'Esa carpeta guarda mucho más de lo que suelen ocupar las partidas de un juego. Asegúrate de que sea la carpeta de partidas del juego.',
     },
+    trackAnyway: 'Seguir igual',
   },
   sessions: {
     today: 'Hoy',
@@ -338,6 +340,7 @@ export const es: Messages = {
     notSaved: 'No se guardó el punto de control',
     diskFull: 'Disco lleno',
     couldntWrite: 'No se pudo escribir',
+    tooLarge: 'Partidas mucho más grandes de lo normal',
     untouched: 'tu partida está intacta',
     notKept: 'No se conservó el punto de control',
     savedAs: (n) => `guardado como #${n.toString()}`,

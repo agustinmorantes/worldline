@@ -1,6 +1,7 @@
 //! Content-defined chunking plus zstd (ADR 0003). A file is read once: each
 //! chunk is hashed and, when the store lacks it, compressed and published.
 
+use crate::error::ErrorKind;
 use crate::store::{FileEntry, Store, format_hash, rename_no_replace, sync_dir};
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
@@ -23,17 +24,53 @@ pub struct CaptureRoot<'a> {
     pub exclusions: &'a [glob::Pattern],
 }
 
+/// The most a capture reads. Past it, the capture fails with `TooLarge`
+/// before reading any file: a folder that big is rarely only a game's saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limit {
+    pub bytes: u64,
+    pub files: usize,
+}
+
 /// Captures every regular file below `roots` into `store` and returns the
 /// canonical manifest (sorted by tracked dir, then path).
-pub fn capture(store: &Store, roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
-    manifest(Some(store), roots)
+pub fn capture(
+    store: &Store,
+    roots: &[CaptureRoot],
+    limit: Option<Limit>,
+) -> Result<Vec<FileEntry>> {
+    manifest(Some(store), roots, limit)
 }
 
 /// The manifest `capture` would return, without chunk hashes and without
 /// writing anything. A file that keeps changing while it is read is a
 /// `KeptChanging` error.
-pub fn hash(roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
-    manifest(None, roots)
+pub fn hash(roots: &[CaptureRoot], limit: Option<Limit>) -> Result<Vec<FileEntry>> {
+    manifest(None, roots, limit)
+}
+
+/// What a capture has listed so far, against its limit.
+struct Tally {
+    limit: Option<Limit>,
+    bytes: u64,
+    files: usize,
+}
+
+impl Tally {
+    fn add(&mut self, size: u64) -> Result<()> {
+        self.bytes += size;
+        self.files += 1;
+        match self.limit {
+            Some(limit) if self.bytes > limit.bytes || self.files > limit.files => {
+                Err(anyhow::Error::new(ErrorKind::TooLarge).context(format!(
+                    "the save folders hold more than {} files or {} MB",
+                    limit.files,
+                    limit.bytes / 1_000_000
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// A file the game kept writing while it was read.
@@ -49,8 +86,18 @@ impl std::fmt::Display for KeptChanging {
 impl std::error::Error for KeptChanging {}
 
 /// `store`: where the chunks go; `None` only hashes the files.
-fn manifest(store: Option<&Store>, roots: &[CaptureRoot]) -> Result<Vec<FileEntry>> {
-    let mut entries = Vec::new();
+fn manifest(
+    store: Option<&Store>,
+    roots: &[CaptureRoot],
+    limit: Option<Limit>,
+) -> Result<Vec<FileEntry>> {
+    // Every root is listed before any file is read, so the limit spares them all.
+    let mut tally = Tally {
+        limit,
+        bytes: 0,
+        files: 0,
+    };
+    let mut listed = Vec::new();
     for root in roots {
         let mut files = Vec::new();
         collect_files(
@@ -59,9 +106,14 @@ fn manifest(store: Option<&Store>, roots: &[CaptureRoot]) -> Result<Vec<FileEntr
             &mut Vec::new(),
             true,
             &mut files,
+            &mut tally,
         )?;
+        listed.push((root.uuid, files));
+    }
+    let mut entries = Vec::new();
+    for (uuid, files) in listed {
         for (relative, path) in files {
-            entries.push(capture_stable(store, root.uuid, relative, &path)?);
+            entries.push(capture_stable(store, uuid, relative, &path)?);
         }
     }
     entries.sort();
@@ -241,6 +293,7 @@ fn collect_files(
     relative: &mut Vec<String>,
     is_root: bool,
     files: &mut Vec<(String, PathBuf)>,
+    tally: &mut Tally,
 ) -> Result<()> {
     let read = match fs::read_dir(dir) {
         Ok(read) => read,
@@ -273,8 +326,9 @@ fn collect_files(
             let metadata = fs::symlink_metadata(&path)
                 .with_context(|| format!("failed to inspect {}", path.display()))?;
             if metadata.is_dir() {
-                collect_files(&path, exclusions, relative, false, files)?;
+                collect_files(&path, exclusions, relative, false, files, tally)?;
             } else if metadata.is_file() {
+                tally.add(metadata.len())?;
                 files.push((relative_path, path));
             }
         }
@@ -312,13 +366,43 @@ mod tests {
         fs::write(live.path().join("save.dat"), b"v").unwrap();
 
         CHANGES_AFTER_READ.set(1);
-        let manifest = capture(&store, &roots(live.path())).unwrap();
+        let manifest = capture(&store, &roots(live.path()), None).unwrap();
         assert_eq!(manifest[0].size, 2, "the settled file was recorded");
 
         CHANGES_AFTER_READ.set(3);
-        let error = capture(&store, &roots(live.path())).unwrap_err();
+        let error = capture(&store, &roots(live.path()), None).unwrap_err();
         CHANGES_AFTER_READ.set(0);
         assert!(format!("{error:#}").contains("kept changing"));
+    }
+
+    #[test]
+    fn a_capture_over_its_limit_fails_before_reading() {
+        let store_dir = tempdir().unwrap();
+        let store = Store::open(store_dir.path()).unwrap();
+        let live = tempdir().unwrap();
+        fs::write(live.path().join("a.dat"), b"12345").unwrap();
+        fs::write(live.path().join("b.dat"), b"12345").unwrap();
+
+        let fits = Limit {
+            bytes: 10,
+            files: 2,
+        };
+        assert_eq!(
+            capture(&store, &roots(live.path()), Some(fits))
+                .unwrap()
+                .len(),
+            2
+        );
+        for over in [
+            Limit { bytes: 9, files: 2 },
+            Limit {
+                bytes: 10,
+                files: 1,
+            },
+        ] {
+            let error = hash(&roots(live.path()), Some(over)).unwrap_err();
+            assert_eq!(crate::error::error_kind(&error), Some(ErrorKind::TooLarge));
+        }
     }
 
     fn roots(path: &Path) -> Vec<CaptureRoot<'_>> {
@@ -344,7 +428,7 @@ mod tests {
             .collect();
         fs::write(live.path().join("big.sav"), &big).unwrap();
 
-        let manifest = capture(&store, &roots(live.path())).unwrap();
+        let manifest = capture(&store, &roots(live.path()), None).unwrap();
         let paths: Vec<_> = manifest.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["a.dat", "big.sav", "empty.dat", "sub/b.dat"]);
         assert_eq!(
@@ -357,7 +441,10 @@ mod tests {
         let mut rebuilt = Vec::new();
         write_file(&store, &manifest[1], &mut rebuilt).unwrap();
         assert_eq!(rebuilt, big);
-        assert_eq!(capture(&store, &roots(live.path())).unwrap(), manifest);
+        assert_eq!(
+            capture(&store, &roots(live.path()), None).unwrap(),
+            manifest
+        );
     }
 
     #[test]
@@ -366,12 +453,12 @@ mod tests {
         let store = Store::open(store_dir.path()).unwrap();
         let live = tempdir().unwrap();
         fs::write(live.path().join("save.dat"), b"progress").unwrap();
-        let manifest = capture(&store, &roots(live.path())).unwrap();
+        let manifest = capture(&store, &roots(live.path()), None).unwrap();
         let path = store.chunk_path(&manifest[0].chunks[0]).unwrap();
         fs::write(&path, b"garbage").unwrap();
         assert!(verify_file(&store, &manifest[0]).is_err());
         // The failed read set the bad chunk aside, so the next capture heals it.
-        capture(&store, &roots(live.path())).unwrap();
+        capture(&store, &roots(live.path()), None).unwrap();
         verify_file(&store, &manifest[0]).unwrap();
     }
 
@@ -380,7 +467,7 @@ mod tests {
         let store_dir = tempdir().unwrap();
         let store = Store::open(store_dir.path()).unwrap();
         let missing = store_dir.path().join("nope");
-        assert!(capture(&store, &roots(&missing)).unwrap().is_empty());
+        assert!(capture(&store, &roots(&missing), None).unwrap().is_empty());
     }
 
     #[cfg(target_os = "linux")]
@@ -395,6 +482,6 @@ mod tests {
             b"x",
         )
         .unwrap();
-        assert!(capture(&store, &roots(live.path())).is_err());
+        assert!(capture(&store, &roots(live.path()), None).is_err());
     }
 }
