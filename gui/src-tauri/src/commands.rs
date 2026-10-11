@@ -44,11 +44,11 @@ async fn save_game(
     game: GameForm,
     dirs: Option<Vec<String>>,
     core: State<'_, Arc<WorldlineCore>>,
-) -> Result<Game, String> {
+) -> Result<Game, Failure> {
     let core = Arc::clone(&core);
     off_main(move || core.save_game(game, dirs))
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -274,13 +274,12 @@ async fn refresh_sync(
 async fn adopt_remote_game(
     game_uuid: String,
     core: State<'_, Arc<WorldlineCore>>,
-) -> Result<FullGame, String> {
-    let game_uuid = uuid::Uuid::parse_str(&game_uuid).map_err(|e| e.to_string())?;
+) -> Result<FullGame, Failure> {
+    let game_uuid = uuid::Uuid::parse_str(&game_uuid).map_err(|e| Failure::from(&e.into()))?;
     let core = Arc::clone(&core);
-    tauri::async_runtime::spawn_blocking(move || core.adopt_remote_game(game_uuid))
+    off_main(move || core.adopt_remote_game(game_uuid))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
@@ -398,22 +397,19 @@ async fn import_game_history(
     bundle_path: String,
     mappings: HashMap<String, String>,
     core: State<'_, Arc<WorldlineCore>>,
-) -> Result<worldline_core::bundle::HistoryTransferReport, String> {
+) -> Result<worldline_core::bundle::HistoryTransferReport, Failure> {
     let mappings = mappings
         .into_iter()
         .map(|(uuid, path)| {
             uuid::Uuid::parse_str(&uuid)
                 .map(|uuid| (uuid, PathBuf::from(path)))
-                .map_err(|error| error.to_string())
+                .map_err(|error| Failure::from(&error.into()))
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
     let core = Arc::clone(&core);
-    tauri::async_runtime::spawn_blocking(move || {
-        core.import_game_history(std::path::Path::new(&bundle_path), &mappings)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    off_main(move || core.import_game_history(std::path::Path::new(&bundle_path), &mappings))
+        .await
+        .map_err(|e| Failure::from(&e))
 }
 
 /// Where pre-release data was moved aside on startup, if it was; the GUI words the notice.

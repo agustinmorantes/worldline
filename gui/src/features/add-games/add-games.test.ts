@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { makeGame, makeTrackedDir } from '@/ipc/builders';
 import type { HistoryBundleSummary } from '@/ipc/bindings/HistoryBundleSummary';
 import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
-import { dirsToMap, folderName, newScanResults, scanRevealDelay } from './add-games';
+import { en } from '@/shared/i18n/en';
+import { addFailedHint, dirsToMap, folderName, newScanResults, scanRevealDelay } from './add-games';
 
 describe('scanRevealDelay', () => {
   it('keeps the opening beat, accelerates, and stays bounded for large scans', () => {
@@ -69,5 +70,20 @@ describe('dirsToMap', () => {
       tracked_dirs: [makeTrackedDir({ id: 1, path: 'C:/saves/Hades', uuid: 'a' })],
     });
     expect(dirsToMap(summary(['a', 'b']), [local]).map((d) => d.uuid)).toEqual(['b']);
+  });
+});
+
+describe('addFailedHint', () => {
+  const why = en.addGames.why;
+
+  it('says why for the kinds core tells apart', () => {
+    expect(addFailedHint({ message: 'x', kind: 'folder_taken' }, why)).toBe(why.folderTaken);
+    expect(addFailedHint({ message: 'x', kind: 'shared_folder' }, why)).toBe(why.sharedFolder);
+    expect(addFailedHint({ message: 'x', kind: 'saves_in_use' }, why)).toBe(why.savesInUse);
+  });
+
+  it('has nothing to add for other failures', () => {
+    expect(addFailedHint({ message: 'x', kind: null }, why)).toBeUndefined();
+    expect(addFailedHint('plain text error', why)).toBeUndefined();
   });
 });

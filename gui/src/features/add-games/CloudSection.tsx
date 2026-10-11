@@ -16,6 +16,7 @@ import { btn, eyebrow } from '@/shared/ui/classes';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
+import { addFailedHint } from './add-games';
 
 export function CloudSection({ report }: { report: SyncReport }): ReactElement {
   const t = useT();
@@ -77,7 +78,7 @@ function CloudCard({ game, report }: { game: RemoteGameSummary; report: SyncRepo
       await queryClient.invalidateQueries({ queryKey: ['games'] });
       if (from !== undefined) land(adopted, from);
     } catch (err) {
-      reportError(t.addGames.failed.adopt, err);
+      reportError(t.addGames.failed.adopt, err, addFailedHint(err, t.addGames.why));
       setBusy(false);
     }
   }

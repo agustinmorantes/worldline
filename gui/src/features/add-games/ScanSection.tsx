@@ -17,7 +17,7 @@ import { setPref, usePrefs } from '@/shared/prefs/prefs';
 import { btn, btnQuiet, chip, eyebrow, field } from '@/shared/ui/classes';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
-import { newScanResults, scanRevealDelay } from './add-games';
+import { addFailedHint, newScanResults, scanRevealDelay } from './add-games';
 import { useInstalledScan, useScanRoots } from './queries';
 
 export function ScanSection({ library, cloudTitles, autoScan = false }: {
@@ -126,7 +126,7 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
         await queryClient.invalidateQueries({ queryKey: ['games'] });
         if (from !== undefined) land(game, from);
       } catch (err) {
-        reportError(t.addGames.failed.add, err);
+        reportError(t.addGames.failed.addNamed(item.title), err, addFailedHint(err, t.addGames.why));
       }
     }
     setBusy(false);

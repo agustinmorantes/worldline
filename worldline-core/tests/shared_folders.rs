@@ -8,6 +8,7 @@ use chrono::Utc;
 use common::Device;
 use std::path::PathBuf;
 use uuid::Uuid;
+use worldline_core::error::{ErrorKind, error_kind};
 use worldline_core::models::GameForm;
 use worldline_core::store::{Store, TrackedDirMeta};
 
@@ -30,8 +31,9 @@ fn a_shared_folder_cannot_be_tracked() {
             },
             Some(vec![dir.to_string_lossy().into_owned()]),
         );
-        let error = added.expect_err("a shared folder is refused").to_string();
-        assert!(error.contains("other apps"), "{error}");
+        let error = added.expect_err("a shared folder is refused");
+        assert_eq!(error_kind(&error), Some(ErrorKind::SharedFolder));
+        assert!(error.to_string().contains("other apps"), "{error}");
     }
     assert!(device.core.get_games().unwrap().is_empty());
 }

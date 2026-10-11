@@ -3,6 +3,7 @@
 //! crash leaves at worst a stale index that `reindex` repairs (ADR 0001).
 
 use crate::chunks::{self, CaptureRoot};
+use crate::error::ErrorKind;
 use crate::icon;
 use crate::index::Index;
 use crate::models::*;
@@ -401,6 +402,7 @@ impl History {
     /// caller must hold the repository lock.
     pub fn capture(&self, game: &FullGame) -> Result<Vec<FileEntry>> {
         with_roots(game, |roots| chunks::capture(&self.store, roots))
+            .map_err(crate::error::tag_in_use)
             .context("failed to capture tracked directories")
     }
 
@@ -572,7 +574,8 @@ impl History {
             .iter()
             .any(|game| Some(game.game.id) != id && game.game.title_normalized == normalized)
         {
-            bail!("A game named '{title}' already exists");
+            return Err(anyhow::Error::new(ErrorKind::NameTaken)
+                .context(format!("A game named '{title}' already exists")));
         }
         Ok(title.to_string())
     }
@@ -602,15 +605,16 @@ impl History {
                 bail!("Tracked directory must be an absolute path: {dir}");
             }
             if crate::path_placeholders::is_shared_root(Path::new(dir)) {
-                bail!(
+                return Err(anyhow::Error::new(ErrorKind::SharedFolder).context(format!(
                     "{dir} holds other apps' files too; track the game's own save folder inside it"
-                );
+                )));
             }
             if let Some((_, path)) = taken
                 .iter()
                 .find(|(game_id, path)| Some(*game_id) != id && overlapping_paths(path, dir))
             {
-                bail!("{dir} overlaps {path}, which another game tracks");
+                return Err(anyhow::Error::new(ErrorKind::FolderTaken)
+                    .context(format!("{dir} overlaps {path}, which another game tracks")));
             }
         }
         Ok(())

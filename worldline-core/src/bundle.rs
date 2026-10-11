@@ -3,6 +3,7 @@
 //! adds the zip packaging, bundle manifest, preflight checks and tracked-path
 //! mapping.
 
+use crate::error::ErrorKind;
 use crate::history::{History, overlapping_paths, same_path};
 use crate::store::{
     GameRecord, Store, normalize_display_name, read_json, rename_no_replace, write_json,
@@ -278,10 +279,10 @@ pub fn import(
     if let Some(other) = local_games.iter().find(|g| {
         g.game.title_normalized == title && Some(g.game.id) != existing.map(|e| e.game.id)
     }) {
-        bail!(
+        return Err(anyhow::Error::new(ErrorKind::NameTaken).context(format!(
             "A different game named '{}' already exists",
             other.game.title
-        );
+        )));
     }
     if history
         .store
@@ -336,14 +337,20 @@ pub fn import(
         if !target.is_absolute() {
             bail!("{} is not an absolute path", target.display());
         }
+        if crate::path_placeholders::is_shared_root(target) {
+            return Err(anyhow::Error::new(ErrorKind::SharedFolder).context(format!(
+                "{} holds other apps' files too; choose the game's own save folder inside it",
+                target.display()
+            )));
+        }
         let target_text = target.to_string_lossy();
         if let Some((_, path)) = taken.iter().find(|(id, path)| {
             Some(*id) != existing.map(|e| e.game.id) && overlapping_paths(path, &target_text)
         }) {
-            bail!(
+            return Err(anyhow::Error::new(ErrorKind::FolderTaken).context(format!(
                 "{} overlaps {path}, which another game tracks",
                 target.display()
-            );
+            )));
         }
         dir.path = crate::path_placeholders::substitute_path_placeholders(target);
     }

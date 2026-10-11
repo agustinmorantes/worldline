@@ -16,7 +16,7 @@ import { ease, useMotionReduced } from '@/shared/motion/motion';
 import { btn, btnQuiet, eyebrow, field } from '@/shared/ui/classes';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
-import { dirsToMap, folderName } from './add-games';
+import { addFailedHint, dirsToMap, folderName } from './add-games';
 
 type Draft =
   | { kind: 'folder'; path: string; title: string }
@@ -53,7 +53,7 @@ export function ManualSection({ library }: { library: FullGame[] }): ReactElemen
       setDraft(null);
       if (id !== undefined) go({ view: 'game', gameId: id });
     } catch (err) {
-      reportError(failed, err);
+      reportError(failed, err, addFailedHint(err, t.addGames.why));
     } finally {
       setBusy(false);
     }

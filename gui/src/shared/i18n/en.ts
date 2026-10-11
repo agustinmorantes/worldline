@@ -170,10 +170,18 @@ export const en = {
     failed: {
       scan: 'Couldn’t look for installed games.',
       add: 'Couldn’t add the game.',
+      addNamed: (title: string): string => `Couldn’t add ${title}.`,
       adopt: 'Couldn’t bring that game here.',
       bundle: 'Couldn’t open that history bundle.',
       import: 'Couldn’t import the history.',
       scanFolders: 'Couldn’t change where the scan looks.',
+    },
+    /** Why a game couldn't be added, by the error kind core reports. */
+    why: {
+      nameTaken: 'A game with this name is already in your library.',
+      folderTaken: 'Another game in your library already uses this save folder.',
+      sharedFolder: 'That folder also holds other apps’ files. Choose the game’s own save folder inside it.',
+      savesInUse: 'The game is using its save files. Close it and try again.',
     },
   },
   sessions: {

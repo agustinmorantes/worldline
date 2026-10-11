@@ -168,10 +168,17 @@ export const es: Messages = {
     failed: {
       scan: 'No se pudieron buscar juegos instalados.',
       add: 'No se pudo agregar el juego.',
+      addNamed: (title) => `No se pudo agregar ${title}.`,
       adopt: 'No se pudo traer ese juego.',
       bundle: 'No se pudo abrir ese historial.',
       import: 'No se pudo importar el historial.',
       scanFolders: 'No se pudo cambiar dónde busca.',
+    },
+    why: {
+      nameTaken: 'Ya hay un juego con este nombre en tu biblioteca.',
+      folderTaken: 'Otro juego de tu biblioteca ya usa esta carpeta de partidas.',
+      sharedFolder: 'Esa carpeta también guarda archivos de otras apps. Elige la carpeta de partidas del juego dentro de ella.',
+      savesInUse: 'El juego está usando sus archivos de partida. Ciérralo y vuelve a intentarlo.',
     },
   },
   sessions: {

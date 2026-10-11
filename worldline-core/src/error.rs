@@ -18,6 +18,12 @@ pub enum ErrorKind {
     /// core finishes undoing it by itself, and the checkpoint taken before
     /// it holds the saves meanwhile.
     RestoreIncomplete,
+    /// Another game in the library already has this name.
+    NameTaken,
+    /// Another game already tracks this folder, or one inside or around it.
+    FolderTaken,
+    /// The folder holds other apps' files too (the home folder, AppData...).
+    SharedFolder,
 }
 
 impl fmt::Display for ErrorKind {
@@ -27,6 +33,9 @@ impl fmt::Display for ErrorKind {
             Self::GameRunning => "The game is running",
             Self::SavesInUse => "The game is using its save files",
             Self::RestoreIncomplete => "The saves couldn't be fully put back",
+            Self::NameTaken => "Another game has this name",
+            Self::FolderTaken => "Another game tracks this folder",
+            Self::SharedFolder => "Other apps keep files in this folder",
         })
     }
 }
@@ -39,6 +48,22 @@ pub fn error_kind(error: &anyhow::Error) -> Option<ErrorKind> {
         .downcast_ref::<ErrorKind>()
         .or_else(|| error.chain().find_map(|cause| cause.downcast_ref()))
         .copied()
+}
+
+/// Tags a sharing or lock violation anywhere in `error`'s chain (the game holds
+/// the file) as `SavesInUse`.
+pub fn tag_in_use(error: anyhow::Error) -> anyhow::Error {
+    let held = cfg!(windows)
+        && error.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| matches!(io.raw_os_error(), Some(32 | 33)))
+        });
+    if held {
+        error.context(ErrorKind::SavesInUse)
+    } else {
+        error
+    }
 }
 
 /// A failure as front ends receive it: the whole chain for the log, and its kind.

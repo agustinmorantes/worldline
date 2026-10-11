@@ -451,9 +451,20 @@ impl WorldlineCore {
                     .history()
                     .create_game(&form.title, dirs.as_deref().unwrap_or_default())?;
                 if !game.tracked_dirs.is_empty() {
-                    store::with_lock(self.repository_root(), || {
+                    let first = store::with_lock(self.repository_root(), || {
                         self.inner.checkpoint(&game, VersionReason::Initial)
-                    })?;
+                    });
+                    if let Err(error) = first {
+                        // Not added after all, so trying again isn't blocked by its name or folders.
+                        let history = self.history();
+                        if let Err(undo) = history
+                            .delete_game(game.game.id)
+                            .and_then(|()| history.store.drop_game_history(&game.game.folder_slug))
+                        {
+                            eprintln!("Couldn't take back '{}': {undo:#}", game.game.title);
+                        }
+                        return Err(error);
+                    }
                 }
                 game
             }
@@ -1436,7 +1447,7 @@ impl WorldlineCore {
                         problems.push(format!("{}: {error:#}", remote_game.meta.title));
                     }
                 }
-                LocalMatch::Collision(reason) => {
+                LocalMatch::Collision(_, reason) => {
                     problems.push(format!("{}: {reason}", remote_game.meta.title))
                 }
             }
@@ -1578,7 +1589,7 @@ impl WorldlineCore {
             bail!("This game was deleted on another device");
         }
         let found = self.match_local_game(&game)?;
-        if !matches!(found, LocalMatch::Collision(_)) {
+        if !matches!(found, LocalMatch::Collision(..)) {
             // Adopting is how an untracked game comes back.
             self.history().set_untracked(uuid, false)?;
         }
@@ -1590,7 +1601,9 @@ impl WorldlineCore {
                 self.link_game(&local, &game)?;
                 self.pull_game(&remote, &game)?;
             }
-            LocalMatch::Collision(reason) => bail!(reason),
+            LocalMatch::Collision(kind, reason) => {
+                return Err(anyhow::Error::new(kind).context(reason));
+            }
         }
         for problem in self.push_locked(&remote)? {
             eprintln!("Sync: {problem}");
@@ -1625,10 +1638,13 @@ impl WorldlineCore {
             return Ok(if shares_path(local) {
                 LocalMatch::Same(Box::new(local.clone()))
             } else {
-                LocalMatch::Collision(format!(
-                    "a different local game is also named '{}'; rename one of them to sync it",
-                    local.game.title
-                ))
+                LocalMatch::Collision(
+                    ErrorKind::NameTaken,
+                    format!(
+                        "a different local game is also named '{}'; rename one of them to sync it",
+                        local.game.title
+                    ),
+                )
             });
         }
         let overlaps_path = |game: &FullGame| {
@@ -1639,10 +1655,13 @@ impl WorldlineCore {
             })
         };
         if let Some(local) = games.iter().find(|g| overlaps_path(g)) {
-            return Ok(LocalMatch::Collision(format!(
-                "its save folder is already tracked by '{}'",
-                local.game.title
-            )));
+            return Ok(LocalMatch::Collision(
+                ErrorKind::FolderTaken,
+                format!(
+                    "its save folder is already tracked by '{}'",
+                    local.game.title
+                ),
+            ));
         }
         Ok(LocalMatch::None)
     }
@@ -2267,7 +2286,7 @@ impl Drop for WorldlineCore {
 enum LocalMatch {
     None,
     Same(Box<FullGame>),
-    Collision(String),
+    Collision(ErrorKind, String),
 }
 
 /// What retention planning reads: the union catalog of local and remote,

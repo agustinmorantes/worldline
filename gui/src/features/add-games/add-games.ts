@@ -1,5 +1,8 @@
 // Pure logic behind the Add games view.
+import type { Messages } from '@/shared/i18n';
 import type { BundleTrackedDir } from '@/ipc/bindings/BundleTrackedDir';
+import type { ErrorKind } from '@/ipc/bindings/ErrorKind';
+import type { Failure } from '@/ipc/bindings/Failure';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { HistoryBundleSummary } from '@/ipc/bindings/HistoryBundleSummary';
 import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
@@ -37,4 +40,17 @@ export function dirsToMap(summary: HistoryBundleSummary, library: FullGame[]): B
   const local = library.find((g) => g.uuid === summary.game_uuid);
   const tracked = new Set(local?.tracked_dirs.map((d) => d.uuid));
   return summary.active_tracked_dirs.filter((dir) => !tracked.has(dir.uuid));
+}
+
+/** Why a game couldn't be added, when core tells the reason apart; the rest only have details. */
+export function addFailedHint(err: unknown, why: Messages['addGames']['why']): string | undefined {
+  const kind = typeof err === 'object' && err !== null ? (err as Partial<Failure>).kind : undefined;
+  const hints: Partial<Record<ErrorKind, string>> = {
+    name_taken: why.nameTaken,
+    folder_taken: why.folderTaken,
+    shared_folder: why.sharedFolder,
+    saves_in_use: why.savesInUse,
+    game_running: why.savesInUse,
+  };
+  return kind === undefined || kind === null ? undefined : hints[kind];
 }
