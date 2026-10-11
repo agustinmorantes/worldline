@@ -18,6 +18,10 @@ export const test = base.extend<ScreenOptions>({
       },
       { fixture, prefs },
     );
+    // Midday: fixtures sit hours before "now", and near midnight they'd cross into another day.
+    const midday = new Date();
+    midday.setHours(12, 0, 0, 0);
+    await page.clock.setFixedTime(midday);
     await use(page);
   },
 });
