@@ -8,6 +8,14 @@ use worldline_core::install_scanner::InstallScannerItem;
 use worldline_core::models::*;
 use worldline_core::WorldlineCore;
 
+/// Runs `work` off the main thread: a command that waits there for the repository lock (held by a
+/// capture or a sync) freezes the whole window.
+async fn off_main<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tauri::async_runtime::spawn_blocking(work).await?
+}
+
 #[tauri::command]
 fn get_games(core: State<Arc<WorldlineCore>>) -> Result<Vec<FullGame>, String> {
     core.get_games().map_err(|e| e.to_string())
@@ -32,17 +40,23 @@ fn get_unrecorded_changes(core: State<Arc<WorldlineCore>>) -> Vec<(i32, chrono::
 }
 
 #[tauri::command]
-fn save_game(
+async fn save_game(
     game: GameForm,
     dirs: Option<Vec<String>>,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<Game, String> {
-    core.save_game(game, dirs).map_err(|err| err.to_string())
+    let core = Arc::clone(&core);
+    off_main(move || core.save_game(game, dirs))
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-fn delete_game(id: i32, core: State<Arc<WorldlineCore>>) -> Result<(), String> {
-    core.delete_game(id).map_err(|e| e.to_string())
+async fn delete_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(), String> {
+    let core = Arc::clone(&core);
+    off_main(move || core.delete_game(id))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -55,71 +69,94 @@ async fn untrack_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<()
 }
 
 #[tauri::command]
-fn create_slot(
+async fn create_slot(
     game_id: i32,
     name: String,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<FullGame, Failure> {
-    core.create_slot(game_id, &name)
+    let core = Arc::clone(&core);
+    off_main(move || core.create_slot(game_id, &name))
+        .await
         .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
-fn switch_slot(
+async fn switch_slot(
     game_id: i32,
     slot_id: i32,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<FullGame, Failure> {
-    core.switch_slot(game_id, slot_id)
+    let core = Arc::clone(&core);
+    off_main(move || core.switch_slot(game_id, slot_id))
+        .await
         .map_err(|e| Failure::from(&e))
 }
 
 #[tauri::command]
-fn rename_slot(
+async fn rename_slot(
     slot_id: i32,
     name: String,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<FullGame, String> {
-    core.rename_slot(slot_id, &name).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_slot(
-    slot_id: i32,
-    replacement_slot_id: Option<i32>,
-    core: State<Arc<WorldlineCore>>,
-) -> Result<FullGame, Failure> {
-    core.delete_slot(slot_id, replacement_slot_id)
-        .map_err(|e| Failure::from(&e))
-}
-
-#[tauri::command]
-fn restore_version(id: i32, core: State<Arc<WorldlineCore>>) -> Result<(), Failure> {
-    core.restore_version(id).map_err(|e| Failure::from(&e))
-}
-
-#[tauri::command]
-fn tag_version(id: i32, tag: String, core: State<Arc<WorldlineCore>>) -> Result<Version, String> {
-    core.tag_version(id, tag).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_game_icon(
-    game_id: i32,
-    source_path: String,
-    core: State<Arc<WorldlineCore>>,
-) -> Result<String, String> {
-    core.set_game_icon(game_id, &source_path)
+    let core = Arc::clone(&core);
+    off_main(move || core.rename_slot(slot_id, &name))
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn set_game_accent(
+async fn delete_slot(
+    slot_id: i32,
+    replacement_slot_id: Option<i32>,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<FullGame, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.delete_slot(slot_id, replacement_slot_id))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+#[tauri::command]
+async fn restore_version(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(), Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.restore_version(id))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+#[tauri::command]
+async fn tag_version(
+    id: i32,
+    tag: String,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<Version, String> {
+    let core = Arc::clone(&core);
+    off_main(move || core.tag_version(id, tag))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_game_icon(
+    game_id: i32,
+    source_path: String,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<String, String> {
+    let core = Arc::clone(&core);
+    off_main(move || core.set_game_icon(game_id, &source_path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_game_accent(
     game_id: i32,
     hue: Option<u16>,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<Game, String> {
-    core.set_game_accent(game_id, hue)
+    let core = Arc::clone(&core);
+    off_main(move || core.set_game_accent(game_id, hue))
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -140,13 +177,19 @@ fn get_scan_roots(core: State<Arc<WorldlineCore>>) -> Result<Vec<String>, String
 }
 
 #[tauri::command]
-fn add_scan_root(path: String, core: State<Arc<WorldlineCore>>) -> Result<(), String> {
-    core.add_scan_root(&path).map_err(|e| e.to_string())
+async fn add_scan_root(path: String, core: State<'_, Arc<WorldlineCore>>) -> Result<(), String> {
+    let core = Arc::clone(&core);
+    off_main(move || core.add_scan_root(&path))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn remove_scan_root(path: String, core: State<Arc<WorldlineCore>>) -> Result<(), String> {
-    core.remove_scan_root(&path).map_err(|e| e.to_string())
+async fn remove_scan_root(path: String, core: State<'_, Arc<WorldlineCore>>) -> Result<(), String> {
+    let core = Arc::clone(&core);
+    off_main(move || core.remove_scan_root(&path))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -170,11 +213,13 @@ fn get_screenshot_path(
 }
 
 #[tauri::command]
-fn update_monitoring_settings(
+async fn update_monitoring_settings(
     monitoring_settings: MonitoringSettings,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<MonitoringSettings, String> {
-    core.update_monitoring_settings(monitoring_settings)
+    let core = Arc::clone(&core);
+    off_main(move || core.update_monitoring_settings(monitoring_settings))
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -184,12 +229,15 @@ fn get_device(core: State<Arc<WorldlineCore>>) -> worldline_core::sync::DeviceMe
 }
 
 #[tauri::command]
-fn update_device(
+async fn update_device(
     name: String,
     kind: Option<worldline_core::sync::DeviceKind>,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<worldline_core::sync::DeviceMetadata, String> {
-    core.update_device(&name, kind).map_err(|e| e.to_string())
+    let core = Arc::clone(&core);
+    off_main(move || core.update_device(&name, kind))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -273,11 +321,13 @@ fn get_pruning_settings(
 }
 
 #[tauri::command]
-fn update_pruning_settings(
+async fn update_pruning_settings(
     settings: worldline_core::maintenance::RetentionSettings,
-    core: State<Arc<WorldlineCore>>,
+    core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<worldline_core::maintenance::RetentionSettings, String> {
-    core.update_pruning_settings(settings)
+    let core = Arc::clone(&core);
+    off_main(move || core.update_pruning_settings(settings))
+        .await
         .map_err(|e| e.to_string())
 }
 
