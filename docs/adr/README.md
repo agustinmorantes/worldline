@@ -13,3 +13,4 @@ Each record states a decision, the options it was weighed against, and what foll
 | [0007](0007-gui-owns-its-copy-errors-and-language.md) | The GUI owns its copy, its error messages and the language |
 | [0008](0008-live-saves-change-atomically-or-not-at-all.md) | Live saves change atomically or not at all |
 | [0009](0009-game-overlay-is-a-separate-window-driven-from-rust.md) | The game overlay is a separate window, driven from Rust |
+| [0011](0011-deleted-games-and-slots-stay-recoverable-for-30-days.md) | Deleted games and slots stay recoverable for 30 days |

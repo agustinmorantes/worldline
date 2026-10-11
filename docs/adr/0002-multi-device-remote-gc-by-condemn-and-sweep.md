@@ -8,7 +8,7 @@ date: 2026-09-27
 The remote is a cloud-synced folder. It has no locking and no atomic view, yet pruning must shrink it while several devices are registered.
 
 Garbage collection has two phases:
-1. **Condemn.** A device lists the chunks that no non-retired version and no device pointer references, in a write-once `gc/condemned/` record.
+1. **Condemn.** A device lists the chunks that no non-retired version and no device pointer references, in a write-once `gc/condemned/` record. Versions of deleted games and slots still in their recovery window count as live (ADR 0011).
 2. **Sweep.** A later run deletes only the condemned chunks that are older than a grace period (72 h) and still unreferenced.
 
 Any device may run either phase. Every device that publishes a version re-checks that its chunks exist and re-uploads any that are missing. Pull treats a missing chunk as not yet arrived. Retirement decisions are deterministic, computed from shared settings and the shared catalog, so different devices produce identical write-once markers.
