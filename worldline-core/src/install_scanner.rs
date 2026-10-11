@@ -233,81 +233,29 @@ pub fn resolve_placeholders(
     path
 }
 
-fn glob_has_matches(pattern: &str) -> bool {
-    let normalized = pattern.replace('\\', "/");
-    if let Ok(paths) = glob::glob(&normalized) {
-        paths.filter_map(Result::ok).next().is_some()
-    } else {
-        false
-    }
+/// The entry that the path component holding the wildcard at `wildcard`
+/// matched, in the first match of `pattern`: `Vampire_Survivors_123` for
+/// `.../Vampire_Survivors_*/SaveData.sav`.
+fn matched_component(pattern: &str, wildcard: usize) -> Option<PathBuf> {
+    let end = pattern[wildcard..]
+        .find(['/', '\\'])
+        .map_or(pattern.len(), |offset| wildcard + offset);
+    let depth = Path::new(&pattern[..end]).components().count();
+    let first = glob::glob(&pattern.replace('\\', "/"))
+        .ok()?
+        .filter_map(Result::ok)
+        .next()?;
+    Some(first.components().take(depth).collect())
 }
 
-#[cfg(target_os = "windows")]
-fn paths_equal(lhs: &Path, rhs: &Path) -> bool {
-    lhs.to_string_lossy().to_lowercase() == rhs.to_string_lossy().to_lowercase()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn paths_equal(lhs: &Path, rhs: &Path) -> bool {
-    lhs == rhs
-}
-
-fn is_shared_dir(path: &Path) -> bool {
-    if path.parent().is_none() {
-        return true;
-    }
-    if let Some(home) = dirs::home_dir() {
-        if paths_equal(path, &home) {
-            return true;
-        }
-        let appdata = home.join("AppData");
-        if paths_equal(path, &appdata)
-            || paths_equal(path, &appdata.join("Roaming"))
-            || paths_equal(path, &appdata.join("Local"))
-            || paths_equal(path, &appdata.join("LocalLow"))
-        {
-            return true;
-        }
-        let docs = home.join("Documents");
-        if paths_equal(path, &docs) || paths_equal(path, &docs.join("My Games")) {
-            return true;
-        }
-        if paths_equal(path, &home.join("Saved Games")) {
-            return true;
-        }
-    }
-    if std::env::var("APPDATA")
-        .map(|v| paths_equal(Path::new(&v), path))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if std::env::var("LOCALAPPDATA")
-        .map(|v| paths_equal(Path::new(&v), path))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if std::env::var("PROGRAMDATA")
-        .map(|v| paths_equal(Path::new(&v), path))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if let Ok(public) = std::env::var("PUBLIC") {
-        let pub_path = PathBuf::from(public);
-        if paths_equal(path, &pub_path) {
-            return true;
-        }
-        let pub_docs = pub_path.join("Documents");
-        if paths_equal(path, &pub_docs) || paths_equal(path, &pub_docs.join("Steam")) {
-            return true;
-        }
-    }
-    false
-}
-
+/// The folder to track for a resolved manifest path, if it exists. Never a
+/// folder other apps share.
 fn resolve_tracked_directory(resolved_path: &str) -> Option<PathBuf> {
+    resolve_existing_directory(resolved_path)
+        .filter(|dir| !crate::path_placeholders::is_shared_root(dir))
+}
+
+fn resolve_existing_directory(resolved_path: &str) -> Option<PathBuf> {
     // 1. Literal path check
     let path = PathBuf::from(resolved_path);
     if path.is_dir() {
@@ -317,42 +265,31 @@ fn resolve_tracked_directory(resolved_path: &str) -> Option<PathBuf> {
     }
 
     // 2. Glob path check
-    if let Some(idx) = resolved_path.find(['*', '?', '[']) {
-        let before_glob = &resolved_path[..idx];
-        let trimmed = before_glob.trim_end_matches(['/', '\\']);
-        let base_path = PathBuf::from(trimmed);
-
-        if base_path.is_dir() && !is_shared_dir(&base_path) {
-            // Specific game directory exists; no need to check glob matches (e.g. GameName/*.sav).
-            Some(base_path)
-        } else if before_glob.ends_with(['/', '\\']) && !base_path.is_dir() {
-            // Glob is inside a directory that doesn't exist.
-            None
-        } else {
-            // Glob is in a filename prefix or directory wildcard in a shared folder (e.g. My Games/Super DX-Ball *).
-            // We must verify that the glob actually matches at least one file/folder to avoid false positives.
-            if glob_has_matches(resolved_path) {
-                if base_path.is_dir() {
-                    Some(base_path)
-                } else {
-                    let parent = base_path.parent()?;
-                    if parent.is_dir() {
-                        Some(parent.to_path_buf())
-                    } else {
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        }
-    } else {
+    let idx = resolved_path.find(['*', '?', '['])?;
+    let before_glob = &resolved_path[..idx];
+    let base_path = PathBuf::from(before_glob.trim_end_matches(['/', '\\']));
+    if base_path.is_dir() && !crate::path_placeholders::is_shared_root(&base_path) {
+        // Specific game directory exists; no need to check glob matches (e.g. GameName/*.sav).
+        Some(base_path)
+    } else if before_glob.ends_with(['/', '\\']) && !base_path.is_dir() {
+        // Glob is inside a directory that doesn't exist.
         None
+    } else {
+        // Glob in a name (e.g. My Games/Super DX-Ball *, Game/save*.dat): it
+        // must match something, and what it matched decides the folder.
+        let entry = matched_component(resolved_path, idx)?;
+        if entry.is_dir() {
+            Some(entry)
+        } else {
+            entry.parent().map(Path::to_path_buf)
+        }
     }
 }
 
-fn candidate_tracked_directory(resolved_path: &str) -> PathBuf {
-    if let Some(index) = resolved_path.find(['*', '?', '[']) {
+/// Where the saves of a resolved manifest path would be, before they exist.
+/// Never a folder other apps share.
+fn candidate_tracked_directory(resolved_path: &str) -> Option<PathBuf> {
+    let candidate = if let Some(index) = resolved_path.find(['*', '?', '[']) {
         let prefix = resolved_path[..index].trim_end_matches(['/', '\\']);
         let path = PathBuf::from(prefix);
         if resolved_path[..index].ends_with(['/', '\\']) {
@@ -367,7 +304,8 @@ fn candidate_tracked_directory(resolved_path: &str) -> PathBuf {
         } else {
             path
         }
-    }
+    };
+    (!crate::path_placeholders::is_shared_root(&candidate)).then_some(candidate)
 }
 
 fn is_save_path(tags: &Option<Vec<String>>) -> bool {
@@ -674,11 +612,11 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
                 Some(&store_game_id_str),
             );
 
-            let candidate = candidate_tracked_directory(&resolved)
-                .to_string_lossy()
-                .to_string();
-            if !candidate_dirs.contains(&candidate) {
-                candidate_dirs.push(candidate);
+            if let Some(candidate) = candidate_tracked_directory(&resolved) {
+                let candidate = candidate.to_string_lossy().to_string();
+                if !candidate_dirs.contains(&candidate) {
+                    candidate_dirs.push(candidate);
+                }
             }
 
             if let Some(dir) = resolve_tracked_directory(&resolved) {
@@ -840,11 +778,11 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
                 None,
             );
 
-            let candidate = candidate_tracked_directory(&resolved)
-                .to_string_lossy()
-                .to_string();
-            if !candidate_dirs.contains(&candidate) {
-                candidate_dirs.push(candidate);
+            if let Some(candidate) = candidate_tracked_directory(&resolved) {
+                let candidate = candidate.to_string_lossy().to_string();
+                if !candidate_dirs.contains(&candidate) {
+                    candidate_dirs.push(candidate);
+                }
             }
 
             if let Some(dir) = resolve_tracked_directory(&resolved) {
@@ -1249,7 +1187,7 @@ mod tests {
     fn candidate_path_survives_before_the_save_directory_exists() {
         let save_dir = tempdir().unwrap().path().join("NeverRun");
         let candidate = candidate_tracked_directory(&save_dir.join("save.dat").to_string_lossy());
-        assert_eq!(candidate, save_dir);
+        assert_eq!(candidate, Some(save_dir));
     }
 
     #[test]
@@ -1307,24 +1245,42 @@ mod tests {
         let matched_dir = shared_dir.join("SuperDXBall Deluxe");
         fs::create_dir(&matched_dir).unwrap();
         let res = resolve_tracked_directory(&pattern_shared.to_string_lossy());
-        assert_eq!(res, Some(shared_dir.clone())); // Matches exist, returns parent directory to track
+        assert_eq!(res, Some(matched_dir)); // The game's own folder, never the shared parent
+
+        // Scenario D: a file pattern in an existing folder tracks that folder
+        let saves = path.join("Saves");
+        fs::create_dir(&saves).unwrap();
+        fs::write(saves.join("slot1.dat"), "x").unwrap();
+        let res = resolve_tracked_directory(&saves.join("slot*.dat").to_string_lossy());
+        assert_eq!(res, Some(saves));
     }
 
     #[test]
-    fn test_is_shared_dir() {
-        // Shared dirs
-        if let Some(home) = dirs::home_dir() {
-            assert!(is_shared_dir(&home));
-            assert!(!is_shared_dir(&home.join("Documents/My Games/GameName")));
-        }
+    fn a_wildcard_folder_name_resolves_to_the_matched_folder() {
+        // `<xdgConfig>/Vampire_Survivors_<storeUserId>/SaveData.sav` once
+        // resolved to the whole of AppData\Roaming.
+        let dir = tempdir().unwrap();
+        let game = dir.path().join("Vampire_Survivors_123");
+        fs::create_dir(&game).unwrap();
+        fs::write(game.join("SaveData.sav"), "x").unwrap();
+        let pattern = dir.path().join("Vampire_Survivors_*").join("SaveData.sav");
+        assert_eq!(
+            resolve_tracked_directory(&pattern.to_string_lossy()),
+            Some(game)
+        );
+    }
 
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            assert!(is_shared_dir(Path::new(&appdata)));
-        }
-
-        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-            assert!(is_shared_dir(Path::new(&localappdata)));
-        }
+    #[test]
+    fn shared_folders_are_never_proposed() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(resolve_tracked_directory(&home.to_string_lossy()), None);
+        let pattern = home.join("Game_*").join("SaveData.sav");
+        assert_eq!(
+            candidate_tracked_directory(&pattern.to_string_lossy()),
+            None
+        );
+        let file = home.join("game.ini");
+        assert_eq!(candidate_tracked_directory(&file.to_string_lossy()), None);
     }
 
     #[test]

@@ -84,10 +84,22 @@ pub fn prepare(
             .push((root.clone(), relative.to_path_buf(), file.clone()));
     }
     for root in prepared.roots.keys() {
-        crate::fs_utils::validate_restore_path(root, Path::new(""))
-            .with_context(|| format!("Unsafe tracked dir {}", root.display()))?;
+        validate_root(root)?;
     }
     Ok(prepared)
+}
+
+/// A restore replaces its roots wholesale, so a root must be a real folder
+/// path that no other app shares.
+fn validate_root(root: &Path) -> Result<()> {
+    if crate::path_placeholders::is_shared_root(root) {
+        bail!(
+            "Unsafe tracked dir {}: other apps keep files there too",
+            root.display()
+        );
+    }
+    crate::fs_utils::validate_restore_path(root, Path::new(""))
+        .with_context(|| format!("Unsafe tracked dir {}", root.display()))
 }
 
 /// Prepares emptying the live directories (activating a slot with no versions).
@@ -95,8 +107,7 @@ pub fn clear_only(live_dirs: &[TrackedDir]) -> Result<PreparedRestore> {
     let mut roots = BTreeMap::new();
     for dir in live_dirs {
         let path = PathBuf::from(&dir.path);
-        crate::fs_utils::validate_restore_path(&path, Path::new(""))
-            .with_context(|| format!("Unsafe tracked dir {}", dir.path))?;
+        validate_root(&path)?;
         roots.insert(path, crate::exclusions::parse(&dir.exclusions));
     }
     Ok(PreparedRestore {
@@ -684,6 +695,23 @@ mod tests {
         let ops = HOOKS.with_borrow(|hooks| hooks.ops);
         HOOKS.set(Hooks::default());
         (result, ops)
+    }
+
+    #[test]
+    fn a_shared_folder_is_never_a_restore_root() {
+        let home = dirs::home_dir().unwrap();
+        let dir = TrackedDir {
+            id: 1,
+            uuid: Uuid::nil().to_string(),
+            game_id: 1,
+            folder_slug: "home".into(),
+            path: home.to_string_lossy().into_owned(),
+            label: None,
+            exclusions: "[]".into(),
+            retired_at: None,
+        };
+        let error = clear_only(&[dir]).err().expect("refused").to_string();
+        assert!(error.contains("Unsafe tracked dir"), "{error}");
     }
 
     #[test]

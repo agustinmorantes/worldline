@@ -593,12 +593,18 @@ impl History {
         Ok(name.to_string())
     }
 
-    /// Tracked directories must be absolute and not overlap another game's.
+    /// Tracked directories must be absolute, not shared with other apps, and
+    /// not overlap another game's.
     fn validate_dirs(&self, id: Option<i32>, dirs: &[String]) -> Result<()> {
         let taken = self.index.tracked_paths()?;
         for dir in dirs {
             if !Path::new(dir).is_absolute() {
                 bail!("Tracked directory must be an absolute path: {dir}");
+            }
+            if crate::path_placeholders::is_shared_root(Path::new(dir)) {
+                bail!(
+                    "{dir} holds other apps' files too; track the game's own save folder inside it"
+                );
             }
             if let Some((_, path)) = taken
                 .iter()

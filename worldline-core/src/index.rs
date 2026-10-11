@@ -423,6 +423,11 @@ fn upsert_game(
     let mut dir_uuids = Vec::new();
     for dir in &record.tracked_dirs {
         let path = crate::path_placeholders::expand_path_placeholders(&dir.path);
+        // A shared folder another device (or an older version) tracked is
+        // never watched, captured or restored here.
+        if crate::path_placeholders::is_shared_root(std::path::Path::new(&path)) {
+            continue;
+        }
         let exclusions = serde_json::to_string(&dir.exclusions)?;
         let retired_at = dir.retired_at.map(|at| at.naive_utc());
         diesel::insert_into(tracked_dirs::table)

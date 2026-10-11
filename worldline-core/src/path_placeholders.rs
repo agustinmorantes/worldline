@@ -58,6 +58,42 @@ pub fn substitute_path_placeholders(path: &Path) -> String {
     path_to_forward_slashes(path)
 }
 
+/// Whether `path` is a folder many apps share (the home folder, AppData,
+/// Documents, Program Files...), one of their ancestors, or a drive root.
+/// Tracking one would capture, watch and restore far more than a game's saves.
+pub fn is_shared_root(path: &Path) -> bool {
+    if path.parent().is_none() {
+        return true;
+    }
+    let path = path_to_forward_slashes(path);
+    let path = path.trim_end_matches('/');
+    shared_roots()
+        .iter()
+        .any(|root| strip_root(&path_to_forward_slashes(root), path).is_some())
+}
+
+fn shared_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = prioritized_placeholder_roots()
+        .into_iter()
+        .map(|(_, root)| root)
+        .collect();
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join("Saved Games"));
+    }
+    if let Some(docs) = dirs::document_dir() {
+        roots.push(docs.join("My Games"));
+    }
+    if let Ok(public) = std::env::var("PUBLIC") {
+        roots.push(Path::new(&public).join("Documents").join("Steam"));
+    }
+    for var in ["ProgramFiles", "ProgramFiles(x86)", "WINDIR"] {
+        if let Ok(dir) = std::env::var(var) {
+            roots.push(dir.into());
+        }
+    }
+    roots
+}
+
 fn environment_placeholders() -> Vec<(&'static str, String)> {
     let mut pairs = Vec::new();
 
@@ -223,6 +259,27 @@ mod tests {
                 strip_root(path, "c:/testunicodei\u{307}/appdata"),
                 Some((3, "Saved/Game".to_string()))
             );
+        }
+    }
+
+    #[test]
+    fn shared_folders_and_their_ancestors_are_shared_roots() {
+        let home = dirs::home_dir().expect("home dir should exist for test");
+        assert!(is_shared_root(&home));
+        assert!(is_shared_root(home.parent().unwrap()));
+        assert!(is_shared_root(home.ancestors().last().unwrap()));
+        assert!(!is_shared_root(&home.join("Saved Games").join("Game")));
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let appdata = PathBuf::from(appdata);
+            assert!(is_shared_root(&appdata));
+            // Trailing separators and case don't hide it.
+            let spelled = format!("{}\\", appdata.display()).to_uppercase();
+            assert!(is_shared_root(Path::new(&spelled)));
+            assert!(!is_shared_root(&appdata.join("Vampire_Survivors")));
+        }
+        if let Some(docs) = dirs::document_dir() {
+            assert!(is_shared_root(&docs.join("My Games")));
+            assert!(!is_shared_root(&docs.join("My Games").join("Game")));
         }
     }
 
