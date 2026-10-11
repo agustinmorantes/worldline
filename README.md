@@ -14,7 +14,7 @@ Made a bad call? Rewind. Want the other path too? Keep both.
 ![Platforms: Windows | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational)
 ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?logo=tauri&logoColor=white)
 
-[Download](#installation) · [How it works](#how-it-works) · [Features](#features) · [Build from source](#building-from-source) · [Docs](docs/)
+[Download](#installation) · [How it works](#how-it-works) · [Features](#features) · [In the game](#in-the-game) · [Build from source](#building-from-source) · [Docs](docs/)
 
 <img src="docs/media/sessions.png" alt="A game's timeline in Worldline: today's session, yesterday's with a branch to another timeline, and a session played on another device" width="100%">
 
@@ -29,7 +29,7 @@ Worldline watches your games' save folders and keeps every save as a **checkpoin
 ## How it works
 
 <div align="center">
-<img src="docs/media/rewind.gif" alt="Selecting the 'Before Hydra' checkpoint, holding to rewind, and the later play splitting off as 'where you left off'" width="80%">
+<img src="docs/media/rewind.webp" alt="Selecting the 'Before Hornet' checkpoint, holding to rewind, and the later play splitting off as 'where you left off'" width="80%">
 </div>
 
 1. **Just play.** Every time the game saves, Worldline keeps a copy. Saves in quick succession become one checkpoint, and unchanged saves aren't stored again.
@@ -47,7 +47,7 @@ Name a checkpoint ("Before Malenia") to keep it forever. Unnamed ones are thinne
 - **Finds your games.** Scans Steam, Epic and your own folders, and knows where thousands of games keep their saves thanks to the [Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest).
 - **Sync between devices** through any folder you already sync (Dropbox, OneDrive, Google Drive, Syncthing, a NAS). No account and no server. Progress from your other devices shows up wherever you play next; if two of them moved on, both runs are kept and you choose.
 - **Playthroughs.** Keep separate histories for separate runs of the same game.
-- **In-game popup and hotkeys** (Windows). A small popup tells you when a checkpoint was kept. *Quick keep* and *Name it* hotkeys save a moment without leaving the game. The popup is a separate window: nothing is injected into the game.
+- **In-game popup and hotkeys** (Windows). A small popup tells you when a checkpoint was kept. *Quick keep* and *Name it* hotkeys save a moment without leaving the game. The popup is a separate window: nothing is injected into the game ([see it](#in-the-game)).
 - **A screenshot of each checkpoint** (Windows 11), so you can see where you were.
 - **Small on disk.** Saves are deduplicated, chunked and compressed with zstd. Unchanged data is stored once across every checkpoint.
 - **Your data stays readable.** History is plain files and zstd chunks. You can [recover a save by hand](docs/storage-format.md) without the app.
@@ -56,7 +56,7 @@ Name a checkpoint ("Before Malenia") to keep it forever. Unnamed ones are thinne
 - English and Spanish. Lives in the tray.
 
 <div align="center">
-<img src="docs/media/views.gif" alt="Switching a game's history between the Sessions view and the Graph view" width="80%">
+<img src="docs/media/views.webp" alt="Switching a game's history between the Sessions view and the Graph view" width="80%">
 </div>
 
 <table>
@@ -69,6 +69,26 @@ Name a checkpoint ("Before Malenia") to keep it forever. Unnamed ones are thinne
     <td width="50%"><img src="docs/media/settings.png" alt="Settings: capture, in-game popup, cloud devices and appearance"><br><sub><b>Settings.</b> Capture timing, the in-game popup, devices and appearance.</sub></td>
   </tr>
 </table>
+
+## In the game
+
+When Worldline keeps a checkpoint, a small popup slides into a corner of the game and gets out of the way. Press a hotkey to keep the moment for good, or to name it right over the game. It works in windowed and borderless games.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/overlay.webp" alt="Worldline popups in the corner of a game: recording, checkpoint 42 then 43, a new timeline, kept forever"><br><sub><b>Popups.</b> One for each checkpoint, a new timeline or a kept moment.</sub></td>
+    <td width="50%"><img src="docs/media/name-it.webp" alt="The Name it hotkey opens a card over the game; typing a name and pressing Enter keeps the checkpoint"><br><sub><b>Name it.</b> A hotkey opens a card over the game; Enter keeps it with that name.</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/media/ov-chip-checkpoint.png" height="56" alt="Popup: Checkpoint #42">
+  <img src="docs/media/ov-chip-timeline.png" height="56" alt="Popup: New timeline #44, branched off Before the bridge">
+  <img src="docs/media/ov-chip-kept.png" height="56" alt="Popup: Kept forever #46">
+  <img src="docs/media/ov-chip-ahead.png" height="56" alt="Popup: Laptop is ahead, quit and sync first">
+</p>
+
+<sub>The real popups, over a stand-in game. Screenshots and clips are recorded from Worldline with demo saves.</sub>
 
 ## Installation
 
