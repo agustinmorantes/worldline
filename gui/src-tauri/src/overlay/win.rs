@@ -6,8 +6,9 @@
 use super::decide::Rect;
 use std::cell::RefCell;
 use std::os::windows::ffi::OsStringExt;
+use std::time::{Duration, Instant};
 use tauri::WebviewWindow;
-use tauri_plugin_log::log::warn;
+use tauri_plugin_log::log::{info, warn};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     ClientToScreen, MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
@@ -271,10 +272,44 @@ pub fn interactive(window: &WebviewWindow, on: bool) {
 /// thread's input attached to the foreground window's thread, which Windows lets set the
 /// foreground. No key is injected: one can arrive late, at the window that just took the focus.
 pub fn take_focus(hwnd: isize) -> bool {
-    let fronted = || unsafe {
-        SetForegroundWindow(hwnd as HWND) != 0 && GetForegroundWindow() == hwnd as HWND
-    };
-    fronted() || attached_to_foreground(fronted)
+    let asked = || unsafe { SetForegroundWindow(hwnd as HWND) != 0 };
+    let in_front = || foreground() == hwnd;
+    let fronted = confirmed(
+        || asked() || attached_to_foreground(asked),
+        in_front,
+        ACTIVATION_LIMIT,
+    );
+    if fronted == Some(false) {
+        info!("overlay: Windows accepted the focus request but never activated the window");
+    }
+    fronted == Some(true)
+}
+
+/// How long the window's own thread gets to activate it once Windows accepts the request.
+const ACTIVATION_LIMIT: Duration = Duration::from_millis(500);
+const ACTIVATION_POLL: Duration = Duration::from_millis(10);
+
+/// `None` when Windows refuses the request (`ask`); otherwise whether the window is in front
+/// within `limit`. A window of another thread isn't in front as soon as the request returns: its
+/// thread activates it when it next reads its messages.
+fn confirmed(
+    ask: impl FnOnce() -> bool,
+    in_front: impl Fn() -> bool,
+    limit: Duration,
+) -> Option<bool> {
+    if !ask() {
+        return None;
+    }
+    let started = Instant::now();
+    loop {
+        if in_front() {
+            return Some(true);
+        }
+        if started.elapsed() >= limit {
+            return Some(false);
+        }
+        std::thread::sleep(ACTIVATION_POLL);
+    }
 }
 
 /// Runs `f` with this thread's input attached to the foreground window's thread, then detaches.
@@ -304,4 +339,44 @@ pub fn hand_back(hwnd: isize) -> bool {
         }
     }
     take_focus(hwnd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_refused_request_is_none_and_never_waits() {
+        let looked = Cell::new(false);
+        let in_front = || {
+            looked.set(true);
+            true
+        };
+        assert_eq!(confirmed(|| false, in_front, Duration::from_secs(1)), None);
+        assert!(!looked.get());
+    }
+
+    #[test]
+    fn an_accepted_request_waits_for_the_window_to_be_in_front() {
+        // Windows activates it a few polls after the request returned.
+        let polls = Cell::new(0);
+        let in_front = || {
+            polls.set(polls.get() + 1);
+            polls.get() > 3
+        };
+        assert_eq!(
+            confirmed(|| true, in_front, Duration::from_secs(5)),
+            Some(true)
+        );
+        assert_eq!(polls.get(), 4);
+    }
+
+    #[test]
+    fn an_accepted_request_never_activated_gives_up_at_the_limit() {
+        let limit = Duration::from_millis(50);
+        let started = Instant::now();
+        assert_eq!(confirmed(|| true, || false, limit), Some(false));
+        assert!(started.elapsed() >= limit);
+    }
 }
