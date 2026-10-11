@@ -1,4 +1,4 @@
-// Settings: Capture, In-game popup and Keep on the left, Cloud and Appearance on the right. Every change
+// Settings: Capture and In-game popup on the left, Cloud, Appearance and Keep on the right. Every change
 // applies at once; there is no Save button.
 import type { ReactElement } from 'react';
 import { useT } from '@/shared/i18n';
@@ -17,11 +17,11 @@ export function SettingsView(): ReactElement {
         <div className="flex min-w-[420px] max-w-[640px] flex-[3_1_420px] flex-col gap-4">
           <CaptureSection />
           <OverlaySection />
-          <KeepSection />
         </div>
         <div className="flex min-w-[340px] max-w-[460px] flex-[2_1_340px] flex-col gap-4">
           <CloudSection />
           <AppearanceSection />
+          <KeepSection />
         </div>
       </div>
     </div>
