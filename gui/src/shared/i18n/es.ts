@@ -20,6 +20,7 @@ export const es: Messages = {
     settings: 'Configuración',
     inCloudBadge: (count) =>
       plural('es', count, { one: '# juego de tu nube aún no está en esta PC', other: '# juegos de tu nube aún no están en esta PC' }),
+    addingBadge: (done, total) => `Agregando juegos: ${done.toString()} de ${total.toString()}`,
     search: 'Buscar en la biblioteca',
     searchPlaceholder: 'Busca un juego',
     closeSearch: 'Borrar y cerrar la búsqueda',
@@ -135,6 +136,9 @@ export const es: Messages = {
     scanning: 'Buscando en Steam, Epic y tus carpetas de partidas…',
     addFound: (n) => plural('es', n, { one: 'Agregar # juego', other: 'Agregar # juegos' }),
     allAdded: 'Todos agregados',
+    adding: (done, total) => `Agregando ${done.toString()} de ${total.toString()}…`,
+    addingNow: (title) => `Copiando las partidas de ${title}. Puedes salir de esta página; sigue solo.`,
+    addedCount: (n) => plural('es', n, { one: 'Se agregó # juego a tu biblioteca', other: 'Se agregaron # juegos a tu biblioteca' }),
     nothingFound: 'Nada nuevo. Todos los juegos encontrados ya están aquí.',
     lookAgain: 'Buscar otra vez',
     searchPlaceholder: 'Busca un juego instalado',

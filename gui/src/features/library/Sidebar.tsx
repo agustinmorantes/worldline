@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router';
 import { AnimatePresence, motion, type Transition } from 'motion/react';
 import { Plus, SlidersHorizontal } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
+import { useAddRun } from '@/features/add-games/add-run';
 import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
 import { formatRelative, type Messages, useLocale, useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
@@ -49,6 +50,8 @@ export function Sidebar(): ReactElement {
   const sorted = useMemo(() => (games ? sortLibrary(games) : []), [games]);
   const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
   const notHere = report?.remote_games.filter((g) => !g.adopted).length ?? 0;
+  const run = useAddRun();
+  const adding = run?.running === true ? run.added.size + run.failed.size : null;
 
   const syncView = (game: FullGame): GameSyncView => ({
     on: syncOn,
@@ -152,7 +155,9 @@ export function Sidebar(): ReactElement {
           label={t.shell.addGames}
           icon={<Plus size={16} strokeWidth={2.4} />}
           className="outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
-          badge={notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
+          badge={run !== null && adding !== null
+            ? { count: `${adding.toString()}/${run.total.toString()}`, label: t.shell.addingBadge(adding, run.total) }
+            : notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
           fold={fold}
         />
         <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} fold={fold} />
@@ -282,7 +287,7 @@ function NavRow({ target, to, label, icon, className, badge, fold }: {
   label: string;
   icon: ReactNode;
   className?: string;
-  badge?: { count: number; label: string };
+  badge?: { count: number | string; label: string };
   fold: Fold;
 }): ReactElement {
   const { current, pending } = useShellNav();

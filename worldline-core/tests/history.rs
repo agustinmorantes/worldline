@@ -710,3 +710,31 @@ fn a_rollback_held_up_by_the_game_finishes_by_itself_and_blocks_capture_until_th
     assert_eq!(device.game(game.game.id).versions.len(), versions);
     assert!(fs::read_dir(&txn).unwrap().next().is_none());
 }
+
+#[test]
+fn adding_the_same_game_twice_at_once_adds_it_once() {
+    let device = Device::new();
+    device.write("save.dat", "x");
+    for round in 0..20 {
+        let title = format!("Race {round}");
+        let barrier = std::sync::Barrier::new(2);
+        let added = std::thread::scope(|scope| {
+            let add = || {
+                barrier.wait();
+                device
+                    .core
+                    .save_game(
+                        GameForm {
+                            id: None,
+                            title: title.clone(),
+                        },
+                        Some(vec![]),
+                    )
+                    .is_ok()
+            };
+            let (a, b) = (scope.spawn(add), scope.spawn(add));
+            [a.join().unwrap(), b.join().unwrap()]
+        });
+        assert_eq!(added.iter().filter(|&&ok| ok).count(), 1, "round {round}");
+    }
+}

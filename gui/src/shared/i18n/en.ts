@@ -22,6 +22,7 @@ export const en = {
     settings: 'Settings',
     inCloudBadge: (count: number): string =>
       plural('en', count, { one: '# game in your cloud isn’t on this PC yet', other: '# games in your cloud aren’t on this PC yet' }),
+    addingBadge: (done: number, total: number): string => `Adding games: ${done.toString()} of ${total.toString()}`,
     search: 'Search the library',
     searchPlaceholder: 'Find a game',
     closeSearch: 'Clear and close the search',
@@ -137,6 +138,9 @@ export const en = {
     scanning: 'Looking in Steam, Epic and your save folders…',
     addFound: (n: number): string => plural('en', n, { one: 'Add # game', other: 'Add # games' }),
     allAdded: 'All added',
+    adding: (done: number, total: number): string => `Adding ${done.toString()} of ${total.toString()}…`,
+    addingNow: (title: string): string => `Copying ${title}’s saves. You can leave this page; it keeps going.`,
+    addedCount: (n: number): string => plural('en', n, { one: 'Added # game to your library', other: 'Added # games to your library' }),
     nothingFound: 'Nothing new. Every game the scan found is already here.',
     lookAgain: 'Look again',
     searchPlaceholder: 'Find an installed game',

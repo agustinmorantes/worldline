@@ -2,10 +2,10 @@
 // Also where the folders the scan looks in are managed.
 import { type ReactElement, type RefObject, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Check, LayoutGrid, List, Minus, Plus, Search, X } from 'lucide-react';
+import { Check, LayoutGrid, List, LoaderCircle, Minus, Plus, Search, X } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { InstallScannerItem } from '@/ipc/bindings/InstallScannerItem';
-import { addScanRoot, pickFolder, removeScanRoot, saveGame, setGameIcon } from '@/ipc/commands';
+import { addScanRoot, pickFolder, removeScanRoot } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { GameIcon } from '@/features/library/GameIcon';
 import { matchesTitle } from '@/features/library/library';
@@ -17,8 +17,11 @@ import { setPref, usePrefs } from '@/shared/prefs/prefs';
 import { btn, btnQuiet, chip, eyebrow, field } from '@/shared/ui/classes';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
-import { addFailedHint, newScanResults, scanRevealDelay } from './add-games';
+import { newScanResults, scanRevealDelay } from './add-games';
+import { addAll, onGameAdded, useAddRun } from './add-run';
 import { useInstalledScan, useScanRoots } from './queries';
+
+const noneAdded: ReadonlySet<string> = new Set();
 
 export function ScanSection({ library, cloudTitles, autoScan = false }: {
   library: FullGame[];
@@ -71,8 +74,11 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
   // The list is fixed at the scan; added games stay in it, faded.
   const [items] = useState(found);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(found.map((f) => f.title)));
-  const [added, setAdded] = useState<ReadonlySet<string>>(() => new Set());
-  const [busy, setBusy] = useState(false);
+  // The run outlives this view: coming back mid-run shows it, and can't start another.
+  const run = useAddRun();
+  const added = run?.added ?? noneAdded;
+  const busy = run?.running ?? false;
+  const progress = run === null ? 0 : run.added.size + run.failed.size;
   const [query, setQuery] = useState('');
   const [ripple, setRipple] = useState<ReadonlyMap<string, number>>(() => new Map());
   const { scanView } = usePrefs();
@@ -112,25 +118,11 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
     });
   }
 
-  async function addChosen(): Promise<void> {
-    setBusy(true);
-    for (const item of chosen) {
-      try {
-        const game = await saveGame({ id: null, title: item.title }, item.dirs);
-        if (item.icon_path !== null) {
-          // The game is added either way; it just keeps its initials.
-          game.icon_path = await setGameIcon(game.id, item.icon_path).catch(() => null);
-        }
-        const from = iconsRef.current.get(item.title)?.getBoundingClientRect();
-        setAdded((all) => new Set(all).add(item.title));
-        await queryClient.invalidateQueries({ queryKey: ['games'] });
-        if (from !== undefined) land(game, from);
-      } catch (err) {
-        reportError(t.addGames.failed.addNamed(item.title), err, addFailedHint(err, t.addGames.why));
-      }
-    }
-    setBusy(false);
-  }
+  // Each added game flies from its card into the sidebar, while this view is open.
+  useEffect(() => onGameAdded((title, game) => {
+    const from = iconsRef.current.get(title)?.getBoundingClientRect();
+    if (from !== undefined) land(game, from);
+  }), [land]);
 
   if (items.length === 0) {
     return (
@@ -183,6 +175,7 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
           const i = items.indexOf(item);
           const done = added.has(item.title);
           const on = selected.has(item.title) && !done;
+          const adding = run?.current === item.title;
           return (
             <motion.li
               key={item.title}
@@ -222,7 +215,8 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
                   animate={{ backgroundColor: on ? 'var(--acc)' : 'transparent', scale: on ? [1, 1.15, 1] : 1 }}
                   transition={{ duration: reduced ? 0 : 0.24, ease: springEase, delay: reduced ? 0 : (ripple.get(item.title) ?? 0) }}
                 >
-                  <motion.span animate={{ opacity: on ? 1 : 0 }} transition={{ duration: reduced ? 0 : 0.16, delay: reduced ? 0 : (ripple.get(item.title) ?? 0) }}><Check size={14} strokeWidth={3} /></motion.span>
+                  <motion.span animate={{ opacity: on && !adding ? 1 : 0 }} transition={{ duration: reduced ? 0 : 0.16, delay: reduced ? 0 : (ripple.get(item.title) ?? 0) }}><Check size={14} strokeWidth={3} /></motion.span>
+                  {adding && <LoaderCircle size={14} strokeWidth={3} aria-hidden="true" className={cn('absolute', !reduced && 'animate-spin')} />}
                 </motion.span>
                 <span className={cn('truncate text-[15px] font-bold', list && 'min-w-0 flex-1')}>{item.title}</span>
                 <span className={cn('text-[12.5px] text-tx3', list && 'mr-10 shrink-0')}>{t.addGames.source[item.source]}</span>
@@ -239,10 +233,23 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
       </AnimatePresence>
       <motion.div layout="position" transition={reduced ? { duration: 0 } : spring} className="sticky bottom-0 z-[2] mt-4 flex items-center gap-3 py-2">
         <StickyBackdrop floating={bottomFloating} edge="bottom" />
-        <button type="button" className={btn} disabled={chosen.length === 0 || busy} onClick={() => { void addChosen(); }}>
-          {chosen.length > 0 ? t.addGames.addFound(chosen.length) : added.size === 0 ? t.addGames.title : t.addGames.allAdded}
-        </button>
-        <button type="button" className={btnQuiet} disabled={busy} onClick={onLookAgain}>{t.addGames.lookAgain}</button>
+        {run?.running === true ? (
+          <div role="status" className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <span className="text-sm font-semibold">{t.addGames.adding(progress, run.total)}</span>
+            <div className="h-1.5 overflow-hidden rounded-full bg-el" aria-hidden="true">
+              <motion.div className="h-full rounded-full bg-acc" initial={false}
+                animate={{ width: `${(100 * progress / run.total).toString()}%` }} transition={{ duration: reduced ? 0 : 0.3, ease }} />
+            </div>
+            {run.current !== null && <span className="truncate text-[12.5px] text-tx3">{t.addGames.addingNow(run.current)}</span>}
+          </div>
+        ) : (
+          <>
+            <button type="button" className={btn} disabled={chosen.length === 0} onClick={() => { void addAll(chosen); }}>
+              {chosen.length > 0 ? t.addGames.addFound(chosen.length) : added.size === 0 ? t.addGames.title : t.addGames.allAdded}
+            </button>
+            <button type="button" className={btnQuiet} onClick={onLookAgain}>{t.addGames.lookAgain}</button>
+          </>
+        )}
       </motion.div>
       <div ref={bottomSentinel} className="h-px" aria-hidden="true" />
     </div>

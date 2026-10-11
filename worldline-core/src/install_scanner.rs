@@ -255,6 +255,12 @@ fn resolve_tracked_directory(resolved_path: &str) -> Option<PathBuf> {
         .filter(|dir| !crate::path_placeholders::is_shared_root(dir))
 }
 
+/// Whether `dir` is the game's install folder or holds it: a save file kept
+/// beside the game's files would otherwise track the whole install.
+fn holds_install(dir: &Path, install: &Path) -> bool {
+    install.starts_with(dir)
+}
+
 fn resolve_existing_directory(resolved_path: &str) -> Option<PathBuf> {
     // 1. Literal path check
     let path = PathBuf::from(resolved_path);
@@ -612,14 +618,16 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
                 Some(&store_game_id_str),
             );
 
-            if let Some(candidate) = candidate_tracked_directory(&resolved) {
+            let outside_install = |dir: &PathBuf| !holds_install(dir, install_location.as_path());
+            if let Some(candidate) = candidate_tracked_directory(&resolved).filter(outside_install)
+            {
                 let candidate = candidate.to_string_lossy().to_string();
                 if !candidate_dirs.contains(&candidate) {
                     candidate_dirs.push(candidate);
                 }
             }
 
-            if let Some(dir) = resolve_tracked_directory(&resolved) {
+            if let Some(dir) = resolve_tracked_directory(&resolved).filter(outside_install) {
                 if dir.exists() {
                     let dir_str = dir.to_string_lossy().to_string();
                     if !verified_dirs.contains(&dir_str) {
@@ -778,14 +786,16 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
                 None,
             );
 
-            if let Some(candidate) = candidate_tracked_directory(&resolved) {
+            let outside_install = |dir: &PathBuf| !holds_install(dir, install_location.as_path());
+            if let Some(candidate) = candidate_tracked_directory(&resolved).filter(outside_install)
+            {
                 let candidate = candidate.to_string_lossy().to_string();
                 if !candidate_dirs.contains(&candidate) {
                     candidate_dirs.push(candidate);
                 }
             }
 
-            if let Some(dir) = resolve_tracked_directory(&resolved) {
+            if let Some(dir) = resolve_tracked_directory(&resolved).filter(outside_install) {
                 if dir.exists() {
                     let dir_str = dir.to_string_lossy().to_string();
                     if !verified_dirs.contains(&dir_str) {
@@ -1094,7 +1104,9 @@ fn custom_roots_scan(
                                     None,
                                 );
 
-                                if let Some(dir) = resolve_tracked_directory(&resolved) {
+                                if let Some(dir) = resolve_tracked_directory(&resolved)
+                                    .filter(|dir| !holds_install(dir, &path))
+                                {
                                     if dir.exists() {
                                         let dir_str = dir.to_string_lossy().to_string();
                                         if !verified_dirs.contains(&dir_str) {
@@ -1253,6 +1265,26 @@ mod tests {
         fs::write(saves.join("slot1.dat"), "x").unwrap();
         let res = resolve_tracked_directory(&saves.join("slot*.dat").to_string_lossy());
         assert_eq!(res, Some(saves));
+    }
+
+    #[test]
+    fn a_save_file_in_the_install_folder_never_tracks_the_whole_install() {
+        // Inscryption keeps `<base>/SaveFile.gwsave` beside 3 GB of game files.
+        let root = tempdir().unwrap();
+        let install = root.path().join("Inscryption");
+        fs::create_dir(&install).unwrap();
+        fs::write(install.join("SaveFile.gwsave"), "x").unwrap();
+        let manifest: Manifest = serde_yaml_ng::from_str(
+            "Inscryption:\n  files:\n    \"<base>/SaveFile.gwsave\":\n      tags: [save]\n",
+        )
+        .unwrap();
+        let mut results = HashMap::new();
+        custom_roots_scan(
+            &manifest,
+            &[root.path().to_string_lossy().into_owned()],
+            &mut results,
+        );
+        assert!(results.is_empty(), "{results:?}");
     }
 
     #[test]

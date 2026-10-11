@@ -444,16 +444,25 @@ impl WorldlineCore {
 
     /// Creates a game (capturing its current saves as the first version) or
     /// edits one. `dirs`, when given, becomes the set of tracked directories.
+    /// Under the repository lock, so two adds can't both pass the name and
+    /// folder checks before either is written.
     pub fn save_game(&self, form: GameForm, dirs: Option<Vec<String>>) -> Result<Game> {
-        let game = match form.id {
+        let game = store::with_lock(self.repository_root(), || self.write_game(form, dirs))?;
+        self.reload_watcher();
+        // A game added from the scan, or renamed to an installed title, gets its install dir.
+        self.refresh_install_dirs()?;
+        Ok(self.get_game(game.game.id)?.game)
+    }
+
+    /// `save_game`'s writes; the caller holds the repository lock.
+    fn write_game(&self, form: GameForm, dirs: Option<Vec<String>>) -> Result<FullGame> {
+        Ok(match form.id {
             None => {
                 let game = self
                     .history()
                     .create_game(&form.title, dirs.as_deref().unwrap_or_default())?;
                 if !game.tracked_dirs.is_empty() {
-                    let first = store::with_lock(self.repository_root(), || {
-                        self.inner.checkpoint(&game, VersionReason::Initial)
-                    });
+                    let first = self.inner.checkpoint(&game, VersionReason::Initial);
                     if let Err(error) = first {
                         // Not added after all, so trying again isn't blocked by its name or folders.
                         let history = self.history();
@@ -471,11 +480,7 @@ impl WorldlineCore {
             Some(id) => self
                 .history()
                 .update_game(id, &form.title, dirs.as_deref())?,
-        };
-        self.reload_watcher();
-        // A game added from the scan, or renamed to an installed title, gets its install dir.
-        self.refresh_install_dirs()?;
-        Ok(self.get_game(game.game.id)?.game)
+        })
     }
 
     /// Deletes a game everywhere: the tombstone reaches every device.
