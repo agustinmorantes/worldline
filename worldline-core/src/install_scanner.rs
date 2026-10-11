@@ -27,6 +27,9 @@ pub struct InstallScannerItem {
     pub candidate_dirs: Vec<String>,
     pub install_path: Option<String>,
     pub icon_path: Option<String>,
+    /// A Steam game's appid; core fetches its icon from Steam.
+    #[serde(default)]
+    pub steam_appid: Option<u64>,
     pub last_modified_at: Option<i64>,
     pub source: GameSource,
 }
@@ -539,6 +542,26 @@ fn detect_steam_user_id(steam_root: &Path) -> Option<String> {
     }
 }
 
+/// The Steam client's cached icon for `appid`: `<community_icon hash>.jpg` in
+/// `appcache/librarycache/{appid}/` on current clients, `{appid}_icon.jpg` in
+/// `librarycache/` on older ones. Some app folders also hold large hash-named
+/// art; the icon is the 32 px one, so the smallest file wins.
+fn steam_library_icon(steam_root: &Path, appid: u64) -> Option<PathBuf> {
+    let cache = steam_root.join("appcache").join("librarycache");
+    fs::read_dir(cache.join(appid.to_string()))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| crate::icon::steam_icon_hash(&entry.path()).is_some())
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok().filter(|m| m.is_file())?;
+            Some((metadata.len(), entry.path()))
+        })
+        .min()
+        .map(|(_, path)| path)
+        .or_else(|| Some(cache.join(format!("{appid}_icon.jpg"))).filter(|path| path.is_file()))
+}
+
 #[allow(clippy::collapsible_if)]
 fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, InstallScannerItem>) {
     let Some(steam_root) = find_steam_root() else {
@@ -639,11 +662,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
 
         if !candidate_dirs.is_empty() {
             let mut icon_path = None;
-            let steam_icon = steam_root
-                .join("appcache")
-                .join("librarycache")
-                .join(format!("{}_icon.jpg", appid));
-            if steam_icon.exists() {
+            if let Some(steam_icon) = steam_library_icon(&steam_root, appid) {
                 icon_path = Some(steam_icon.to_string_lossy().to_string());
             } else if let Some(ico) = find_ico_file(install_location) {
                 icon_path = Some(ico);
@@ -660,6 +679,7 @@ fn resolve_steam_installs(manifest: &Manifest, results: &mut HashMap<String, Ins
                     candidate_dirs,
                     install_path: Some(install_location.to_string_lossy().to_string()),
                     icon_path,
+                    steam_appid: Some(appid),
                     last_modified_at,
                     source: GameSource::Steam,
                 },
@@ -829,6 +849,7 @@ fn resolve_epic_installs(manifest: &Manifest, results: &mut HashMap<String, Inst
                     candidate_dirs,
                     install_path: Some(app.install_location.clone()),
                     icon_path,
+                    steam_appid: None,
                     last_modified_at,
                     source: GameSource::Epic,
                 },
@@ -1001,6 +1022,7 @@ fn os_location_scan(manifest: &Manifest, results: &mut HashMap<String, InstallSc
                     dirs: verified_dirs,
                     install_path: None,
                     icon_path: None,
+                    steam_appid: None,
                     last_modified_at,
                     source: GameSource::Local,
                 },
@@ -1128,6 +1150,7 @@ fn custom_roots_scan(
                                         dirs: verified_dirs,
                                         install_path: Some(path.to_string_lossy().to_string()),
                                         icon_path,
+                                        steam_appid: None,
                                         last_modified_at,
                                         source: GameSource::Custom,
                                     },
@@ -1194,6 +1217,39 @@ pub fn scan_installed_candidates(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn steam_icons_are_found_in_the_per_app_librarycache() {
+        let steam = tempdir().unwrap();
+        let cache = steam.path().join("appcache").join("librarycache");
+        let app = cache.join("1029780");
+        let icon = "3eec57d783c54036166564e195039b20f600a52f";
+        let art = "e2cae122ca4663db2108808148d2793eef2f3e0f";
+        fs::create_dir_all(app.join(art)).unwrap();
+        fs::write(app.join("header.jpg"), [0; 64]).unwrap();
+        fs::write(app.join(format!("{art}.jpg")), [0; 4096]).unwrap();
+        fs::write(app.join(format!("{icon}.jpg")), [0; 800]).unwrap();
+        fs::write(cache.join("1029780_icon.jpg"), [0; 8]).unwrap();
+
+        let found = steam_library_icon(steam.path(), 1029780).unwrap();
+        assert_eq!(found, app.join(format!("{icon}.jpg")));
+        assert_eq!(crate::icon::steam_icon_hash(&found), Some(icon));
+    }
+
+    #[test]
+    fn legacy_steam_icons_are_the_fallback() {
+        let steam = tempdir().unwrap();
+        let cache = steam.path().join("appcache").join("librarycache");
+        fs::create_dir_all(cache.join("70")).unwrap();
+        fs::write(cache.join("70").join("header.jpg"), [0; 64]).unwrap();
+        fs::write(cache.join("70_icon.jpg"), [0; 8]).unwrap();
+
+        assert_eq!(
+            steam_library_icon(steam.path(), 70),
+            Some(cache.join("70_icon.jpg"))
+        );
+        assert_eq!(steam_library_icon(steam.path(), 80), None);
+    }
 
     #[test]
     fn candidate_path_survives_before_the_save_directory_exists() {

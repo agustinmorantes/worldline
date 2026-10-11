@@ -21,6 +21,7 @@ const item = (title: string, last_modified_at: number | null = null): InstallSca
   candidate_dirs: [],
   install_path: null,
   icon_path: null,
+  steam_appid: null,
   last_modified_at,
   source: 'steam',
 });
