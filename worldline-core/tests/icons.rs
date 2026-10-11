@@ -276,3 +276,162 @@ fn an_icon_that_has_not_arrived_does_not_block_sync_and_is_healed() {
     assert!(report.problems.is_empty(), "{:?}", report.problems);
     assert_eq!(icon_bytes(&game(&b, &on_a.uuid)), icon_bytes(&on_a));
 }
+
+// ---- icons filled from installs (phase 2 of game icons) ----------------------------
+
+const INSTALLED: &str = "Ember Trail";
+
+/// Makes the install scan find `INSTALLED` under a new scan root, with its
+/// saves in `<install>/saves` and a solid `color` `.ico` in its folder.
+fn install(device: &Device, color: [u8; 4]) -> tempfile::TempDir {
+    fs::write(
+        device.core.data_dir.join("cache").join("manifest.yaml"),
+        format!("{INSTALLED}:\n  files:\n    <base>/saves:\n      tags: [save]\n"),
+    )
+    .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join(INSTALLED);
+    fs::create_dir_all(dir.join("saves")).unwrap();
+    fs::write(dir.join("saves").join("x"), "x").unwrap();
+    // Some `.ico` files are really PNGs; they decode all the same.
+    RgbaImage::from_pixel(48, 48, Rgba(color))
+        .save_with_format(dir.join("game.ico"), image::ImageFormat::Png)
+        .unwrap();
+    device
+        .core
+        .add_scan_root(&root.path().to_string_lossy())
+        .unwrap();
+    root
+}
+
+fn install_saves(root: &tempfile::TempDir) -> PathBuf {
+    root.path().join(INSTALLED).join("saves")
+}
+
+/// The color of the game's stored icon, `None` without one.
+fn icon_color(device: &Device, uuid: &str) -> Option<[u8; 4]> {
+    let path = game(device, uuid).icon_path?;
+    Some(image::open(path).unwrap().to_rgba8().get_pixel(128, 128).0)
+}
+
+#[test]
+fn a_game_without_an_icon_gets_its_installs_after_the_scan() {
+    let device = Device::new();
+    let root = install(&device, RED);
+    let uuid = device
+        .add_game_at(INSTALLED, &install_saves(&root))
+        .game
+        .uuid;
+    assert_eq!(icon_color(&device, &uuid), None, "added without one");
+
+    device.core.scan_installed().unwrap();
+    assert_eq!(icon_color(&device, &uuid), Some(RED));
+}
+
+#[test]
+fn a_user_icon_is_not_replaced_by_the_installs() {
+    let device = Device::new();
+    let root = install(&device, RED);
+    let game = device.add_game_at(INSTALLED, &install_saves(&root)).game;
+    set_icon(&device, game.id, BLUE);
+
+    device.core.scan_installed().unwrap();
+    assert_eq!(icon_color(&device, &game.uuid), Some(BLUE));
+}
+
+#[test]
+fn a_remote_icon_is_not_replaced_by_the_installs() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let root = install(&b, RED);
+    let game = a.add_game_at(INSTALLED, &install_saves(&root)).game;
+    set_icon(&a, game.id, GREEN);
+    a.core.refresh_sync().unwrap();
+
+    // B adopts it because it's installed there.
+    b.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&b, &game.uuid), Some(GREEN));
+    b.core.scan_installed().unwrap();
+    b.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&b, &game.uuid), Some(GREEN));
+}
+
+#[test]
+fn an_adopted_game_without_an_icon_gets_the_scans_and_shares_it() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let root = install(&b, RED);
+    let game = a.add_game_at(INSTALLED, &install_saves(&root)).game;
+    a.core.refresh_sync().unwrap();
+
+    // B adopts it because the sync's scan finds it installed.
+    b.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&b, &game.uuid), Some(RED));
+    assert!(remote_icon(remote.path(), &game).is_file(), "pushed");
+
+    a.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&a, &game.uuid), Some(RED));
+}
+
+#[test]
+fn the_device_that_has_it_installed_fills_the_icon_and_the_other_gets_it_next_sync() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let game = a.add_game(INSTALLED).game;
+    a.core.refresh_sync().unwrap();
+    b.core
+        .adopt_remote_game(Uuid::parse_str(&game.uuid).unwrap())
+        .unwrap();
+    assert_eq!(icon_color(&b, &game.uuid), None, "not installed anywhere");
+
+    // Installed on B later. With a remote, the scan leaves the write to the
+    // sync, after its pull.
+    let _root = install(&b, RED);
+    b.core.scan_installed().unwrap();
+    assert_eq!(icon_color(&b, &game.uuid), None);
+    b.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&b, &game.uuid), Some(RED));
+
+    assert_eq!(icon_color(&a, &game.uuid), None);
+    a.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&a, &game.uuid), Some(RED));
+}
+
+#[test]
+fn a_rename_another_device_made_wins_over_the_fill() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let game = a.add_game(INSTALLED).game;
+    a.core.refresh_sync().unwrap();
+    b.core
+        .adopt_remote_game(Uuid::parse_str(&game.uuid).unwrap())
+        .unwrap();
+    let _root = install(&b, RED);
+    b.core.scan_installed().unwrap();
+
+    // A renames it before B's next sync.
+    a.core
+        .save_game(
+            worldline_core::models::GameForm {
+                id: Some(game.id),
+                title: "Ember Trail Remastered".into(),
+            },
+            None,
+        )
+        .unwrap();
+    a.core.refresh_sync().unwrap();
+
+    b.core.refresh_sync().unwrap();
+    let on_b = b
+        .game_by_title("Ember Trail Remastered")
+        .expect("renamed on B")
+        .game;
+    assert_eq!(on_b.uuid, game.uuid);
+    assert_eq!(on_b.icon_path, None, "matched by its old title");
+}

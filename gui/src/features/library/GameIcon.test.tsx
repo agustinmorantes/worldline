@@ -24,4 +24,12 @@ describe('GameIcon', () => {
     render(<GameIcon title="Test" iconPath="/mock/icons/1.png" />);
     expect(document.querySelector('img')?.getAttribute('src')).toBe('asset:///mock/icons/1.png');
   });
+
+  it('shows an icon that arrives while the initials are shown', () => {
+    const { rerender } = render(<GameIcon title="Elden Ring" />);
+    expect(screen.getByText('ER')).toBeInTheDocument();
+    rerender(<GameIcon title="Elden Ring" iconPath="/mock/icons/1.png" />);
+    expect(screen.queryByText('ER')).not.toBeInTheDocument();
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('asset:///mock/icons/1.png');
+  });
 });

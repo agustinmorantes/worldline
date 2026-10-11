@@ -242,3 +242,35 @@ fn an_emptied_tip_from_another_device_is_not_applied_over_saves() {
         "x"
     );
 }
+
+#[test]
+fn at_startup_a_game_without_an_icon_gets_its_installs_in_the_background() {
+    let data = tempfile::tempdir().unwrap();
+    let root;
+    let id;
+    {
+        let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+        root = install(&core);
+        id = add_game(&core, TITLE, &saves(root.path()));
+        assert_eq!(core.get_game(id).unwrap().game.icon_path, None);
+    }
+    // Installed with an icon after it was added; nothing scanned since.
+    image::RgbaImage::from_pixel(48, 48, image::Rgba([0, 0, 255, 255]))
+        .save_with_format(
+            install_dir(root.path()).join("game.ico"),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+
+    let (core, notifications) = WorldlineCore::open_shared(
+        data.path(),
+        OpenOptions {
+            watch: true,
+            debounce_seconds: None,
+        },
+    )
+    .unwrap();
+    wait_for(&notifications, &Notification::GamesChanged);
+    assert!(core.get_game(id).unwrap().game.icon_path.is_some());
+    core.shutdown();
+}

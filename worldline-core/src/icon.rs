@@ -80,11 +80,12 @@ pub fn resolve_with(
 }
 
 /// Whether a failed Steam download says the icon doesn't exist (older apps
-/// have no 184 px one), rather than that it couldn't be had right now.
+/// have no 184 px one), rather than that it couldn't be had right now. A 403
+/// may be a CDN refusing for a while, so it is tried again.
 pub fn is_missing_download(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<ureq::Error>(),
-        Some(ureq::Error::Status(403 | 404 | 410, _))
+        Some(ureq::Error::Status(404 | 410, _))
     )
 }
 

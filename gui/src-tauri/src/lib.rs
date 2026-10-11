@@ -120,6 +120,9 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 detection::Notification::PruningFailed(error) => {
                     notif_app.emit("pruning-error", error).ok();
                 }
+                detection::Notification::GamesChanged => {
+                    notif_app.emit("games-changed", ()).ok();
+                }
                 detection::Notification::GameStarted { game_id } => {
                     overlay::game_started(&notif_app, game_id);
                     notif_app.emit("game-started", game_id).ok();
