@@ -42,7 +42,7 @@ describe('CaptureSection screenshots', () => {
     expect(shots()).not.toBeInTheDocument();
   });
 
-  it('shows the switch with the opt-in note, but not the sync one while the cloud is off', () => {
+  it('shows the switch with its note, but not the sync one while the cloud is off', () => {
     setup({ supported: true, remote: null });
     expect(shots()).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByText(/captures the game’s window/i)).toBeInTheDocument();

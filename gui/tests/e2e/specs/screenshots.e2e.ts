@@ -55,13 +55,18 @@ describe('Screenshots', () => {
     if (!(await invoke<boolean>('screenshots_supported'))) this.skip();
   });
 
-  it('offers the screenshot setting on Windows 11, off until turned on', async () => {
+  it('offers the screenshot setting on Windows 11, on by default', async () => {
     await library().$('a*=Settings').click();
     await expect($('h1=Settings')).toBeDisplayed();
     const capture = $('section[aria-labelledby]*=Capture');
     await expect(capture.$('span=Screenshot each checkpoint')).toBeDisplayed();
     const sw = capture.$('button[role="switch"]');
+    await expect(sw).toHaveAttribute('aria-checked', 'true');
+    await sw.click();
     await expect(sw).toHaveAttribute('aria-checked', 'false');
+    await browser.waitUntil(async () => !(await invoke<{ screenshots_enabled: boolean }>('get_monitoring_settings')).screenshots_enabled, {
+      timeoutMsg: 'turning it off was not saved',
+    });
     await sw.click();
     await expect(sw).toHaveAttribute('aria-checked', 'true');
     await browser.waitUntil(async () => (await invoke<{ screenshots_enabled: boolean }>('get_monitoring_settings')).screenshots_enabled, {

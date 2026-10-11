@@ -138,7 +138,7 @@ pub struct FullVersion {
 pub struct MonitoringSettings {
     pub version_cooldown_minutes: u32,
     pub snapshot_debounce_seconds: f32,
-    /// Screenshot the running game once per checkpoint (opt-in; ignored
+    /// Screenshot the running game once per checkpoint (on by default; ignored
     /// where `WorldlineCore::screenshots_supported` is false).
     pub screenshots_enabled: bool,
     /// Sync screenshots to other devices. Bundles always carry them.
@@ -150,7 +150,7 @@ impl Default for MonitoringSettings {
         Self {
             version_cooldown_minutes: 15,
             snapshot_debounce_seconds: 5.0,
-            screenshots_enabled: false,
+            screenshots_enabled: true,
             sync_screenshots: true,
         }
     }

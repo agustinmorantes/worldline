@@ -77,7 +77,7 @@ fn version_on(device: &Device, title: &str, uuid: &str) -> Version {
 }
 
 #[test]
-fn settings_saved_before_screenshots_load_with_them_off_and_synced() {
+fn settings_saved_before_screenshots_load_with_them_on_and_synced() {
     let a = Device::new();
     fs::write(
         a.data.path().join("monitoring_settings.json"),
@@ -86,7 +86,7 @@ fn settings_saved_before_screenshots_load_with_them_off_and_synced() {
     .unwrap();
     let settings = a.core.get_monitoring_settings().unwrap();
     assert_eq!(settings.version_cooldown_minutes, 7);
-    assert!(!settings.screenshots_enabled);
+    assert!(settings.screenshots_enabled);
     assert!(settings.sync_screenshots);
 }
 

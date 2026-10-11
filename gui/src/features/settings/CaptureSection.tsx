@@ -1,5 +1,5 @@
 // How saves become checkpoints: the wait after a save (debounce), the cooldown, and the
-// opt-in screenshots where the OS can take them.
+// screenshots where the OS can take them.
 import type { ReactElement } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import type { MonitoringSettings } from '@/ipc/bindings/MonitoringSettings';

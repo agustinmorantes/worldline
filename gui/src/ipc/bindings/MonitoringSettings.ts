@@ -5,7 +5,7 @@
  */
 export type MonitoringSettings = { version_cooldown_minutes: number, snapshot_debounce_seconds: number, 
 /**
- * Screenshot the running game once per checkpoint (opt-in; ignored
+ * Screenshot the running game once per checkpoint (on by default; ignored
  * where `WorldlineCore::screenshots_supported` is false).
  */
 screenshots_enabled: boolean, 

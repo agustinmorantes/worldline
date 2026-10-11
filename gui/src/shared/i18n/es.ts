@@ -244,7 +244,7 @@ export const es: Messages = {
     cooldown: 'Como máximo un punto de control cada',
     cooldownHint: 'Varios guardados seguidos se vuelven uno',
     screenshots: 'Captura de pantalla en cada punto de control',
-    screenshotsHint: 'Toma una imagen de la ventana del juego y la guarda con el punto de control. Viene desactivado porque ocupa espacio en el disco y en la nube.',
+    screenshotsHint: 'Toma una imagen de la ventana del juego y la guarda con el punto de control. Ocupa algo de espacio en el disco y en la nube.',
     syncScreenshots: 'Sincronizar capturas de pantalla',
     syncScreenshotsHint: 'Las envía por tu nube y trae las que tomen tus otros dispositivos',
     keep: 'Conservar',
