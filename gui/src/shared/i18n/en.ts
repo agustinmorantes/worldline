@@ -22,7 +22,8 @@ export const en = {
     settings: 'Settings',
     inCloudBadge: (count: number): string =>
       plural('en', count, { one: '# game in your cloud isn’t on this PC yet', other: '# games in your cloud aren’t on this PC yet' }),
-    addingBadge: (done: number, total: number): string => `Adding games: ${done.toString()} of ${total.toString()}`,
+    addingBadge: (done: number, total: number, title: string): string =>
+      `Adding games: ${done.toString()} of ${total.toString()}. Copying ${title}’s saves.`,
     search: 'Search the library',
     searchPlaceholder: 'Find a game',
     closeSearch: 'Clear and close the search',

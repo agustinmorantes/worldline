@@ -1,7 +1,7 @@
 import { type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, useCallback, useMemo, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { AnimatePresence, motion, type Transition } from 'motion/react';
-import { Plus, SlidersHorizontal } from 'lucide-react';
+import { LoaderCircle, Plus, SlidersHorizontal } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { useAddRun } from '@/features/add-games/add-run';
 import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
@@ -51,7 +51,6 @@ export function Sidebar(): ReactElement {
   const syncOn = typeof settings?.remote_path === 'string' && settings.remote_path !== '';
   const notHere = report?.remote_games.filter((g) => !g.adopted).length ?? 0;
   const run = useAddRun();
-  const adding = run?.running === true ? run.added.size + run.failed.size : null;
 
   const syncView = (game: FullGame): GameSyncView => ({
     on: syncOn,
@@ -155,9 +154,13 @@ export function Sidebar(): ReactElement {
           label={t.shell.addGames}
           icon={<Plus size={16} strokeWidth={2.4} />}
           className="outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
-          badge={run !== null && adding !== null
-            ? { count: `${adding.toString()}/${run.total.toString()}`, label: t.shell.addingBadge(adding, run.total) }
+          badge={run?.running === true && run.current !== null
+            ? {
+                count: <LoaderCircle size={12} strokeWidth={3} className={cn(!reduced && 'animate-spin')} />,
+                label: t.shell.addingBadge(run.added.size + run.failed.size, run.total, run.current),
+              }
             : notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
+          progress={run?.running === true ? (run.added.size + run.failed.size) / run.total : undefined}
           fold={fold}
         />
         <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} fold={fold} />
@@ -281,13 +284,15 @@ function StatusLine({ status }: { status: GameStatus }): ReactElement {
   );
 }
 
-function NavRow({ target, to, label, icon, className, badge, fold }: {
+function NavRow({ target, to, label, icon, className, badge, progress, fold }: {
   target: NavTarget;
   to: '/add' | '/settings';
   label: string;
   icon: ReactNode;
   className?: string;
-  badge?: { count: number | string; label: string };
+  badge?: { count: ReactNode; label: string };
+  /** 0 to 1: a bar along the row's foot, while something it leads to is under way. */
+  progress?: number;
   fold: Fold;
 }): ReactElement {
   const { current, pending } = useShellNav();
@@ -319,6 +324,12 @@ function NavRow({ target, to, label, icon, className, badge, fold }: {
           >
             <span aria-hidden="true">{badge.count}</span>
             <span className="sr-only">{badge.label}</span>
+          </span>
+        )}
+        {progress !== undefined && (
+          <span aria-hidden="true" className="absolute inset-x-3.5 bottom-1.5 h-[3px] overflow-hidden rounded-full bg-el">
+            <motion.span className="block h-full rounded-full bg-acc" initial={false}
+              animate={{ width: `${(100 * progress).toString()}%` }} transition={{ duration: fold.reduced ? 0 : 0.3, ease }} />
           </span>
         )}
       </Link>

@@ -20,7 +20,8 @@ export const es: Messages = {
     settings: 'Configuración',
     inCloudBadge: (count) =>
       plural('es', count, { one: '# juego de tu nube aún no está en esta PC', other: '# juegos de tu nube aún no están en esta PC' }),
-    addingBadge: (done, total) => `Agregando juegos: ${done.toString()} de ${total.toString()}`,
+    addingBadge: (done, total, title) =>
+      `Agregando juegos: ${done.toString()} de ${total.toString()}. Copiando las partidas de ${title}.`,
     search: 'Buscar en la biblioteca',
     searchPlaceholder: 'Busca un juego',
     closeSearch: 'Borrar y cerrar la búsqueda',
