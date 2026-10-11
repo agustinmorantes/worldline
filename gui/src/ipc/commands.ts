@@ -83,9 +83,12 @@ export const screenshotsSupported = (): Promise<boolean> => invoke('screenshots_
 export const getPruningSettings = (): Promise<RetentionSettings> => invoke('get_pruning_settings');
 export const updatePruningSettings = (settings: RetentionSettings): Promise<RetentionSettings> =>
   invoke('update_pruning_settings', { settings });
-/** Previews `settings` before they are saved, or the saved settings when omitted. */
-export const previewPruning = (settings?: RetentionSettings): Promise<PruningPreview> =>
-  invoke('preview_pruning', { settings: settings ?? null });
+/**
+ * Previews `settings` before they are saved, or the saved settings when omitted; with `untag`
+ * (a version UUID), as if that checkpoint had no name.
+ */
+export const previewPruning = (settings?: RetentionSettings, untag?: string): Promise<PruningPreview> =>
+  invoke('preview_pruning', { settings: settings ?? null, untag: untag ?? null });
 export const runPruning = (): Promise<PruningRunReport> => invoke('run_pruning');
 export const getRetiredVersions = (): Promise<string[]> => invoke('get_retired_versions');
 

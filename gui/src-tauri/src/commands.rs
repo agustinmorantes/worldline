@@ -348,10 +348,12 @@ async fn update_pruning_settings(
         .map_err(|e| e.to_string())
 }
 
-/// Previews `settings`, or the saved settings when none are given.
+/// Previews `settings`, or the saved settings when none are given; with
+/// `untag`, as if that version (a UUID) had no name.
 #[tauri::command]
 async fn preview_pruning(
     settings: Option<worldline_core::maintenance::RetentionSettings>,
+    untag: Option<String>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<worldline_core::core_facade::PruningPreview, String> {
     let core = Arc::clone(&core);
@@ -360,7 +362,8 @@ async fn preview_pruning(
             Some(settings) => settings,
             None => core.get_pruning_settings()?,
         };
-        core.preview_pruning(&settings)
+        let untag = untag.map(|u| uuid::Uuid::parse_str(&u)).transpose()?;
+        core.preview_pruning_untagged(&settings, untag)
     })
     .await
     .map_err(|e| e.to_string())?

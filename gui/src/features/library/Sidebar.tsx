@@ -2,8 +2,10 @@ import { type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode,
 import { Link } from '@tanstack/react-router';
 import { AnimatePresence, motion, type Transition } from 'motion/react';
 import { LoaderCircle, Plus, SlidersHorizontal } from 'lucide-react';
+import { ContextMenu } from 'radix-ui';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { useAddRun } from '@/features/add-games/add-run';
+import { GameContextMenu } from '@/features/game/GameMenu';
 import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
 import { formatRelative, type Messages, useLocale, useT } from '@/shared/i18n';
 import { ease, useMotionReduced } from '@/shared/motion/motion';
@@ -124,7 +126,7 @@ export function Sidebar(): ReactElement {
                     exit={{ opacity: 0, scale: 0.92, transition: { duration: reduced ? 0 : 0.2, ease } }}
                     transition={{ duration: 0.56, ease }}
                   >
-                    <GameRow game={game} status={status} fold={fold} />
+                    <GameRow game={game} status={status} inCloud={syncOn && report?.remote_games.some((g) => g.uuid === game.uuid) === true} fold={fold} />
                   </motion.li>
                 ))}
               </AnimatePresence>
@@ -196,7 +198,7 @@ function useNavClick(target: NavTarget): (event: MouseEvent) => void {
   };
 }
 
-function GameRow({ game, status, fold }: { game: FullGame; status: GameStatus; fold: Fold }): ReactElement {
+function GameRow({ game, status, inCloud, fold }: { game: FullGame; status: GameStatus; inCloud: boolean; fold: Fold }): ReactElement {
   const { current, pending, flying } = useShellNav();
   const target: NavTarget = { view: 'game', gameId: game.id };
   const onClick = useNavClick(target);
@@ -205,42 +207,46 @@ function GameRow({ game, status, fold }: { game: FullGame; status: GameStatus; f
   const away = selected || flying.home === game.id || flying.landing.includes(game.id);
 
   return (
-    <Tooltip side="right" content={game.title}>
-      <Link
-        to="/game/$gameId"
-        params={{ gameId: game.id.toString() }}
-        onClick={onClick}
-        aria-current={selected ? 'page' : undefined}
-        className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04]`}
-      >
-        {selected && <SelectionPill hidden={pending !== null} />}
-        {/* Left-anchored, the icon holds still as the rail narrows, then glides the last 4 px to centre. */}
-        <span className={cn('relative size-9 shrink-0 transition-[translate] duration-[350ms] ease-ez', fold.collapsed && '-translate-x-1')} data-nav-anchor={anchorKey(target)}>
-          {away ? (
-            <span
-              aria-hidden="true"
-              className="absolute inset-0 rounded-[11px] border-[1.5px] border-dashed transition-colors duration-300"
-              style={{ borderColor: accentVars(game.accent_hue)['--acc-line'] }}
-            />
-          ) : (
-            <GameIcon
-              title={game.title}
-              hue={game.accent_hue}
-              iconPath={game.icon_path ?? undefined}
-              className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
-            />
-          )}
-          {/* The narrow rail hides the status line, so the icon carries the live dot. */}
-          {status.kind === 'recording' && (
-            <span aria-hidden="true" className={cn('absolute -right-0.5 -top-0.5 size-2 rounded-full bg-live transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
-          )}
-        </span>
-        <span className={cn('relative flex min-w-0 flex-col gap-[3px]', fadeLabel(fold))}>
-          <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
-          <StatusLine status={status} />
-        </span>
-      </Link>
-    </Tooltip>
+    <GameContextMenu game={game} inCloud={inCloud}>
+      <Tooltip side="right" content={game.title}>
+        <ContextMenu.Trigger asChild>
+          <Link
+            to="/game/$gameId"
+            params={{ gameId: game.id.toString() }}
+            onClick={onClick}
+            aria-current={selected ? 'page' : undefined}
+            className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04]`}
+          >
+            {selected && <SelectionPill hidden={pending !== null} />}
+            {/* Left-anchored, the icon holds still as the rail narrows, then glides the last 4 px to centre. */}
+            <span className={cn('relative size-9 shrink-0 transition-[translate] duration-[350ms] ease-ez', fold.collapsed && '-translate-x-1')} data-nav-anchor={anchorKey(target)}>
+              {away ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-0 rounded-[11px] border-[1.5px] border-dashed transition-colors duration-300"
+                  style={{ borderColor: accentVars(game.accent_hue)['--acc-line'] }}
+                />
+              ) : (
+                <GameIcon
+                  title={game.title}
+                  hue={game.accent_hue}
+                  iconPath={game.icon_path ?? undefined}
+                  className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
+                />
+              )}
+              {/* The narrow rail hides the status line, so the icon carries the live dot. */}
+              {status.kind === 'recording' && (
+                <span aria-hidden="true" className={cn('absolute -right-0.5 -top-0.5 size-2 rounded-full bg-live transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
+              )}
+            </span>
+            <span className={cn('relative flex min-w-0 flex-col gap-[3px]', fadeLabel(fold))}>
+              <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
+              <StatusLine status={status} />
+            </span>
+          </Link>
+        </ContextMenu.Trigger>
+      </Tooltip>
+    </GameContextMenu>
   );
 }
 

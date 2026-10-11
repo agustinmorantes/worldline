@@ -103,6 +103,14 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       target.linked_slot_ids = [];
       return target;
     }
+    case 'rename_slot': {
+      const target = state.games.find((g) => g.slots.some((s) => s.id === args.slotId));
+      const slot = target?.slots.find((s) => s.id === args.slotId);
+      if (target === undefined || slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
+      slot.name = args.name as string;
+      if (target.active_slot?.id === slot.id) target.active_slot.name = slot.name;
+      return structuredClone(target);
+    }
     case 'create_slot': {
       const target = game(args.gameId);
       const id = Math.max(0, ...state.games.flatMap((g) => g.slots.map((s) => s.id))) + 1;
@@ -226,8 +234,14 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'update_pruning_settings':
       state.retentionSettings = args.settings as RetentionSettings;
       return state.retentionSettings;
-    case 'preview_pruning':
-      return previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+    case 'preview_pruning': {
+      const preview = previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+      // Without its name, a checkpoint goes in the next cleanup unless it is a root or the latest.
+      const latest = new Set(state.games.map((g) => g.last_version?.uuid));
+      const retires = state.games.flatMap((g) => g.versions).filter((v) => v.uuid === args.untag && v.parent_id !== null && !latest.has(v.uuid));
+      preview.retire_versions.push(...retires.map((v) => v.uuid));
+      return preview;
+    }
     case 'run_pruning': {
       const preview = previewOf(state.retentionSettings);
       return {

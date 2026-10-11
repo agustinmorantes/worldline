@@ -2268,9 +2268,31 @@ impl WorldlineCore {
 
     /// What pruning with `settings` (saved or not) would do. Writes nothing.
     pub fn preview_pruning(&self, settings: &RetentionSettings) -> Result<PruningPreview> {
+        self.preview_pruning_untagged(settings, None)
+    }
+
+    /// `preview_pruning` as if version `untag` had no name, to tell whether
+    /// removing it would let cleanup retire the version. Writes nothing: the
+    /// name is cleared only in the planner's inputs.
+    pub fn preview_pruning_untagged(
+        &self,
+        settings: &RetentionSettings,
+        untag: Option<Uuid>,
+    ) -> Result<PruningPreview> {
         validate_retention(settings)?;
         let remote = self.remote()?;
-        let inputs = self.retention_inputs(remote.as_ref())?;
+        let mut inputs = self.retention_inputs(remote.as_ref())?;
+        if let Some(untag) = untag {
+            for version in inputs
+                .games
+                .iter_mut()
+                .flat_map(|g| g.slots.iter_mut())
+                .flat_map(|s| s.versions.iter_mut())
+                .filter(|v| v.uuid == untag)
+            {
+                version.tag = None;
+            }
+        }
         let plan = maintenance::plan(&maintenance::PlanInput {
             games: &inputs.games,
             retired: &inputs.retired,
