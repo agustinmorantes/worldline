@@ -95,6 +95,12 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       if (slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
       target.active_slot = slot;
       target.active_slot_id = slot.id;
+      if (target.linked_slot_ids.includes(slot.id)) target.linked_slot_ids = [];
+      return target;
+    }
+    case 'dismiss_linked_slots': {
+      const target = game(args.gameId);
+      target.linked_slot_ids = [];
       return target;
     }
     case 'create_slot': {
@@ -102,7 +108,7 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       const id = Math.max(0, ...state.games.flatMap((g) => g.slots.map((s) => s.id))) + 1;
       const slot = makeSlot({ id, game_id: target.id, name: args.name as string, active_version_id: null });
       target.slots.push(slot);
-      target.slot_summaries.push({ slot_id: id, version_count: 0, last_created_at: null });
+      target.slot_summaries.push({ slot_id: id, version_count: 0, last_created_at: null, last_origin_device: null });
       target.active_slot = slot;
       target.active_slot_id = id;
       return target;

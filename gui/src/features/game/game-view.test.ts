@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { makeVersion } from '@/ipc/builders';
+import { makeGame, makeSlot, makeVersion } from '@/ipc/builders';
 import type { DeviceMetadata } from '@/ipc/bindings/DeviceMetadata';
 import type { GameSyncStatus } from '@/ipc/bindings/GameSyncStatus';
+import type { SlotSummary } from '@/ipc/bindings/SlotSummary';
 import type { SyncReport } from '@/ipc/bindings/SyncReport';
-import { checkpointDevice, pendingRemoteVersion, syncChip } from './game-view';
+import { checkpointDevice, linkedSlot, pendingRemoteVersion, slotDevice, slotName, syncChip } from './game-view';
 
 const device = (uuid: string, name: string, kind: DeviceMetadata['kind']): DeviceMetadata => ({
   device_uuid: uuid, name, platform: 'linux', first_seen: '', last_seen: '', kind,
@@ -54,6 +55,40 @@ describe('syncChip', () => {
     expect(syncChip({ ...base, status: status('in_sync') })).toEqual({ kind: 'in-cloud' });
     expect(syncChip({ ...base, status: status('local_ahead') })).toEqual({ kind: 'not-in-cloud' });
     expect(syncChip({ ...base, status: undefined })).toEqual({ kind: 'not-in-cloud' });
+  });
+});
+
+describe('slotName', () => {
+  it('reads the default slot as the first playthrough, keeping a device suffix', () => {
+    expect(slotName('Default Slot', 'Playthrough 1')).toBe('Playthrough 1');
+    expect(slotName('Default Slot (Laptop)', 'Playthrough 1')).toBe('Playthrough 1 (Laptop)');
+    expect(slotName('NG+', 'Playthrough 1')).toBe('NG+');
+  });
+});
+
+describe('slotDevice', () => {
+  const summary = (origin: string | null): SlotSummary => ({ slot_id: 1, version_count: 3, last_created_at: '', last_origin_device: origin });
+  it('names another known device only', () => {
+    expect(slotDevice(summary('deck'), here, report())).toBe('Steam Deck');
+    expect(slotDevice(summary('pc'), here, report())).toBeNull();
+    expect(slotDevice(summary(null), here, report())).toBeNull();
+    expect(slotDevice(summary('gone'), here, report())).toBeNull();
+    expect(slotDevice(summary('deck'), undefined, report())).toBeNull();
+  });
+});
+
+describe('linkedSlot', () => {
+  it('is the most recently played linked slot', () => {
+    const slots = [1, 2, 3].map((id) => makeSlot({ id, game_id: 1, name: `S${id.toString()}`, active_version_id: null }));
+    const game = makeGame({
+      id: 1, title: 'G', slots, linked_slot_ids: [2, 3],
+      slot_summaries: [
+        { slot_id: 2, version_count: 1, last_created_at: '2026-01-01T00:00:00', last_origin_device: null },
+        { slot_id: 3, version_count: 1, last_created_at: '2026-02-01T00:00:00', last_origin_device: null },
+      ],
+    });
+    expect(linkedSlot(game)?.slot.id).toBe(3);
+    expect(linkedSlot({ ...game, linked_slot_ids: [] })).toBeNull();
   });
 });
 

@@ -97,6 +97,8 @@ pub struct SlotSummary {
     /// Retired versions included.
     pub version_count: i32,
     pub last_created_at: Option<NaiveDateTime>,
+    /// UUID of the device that made the newest version, when known.
+    pub last_origin_device: Option<String>,
 }
 
 #[derive(Serialize, Clone, PartialEq, Debug)]
@@ -114,6 +116,9 @@ pub struct FullGame {
     pub versions: Vec<Version>,
     /// The active slot's active version.
     pub last_version: Option<Version>,
+    /// Device-local: slots another device's history brought in when this
+    /// game was linked, until the user switches to one or dismisses them.
+    pub linked_slot_ids: Vec<i32>,
 }
 
 #[derive(Serialize, Clone, PartialEq, Debug)]

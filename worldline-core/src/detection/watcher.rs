@@ -521,6 +521,7 @@ mod tests {
                 active_slot: None,
                 versions: vec![],
                 last_version: None,
+                linked_slot_ids: vec![],
             }])
         }
 

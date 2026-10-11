@@ -178,7 +178,7 @@ function hades(extra: Checkpoint[] = []): FullGame {
     active_slot_id: 1,
     active_slot: main,
     slots: [main],
-    slot_summaries: [{ slot_id: 1, version_count: versions.length, last_created_at: versions[versions.length - 1].created_at }],
+    slot_summaries: [{ slot_id: 1, version_count: versions.length, last_created_at: versions[versions.length - 1].created_at, last_origin_device: null }],
     versions,
     last_version: versions[versions.length - 1],
     tracked_dirs: [makeTrackedDir({ id: 1, game_id: 1, path: 'C:/Users/Player/Saved Games/Hades' })],
@@ -211,6 +211,42 @@ function sessions(relation: Divergence = 'in_sync', extra: Checkpoint[] = []): F
       remote_games: [],
       devices: [LAPTOP],
       remote_versions: Object.fromEntries(laptopVersions.map((v) => [v.uuid, LAPTOP.name])),
+      problems: [],
+    },
+  };
+}
+
+/** Silksong started fresh here before the cloud was on; the laptop's long playthrough came in as another slot. */
+function linked(): Fixture {
+  const mine = makeSlot({ id: 1, game_id: 1, name: 'Default Slot (Desktop)', active_version_id: 2 });
+  const theirs = makeSlot({ id: 2, game_id: 1, name: 'Default Slot', active_version_id: null });
+  const versions = [
+    makeVersion({ id: 2, slot_id: 1, parent_id: 1, version_number: 2, created_at: minutesAgo(20) }),
+    makeVersion({ id: 1, slot_id: 1, version_number: 1, created_at: minutesAgo(50) }),
+  ];
+  const game = makeGame({
+    id: 1,
+    title: 'Hollow Knight: Silksong',
+    active_slot_id: 1,
+    active_slot: mine,
+    slots: [mine, theirs],
+    slot_summaries: [
+      { slot_id: 1, version_count: 2, last_created_at: minutesAgo(20), last_origin_device: null },
+      { slot_id: 2, version_count: 34, last_created_at: minutesAgo(60 * 24 * 3), last_origin_device: LAPTOP.device_uuid },
+    ],
+    versions,
+    last_version: versions[0],
+    linked_slot_ids: [2],
+  });
+  return {
+    ...base([game]),
+    syncSettings: { remote_path: 'D:/Cloud/Worldline' },
+    syncReport: {
+      synced_at: new Date().toISOString(),
+      games: [{ game_uuid: game.uuid, relation: 'in_sync', remote_device: null, remote_version_uuid: null, remote_version_id: null, auto_applied: false }],
+      remote_games: [],
+      devices: [LAPTOP],
+      remote_versions: {},
       problems: [],
     },
   };
@@ -333,6 +369,7 @@ export const FIXTURES = {
   showcase,
   ghost: () => sessions('fast_forward', [[11, 10, 4, null, true], [12, 11, 2, 'Styx', true]]),
   diverged: () => sessions('diverged', [[11, 9, 6, null, true], [12, 11, 3, 'Styx', true]]),
+  linked,
   oneFork: () => forks(1),
   forks: () => forks(2),
   threeForks: () => forks(3),

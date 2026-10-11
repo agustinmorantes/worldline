@@ -45,6 +45,8 @@ export const createSlot = (gameId: number, name: string): Promise<FullGame> =>
   invoke('create_slot', { gameId, name });
 export const switchSlot = (gameId: number, slotId: number): Promise<FullGame> =>
   invoke('switch_slot', { gameId, slotId });
+export const dismissLinkedSlots = (gameId: number): Promise<FullGame> =>
+  invoke('dismiss_linked_slots', { gameId });
 export const renameSlot = (slotId: number, name: string): Promise<FullGame> =>
   invoke('rename_slot', { slotId, name });
 export const deleteSlot = (slotId: number, replacementSlotId?: number): Promise<FullGame> =>

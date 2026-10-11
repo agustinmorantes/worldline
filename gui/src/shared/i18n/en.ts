@@ -62,7 +62,16 @@ export const en = {
     playthroughName: (n: number): string => `Playthrough ${n.toString()}`,
     slotMeta: (count: number, when: string): string =>
       `${plural('en', count, { one: '# checkpoint', other: '# checkpoints' })} · ${when}`,
+    slotDevice: (device: string): string => `on ${device}`,
     emptySlot: 'Empty',
+    linked: {
+      title: (device: string | null): string =>
+        device === null
+          ? 'Progress from another device is in another playthrough'
+          : `Your progress from ${device} is in another playthrough`,
+      switch: 'Switch to it',
+      dismiss: 'Dismiss',
+    },
     timelineView: 'Timeline view',
     sessionsView: 'Sessions',
     graphView: 'Graph',

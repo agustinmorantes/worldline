@@ -427,11 +427,48 @@ impl WorldlineCore {
     // ---- games, slots, versions ------------------------------------------------
 
     pub fn get_games(&self) -> Result<Vec<FullGame>> {
-        self.history().index.get_games()
+        let linked = self.linked_slots();
+        self.history()
+            .index
+            .get_games()?
+            .into_iter()
+            .map(|game| with_linked(game, &linked))
+            .collect()
     }
 
     pub fn get_game(&self, id: i32) -> Result<FullGame> {
-        self.history().index.get_game(id)
+        with_linked(self.history().index.get_game(id)?, &self.linked_slots())
+    }
+
+    fn linked_path(&self) -> PathBuf {
+        self.data_dir.join("linked_slots.json")
+    }
+
+    /// Game UUID → slots another device's history brought in at linking.
+    fn linked_slots(&self) -> HashMap<Uuid, Vec<Uuid>> {
+        read_json(&self.linked_path()).unwrap_or_default()
+    }
+
+    fn set_linked_slots(&self, game: Uuid, slots: Vec<Uuid>) -> Result<()> {
+        let mut linked = self.linked_slots();
+        let changed = if slots.is_empty() {
+            linked.remove(&game).is_some()
+        } else {
+            linked.insert(game, slots);
+            true
+        };
+        if changed {
+            write_json(&self.linked_path(), &linked)?;
+        }
+        Ok(())
+    }
+
+    /// Forgets the playthroughs another device brought in, so they are no
+    /// longer pointed out.
+    pub fn dismiss_linked_slots(&self, game_id: i32) -> Result<FullGame> {
+        let game = self.get_game(game_id)?;
+        self.set_linked_slots(game_uuid(&game.game)?, Vec::new())?;
+        self.get_game(game_id)
     }
 
     pub fn get_slot(&self, id: i32) -> Result<FullSlot> {
@@ -748,9 +785,13 @@ impl WorldlineCore {
         }
         let target = self.slot_target(&game, slot_id)?;
         self.guarded(game_id, VersionReason::PreSwitch, target.as_ref(), |game| {
-            self.activate_slot(game, slot_id)?;
-            self.get_game(game_id)
-        })
+            self.activate_slot(game, slot_id)
+        })?;
+        // Found the other device's playthrough: stop pointing it out.
+        if game.linked_slot_ids.contains(&slot_id) {
+            self.set_linked_slots(game_uuid(&game.game)?, Vec::new())?;
+        }
+        self.get_game(game_id)
     }
 
     fn activate_slot(&self, game: &FullGame, slot_id: i32) -> Result<()> {
@@ -1678,6 +1719,12 @@ impl WorldlineCore {
         let old = history.record(&local.game)?;
         let new_uuid = remote_game.meta.uuid;
         let slug = remote_game.meta.folder_slug.clone();
+        // The other devices' playthroughs, pointed out until the user finds them.
+        let remote_slots: Vec<_> = remote_game
+            .slots
+            .iter()
+            .filter(|slot| slot.meta.deleted_at.is_none() && !slot.versions.is_empty())
+            .collect();
         let dir_map: HashMap<Uuid, Uuid> = old
             .tracked_dirs
             .iter()
@@ -1742,14 +1789,22 @@ impl WorldlineCore {
                 history.store.write_tracked_dir(&slug, dir)?;
             }
             let markers = history.store.markers()?;
+            let remote_names: HashSet<String> = remote_slots
+                .iter()
+                .map(|slot| store::normalize_display_name(&slot.meta.name))
+                .collect();
             for slot in &old.slots {
-                history.store.write_slot(
-                    &slug,
-                    &store::SlotMeta {
-                        game_uuid: new_uuid,
-                        ..slot.meta.clone()
-                    },
-                )?;
+                // Two "Default Slot"s would be told apart only by their dates.
+                let mut meta = store::SlotMeta {
+                    game_uuid: new_uuid,
+                    ..slot.meta.clone()
+                };
+                if remote_names.contains(&store::normalize_display_name(&meta.name)) {
+                    meta.name = format!("{} ({})", meta.name, self.device_metadata().name);
+                    meta.updated_at =
+                        Utc::now().max(meta.updated_at + chrono::Duration::milliseconds(1));
+                }
+                history.store.write_slot(&slug, &meta)?;
                 for version in &slot.versions {
                     let mut version = version.clone();
                     version.game_uuid = new_uuid;
@@ -1814,7 +1869,10 @@ impl WorldlineCore {
                 history.index.set_active_slot(id, slot_id)?;
             }
         }
-        Ok(())
+        self.set_linked_slots(
+            new_uuid,
+            remote_slots.iter().map(|slot| slot.meta.uuid).collect(),
+        )
     }
 
     /// Starts tracking a remote game here. Existing local saves are kept as
@@ -2301,6 +2359,23 @@ struct RetentionInputs {
     retired: HashSet<Uuid>,
     pointed: HashSet<Uuid>,
     local_pointed: HashSet<Uuid>,
+}
+
+/// Fills `linked_slot_ids` from the device-local record, leaving out the
+/// active slot and slots that no longer exist.
+fn with_linked(mut game: FullGame, linked: &HashMap<Uuid, Vec<Uuid>>) -> Result<FullGame> {
+    let Some(slots) = linked.get(&game_uuid(&game.game)?) else {
+        return Ok(game);
+    };
+    let active = game.active_slot.as_ref().map(|slot| slot.id);
+    game.linked_slot_ids = game
+        .slots
+        .iter()
+        .filter(|slot| Some(slot.id) != active)
+        .filter(|slot| slots.iter().any(|uuid| uuid.to_string() == slot.uuid))
+        .map(|slot| slot.id)
+        .collect();
+    Ok(game)
 }
 
 fn validate_retention(settings: &RetentionSettings) -> Result<()> {

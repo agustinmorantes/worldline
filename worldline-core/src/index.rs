@@ -312,11 +312,11 @@ fn slot_versions(conn: &mut SqliteConnection, slot_id: i32) -> Result<Vec<Versio
         .load(conn)?)
 }
 
-/// Version count and newest `created_at` per slot, in one grouped query.
-fn slot_summaries(
-    conn: &mut SqliteConnection,
-    slots: &[Slot],
-) -> Result<HashMap<i32, (i64, Option<NaiveDateTime>)>> {
+type Summary = (i64, Option<NaiveDateTime>, Option<String>);
+
+/// Version count, newest `created_at` and the newest version's origin
+/// device per slot, in two queries.
+fn slot_summaries(conn: &mut SqliteConnection, slots: &[Slot]) -> Result<HashMap<i32, Summary>> {
     use diesel::dsl::{count_star, max};
     let ids: Vec<i32> = slots.iter().map(|slot| slot.id).collect();
     let rows: Vec<(i32, i64, Option<NaiveDateTime>)> = versions::table
@@ -324,9 +324,27 @@ fn slot_summaries(
         .group_by(versions::slot_id)
         .select((versions::slot_id, count_star(), max(versions::created_at)))
         .load(conn)?;
+    let newest: Vec<NaiveDateTime> = rows.iter().filter_map(|(_, _, last)| *last).collect();
+    let mut origins: HashMap<(i32, NaiveDateTime), Option<String>> = versions::table
+        .filter(versions::slot_id.eq_any(&ids))
+        .filter(versions::created_at.eq_any(&newest))
+        .select((
+            versions::slot_id,
+            versions::created_at,
+            versions::origin_device,
+        ))
+        .load::<(i32, NaiveDateTime, Option<String>)>(conn)?
+        .into_iter()
+        .map(|(slot_id, created_at, origin)| ((slot_id, created_at), origin))
+        .collect();
     Ok(rows
         .into_iter()
-        .map(|(slot_id, count, last)| (slot_id, (count, last)))
+        .map(|(slot_id, count, last)| {
+            let origin = last
+                .and_then(|last| origins.remove(&(slot_id, last)))
+                .flatten();
+            (slot_id, (count, last, origin))
+        })
         .collect())
 }
 
@@ -335,16 +353,17 @@ fn full_game(
     tracked_dirs: Vec<TrackedDir>,
     slots: Vec<Slot>,
     versions: Vec<Version>,
-    summaries: &HashMap<i32, (i64, Option<NaiveDateTime>)>,
+    summaries: &HashMap<i32, Summary>,
 ) -> FullGame {
     let slot_summaries = slots
         .iter()
         .map(|slot| {
-            let (count, last) = summaries.get(&slot.id).copied().unwrap_or((0, None));
+            let (count, last, origin) = summaries.get(&slot.id).cloned().unwrap_or_default();
             SlotSummary {
                 slot_id: slot.id,
                 version_count: i32::try_from(count).unwrap_or(i32::MAX),
                 last_created_at: last,
+                last_origin_device: origin,
             }
         })
         .collect();
@@ -368,6 +387,7 @@ fn full_game(
         active_slot,
         versions,
         last_version,
+        linked_slot_ids: Vec::new(),
     }
 }
 

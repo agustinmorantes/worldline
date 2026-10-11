@@ -7,4 +7,8 @@ export type SlotSummary = { slot_id: number,
 /**
  * Retired versions included.
  */
-version_count: number, last_created_at: string | null, };
+version_count: number, last_created_at: string | null, 
+/**
+ * UUID of the device that made the newest version, when known.
+ */
+last_origin_device: string | null, };

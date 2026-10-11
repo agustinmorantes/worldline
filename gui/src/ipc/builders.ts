@@ -72,6 +72,7 @@ export function makeGame(overrides: Partial<FullGame> & Pick<FullGame, 'id' | 't
     active_slot: null,
     versions: [],
     last_version: null,
+    linked_slot_ids: [],
     ...overrides,
   };
 }

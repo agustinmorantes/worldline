@@ -147,6 +147,7 @@ fn games_tracked_on_both_devices_before_sync_are_linked() {
     a.core.refresh_sync().unwrap();
 
     let b = Device::new();
+    b.core.update_device("Laptop", None).unwrap();
     let local = b.add_game_at("twice", &a.save_dir());
     b.core
         .update_sync_settings(worldline_core::sync::SyncSettings {
@@ -162,10 +163,30 @@ fn games_tracked_on_both_devices_before_sync_are_linked() {
         "the local game took the shared identity"
     );
     assert_eq!(games[0].slots.len(), 2, "both histories are kept as slots");
+    let active = games[0].active_slot.clone().unwrap();
+    assert_eq!(active.uuid, local.active_slot.unwrap().uuid);
+
+    // Same-named playthroughs are told apart; the other device's is pointed out.
+    let theirs = games[0].slots.iter().find(|s| s.id != active.id).unwrap();
+    assert_eq!(active.name, format!("{} (Laptop)", theirs.name));
+    assert_eq!(games[0].linked_slot_ids, vec![theirs.id]);
+    let summary = games[0]
+        .slot_summaries
+        .iter()
+        .find(|s| s.slot_id == theirs.id)
+        .unwrap();
     assert_eq!(
-        games[0].active_slot.as_ref().unwrap().uuid,
-        local.active_slot.unwrap().uuid
+        summary.last_origin_device,
+        Some(a.core.device_metadata().device_uuid.to_string())
     );
+    let id = games[0].game.id;
+    let switched = b.core.switch_slot(id, theirs.id).unwrap();
+    assert!(
+        switched.linked_slot_ids.is_empty(),
+        "found, so no longer pointed out"
+    );
+    b.core.switch_slot(id, active.id).unwrap();
+    assert!(b.game(id).linked_slot_ids.is_empty());
 
     // A unrelated local game with the same title is reported, not merged.
     let c = Device::new();

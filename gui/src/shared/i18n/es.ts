@@ -60,7 +60,16 @@ export const es: Messages = {
     playthroughName: (n) => `Partida ${n.toString()}`,
     slotMeta: (count, when) =>
       `${plural('es', count, { one: '# punto de control', other: '# puntos de control' })} · ${when}`,
+    slotDevice: (device) => `en ${device}`,
     emptySlot: 'Vacía',
+    linked: {
+      title: (device) =>
+        device === null
+          ? 'El progreso de otro dispositivo está en otra partida'
+          : `Tu progreso de ${device} está en otra partida`,
+      switch: 'Cambiar a esa',
+      dismiss: 'Descartar',
+    },
     timelineView: 'Vista de la línea temporal',
     sessionsView: 'Sesiones',
     graphView: 'Gráfico',

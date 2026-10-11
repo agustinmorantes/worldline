@@ -5,7 +5,8 @@ import { useGame, useRetiredVersions, useRunningGames, useSyncReport, useSyncSet
 import { useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { GameHeader, type GameView } from '@/features/game/GameHeader';
-import { checkpointDevice, pendingRemoteVersion, syncChip } from '@/features/game/game-view';
+import { checkpointDevice, linkedSlot, pendingRemoteVersion, slotDevice, syncChip } from '@/features/game/game-view';
+import { LinkedPlaythroughNotice } from '@/features/game/LinkedPlaythroughNotice';
 import { CheckpointPanel } from '@/features/sessions/CheckpointPanel';
 import { SessionList } from '@/features/sessions/SessionList';
 import { EmptyGame, formatDuration, GhostRow, TimelineFrame } from '@/features/sessions/Timeline';
@@ -14,7 +15,7 @@ import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
 import { useDevice, useMonitoringSettings, useUnrecorded } from '@/features/sessions/queries';
 import { layoutSessions, navOrder, playedMs, sessionGapMs, splitSessions, totalPlayedMs } from '@/features/sessions/sessions';
 import type { Version } from '@/ipc/bindings/Version';
-import { applyRemoteVersion, createSlot, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
+import { applyRemoteVersion, createSlot, dismissLinkedSlots, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import type { Failure } from '@/ipc/bindings/Failure';
 import { reportError } from '@/shared/errors/report';
@@ -106,6 +107,8 @@ export function GameDetail(): ReactElement {
   const chipState = syncChip({ on: syncOn, running: running || report.isFetching, reported: report.data !== undefined, status });
   const deviceOf = (version: Version): ReturnType<typeof checkpointDevice> => checkpointDevice(version, here, report.data);
   const remoteKind = report.data?.devices.find((d) => d.name === status?.remote_device)?.kind ?? 'desktop';
+  const linked = linkedSlot(game);
+  const linkedOrigin = linked?.summary?.last_origin_device ?? null;
   const head = layout.lineage.length > 0 ? layout.lineage[layout.lineage.length - 1] : null;
   const selected = versions.find((v) => v.id === search.v) ?? head;
   const onLine = selected !== null && layout.lineage.some((v) => v.id === selected.id);
@@ -221,6 +224,19 @@ export function GameDetail(): ReactElement {
         }}
         onCreateSlot={() => { void slotChange(() => createSlot(game.id, t.game.playthroughName(game.slots.length + 1)), t.game.failed.newSlot); }}
       />
+      {linked !== null && (
+        <LinkedPlaythroughNotice
+          slot={linked.slot}
+          summary={linked.summary}
+          device={slotDevice(linked.summary, here, report.data)}
+          deviceKind={report.data?.devices.find((d) => d.device_uuid === linkedOrigin)?.kind ?? 'desktop'}
+          busy={busy || gameRunning}
+          onSwitch={() => { void slotChange(() => switchSlot(game.id, linked.slot.id), t.game.failed.switchSlot); }}
+          onDismiss={() => {
+            dismissLinkedSlots(game.id).then(refresh, (err: unknown) => { reportError(t.errors.actionFailed, err); });
+          }}
+        />
+      )}
       <div className="flex min-h-0 flex-1 gap-4 px-8">
         {versions.length === 0 ? (
           <EmptyGame title={game.title} />

@@ -93,6 +93,17 @@ async fn switch_slot(
 }
 
 #[tauri::command]
+async fn dismiss_linked_slots(
+    game_id: i32,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<FullGame, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.dismiss_linked_slots(game_id))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+#[tauri::command]
 async fn rename_slot(
     slot_id: i32,
     name: String,
@@ -478,6 +489,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         untrack_game,
         create_slot,
         switch_slot,
+        dismiss_linked_slots,
         rename_slot,
         delete_slot,
         restore_version,

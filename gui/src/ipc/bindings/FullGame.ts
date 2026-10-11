@@ -20,7 +20,12 @@ versions: Array<Version>,
 /**
  * The active slot's active version.
  */
-last_version: Version | null, id: number, uuid: string, title: string, title_normalized: string, folder_slug: string, active_slot_id: number | null, 
+last_version: Version | null, 
+/**
+ * Device-local: slots another device's history brought in when this
+ * game was linked, until the user switches to one or dismisses them.
+ */
+linked_slot_ids: Array<number>, id: number, uuid: string, title: string, title_normalized: string, folder_slug: string, active_slot_id: number | null, 
 /**
  * The local copy of the game's icon, once it has arrived.
  */
