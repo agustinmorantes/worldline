@@ -96,7 +96,7 @@ jobs:
           bun run test:screens
 
       - if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: screen-test-results
           path: gui/test-results/
