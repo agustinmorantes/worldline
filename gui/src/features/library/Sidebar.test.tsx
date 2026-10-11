@@ -15,6 +15,7 @@ vi.mock('@/features/library/queries', () => ({
 }));
 
 vi.mock('@tanstack/react-router', () => ({
+  useRouter: () => ({ navigate: vi.fn() }),
   Link: ({ children, to: _to, params: _params, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { to?: string; params?: unknown }) =>
     <a href="#" {...props}>{children}</a>,
 }));
@@ -82,6 +83,16 @@ describe('Sidebar', () => {
     renderSidebar({ go });
     fireEvent.click(screen.getByRole('link', { name: /hades/i }));
     expect(go).toHaveBeenCalledWith({ view: 'game', gameId: 7 });
+  });
+
+  it('opens the game’s menu on right-click, without navigating', () => {
+    mockGames([makeGame({ id: 7, title: 'Hades' })]);
+    const go = vi.fn();
+    renderSidebar({ go });
+    fireEvent.contextMenu(screen.getByRole('link', { name: /hades/i }));
+    expect(screen.getByRole('menuitem', { name: 'Rename game' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Delete everywhere' })).toBeInTheDocument();
+    expect(go).not.toHaveBeenCalled();
   });
 
   it('shows Add games and Settings, and offers to turn on cloud when sync is off', () => {

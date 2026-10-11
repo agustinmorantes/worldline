@@ -11,7 +11,9 @@ import { GameIcon } from '@/features/library/GameIcon';
 import type { CheckpointDevice } from '@/features/game/game-view';
 import { formatRelative, formatTime, useLocale, useT } from '@/shared/i18n';
 import { duration, ease, spring, useMotionReduced } from '@/shared/motion/motion';
+import { btn, btnQuiet } from '@/shared/ui/classes';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog';
 import { HoldButton } from '@/shared/ui/HoldButton';
 import { formatDuration, markColor } from './Timeline';
 import { useScreenshot } from './queries';
@@ -49,6 +51,7 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
   // Another checkpoint, or the name changed underneath: start the field over.
   const source = `${version.id.toString()}:${version.tag ?? ''}`;
   const [shown, setShown] = useState(source);
+  const [unnaming, setUnnaming] = useState(false);
   if (shown !== source) {
     setShown(source);
     setDraft(version.tag ?? '');
@@ -129,9 +132,31 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
               aria-label={t.checkpoint.nameLabel}
               className="min-w-0 flex-1 bg-transparent font-semibold text-tx outline-none placeholder:font-normal placeholder:text-tx3"
             />
+            {tagged && (
+              <button
+                type="button"
+                aria-label={t.checkpoint.removeName}
+                onClick={() => { setUnnaming(true); }}
+                className="-mr-1.5 flex size-7 shrink-0 items-center justify-center rounded-full text-tx3 transition-colors hover:bg-ln hover:text-tx"
+              >
+                <X size={14} strokeWidth={2.6} aria-hidden="true" />
+              </button>
+            )}
           </label>
         </div>
       </div>
+      <Dialog open={unnaming} onOpenChange={setUnnaming}>
+        <DialogContent className="bg-sf sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold tracking-tight">{t.checkpoint.removeNameTitle(version.tag ?? '')}</DialogTitle>
+            <DialogDescription className="text-tx2">{t.checkpoint.removeNameBody}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <button type="button" className={btnQuiet} onClick={() => { setUnnaming(false); }}>{t.game.cancel}</button>
+            <button type="button" className={btn} onClick={() => { setUnnaming(false); onName(''); }}>{t.checkpoint.removeName}</button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AnimatePresence initial={false}>
         {(!here || back) && (
           <motion.div key="hold" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={fold}>

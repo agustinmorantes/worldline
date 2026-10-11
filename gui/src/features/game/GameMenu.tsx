@@ -1,7 +1,8 @@
-// The header's "…" menu: everything about the game itself, from its name and color to removing it.
-import { Fragment, type ReactElement, useState } from 'react';
+// The game's menu: everything about the game itself, from its name and color to removing it.
+// The header's "…" button and a right-click on the game's sidebar row open the same items.
+import { Fragment, type ReactElement, type ReactNode, useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
-import * as Menu from '@radix-ui/react-dropdown-menu';
+import { ContextMenu, DropdownMenu } from 'radix-ui';
 import { Check, ChevronRight, Plus, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import type { FullGame } from '@/ipc/bindings/FullGame';
@@ -13,6 +14,7 @@ import { reportError } from '@/shared/errors/report';
 import { useT } from '@/shared/i18n';
 import { setPref, usePrefs } from '@/shared/prefs/prefs';
 import { CORNERS, type GameCorner } from '@/shared/prefs/schema';
+import { useShellNav } from '@/features/library/shell-nav';
 import { accentVars } from '@/shared/tokens/accent';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog';
 import { HoldButton } from '@/shared/ui/HoldButton';
@@ -29,13 +31,55 @@ const refresh = (id: number): void => {
 
 type Open = 'rename' | 'folders' | 'delete' | null;
 
-export function GameMenu({ game, inCloud }: {
+/** What both menus render items with: the context menu's parts take the same props as the dropdown's. */
+type MenuParts = Pick<typeof DropdownMenu, 'Item' | 'Sub' | 'SubTrigger' | 'SubContent' | 'Portal' | 'RadioGroup' | 'RadioItem' | 'ItemIndicator' | 'Separator'>;
+
+interface GameMenuProps {
   game: FullGame;
   /** Removing from this PC needs the history safe in the cloud. */
   inCloud: boolean;
-}): ReactElement {
+}
+
+/** The header's "…" button. */
+export function GameMenu({ game, inCloud }: GameMenuProps): ReactElement {
+  const t = useT();
+  const { items, dialogs } = useGameMenu(game, inCloud);
+  return (
+    <>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger className={cn(chip, 'w-[30px] justify-center px-0')} aria-label={t.game.moreOptions}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content align="start" sideOffset={6} className={`${popover} w-[240px]`}>{items(DropdownMenu)}</DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
+      {dialogs}
+    </>
+  );
+}
+
+/** Right-clicking the `ContextMenu.Trigger` among `children` opens the game's menu. */
+export function GameContextMenu({ game, inCloud, children }: GameMenuProps & { children: ReactNode }): ReactElement {
+  const { items, dialogs } = useGameMenu(game, inCloud);
+  return (
+    <>
+      <ContextMenu.Root>
+        {children}
+        <ContextMenu.Portal>
+          <ContextMenu.Content className={`${popover} w-[240px]`}>{items(ContextMenu)}</ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
+      {dialogs}
+    </>
+  );
+}
+
+/** The menu's items, for either kind of menu, and the dialogs they open. */
+function useGameMenu(game: FullGame, inCloud: boolean): { items: (Menu: MenuParts) => ReactElement; dialogs: ReactElement } {
   const t = useT();
   const router = useRouter();
+  const { current } = useShellNav();
   const [open, setOpen] = useState<Open>(null);
   const [title, setTitle] = useState('');
   const dirs = game.tracked_dirs.map((d) => d.path);
@@ -88,7 +132,8 @@ export function GameMenu({ game, inCloud }: {
     try {
       await action();
       setOpen(null);
-      void router.navigate({ to: '/' });
+      // From the sidebar it may be another game than the one on screen; then the screen stays.
+      if (current?.view === 'game' && current.gameId === game.id) void router.navigate({ to: '/' });
       queryClient.setQueryData<SyncReport>(['sync-report'], (old) => old && { ...old, remote_games: cloud(old.remote_games) });
       void queryClient.invalidateQueries({ queryKey: ['games'] });
       void queryClient.invalidateQueries({ queryKey: ['sync-report'] });
@@ -108,99 +153,94 @@ export function GameMenu({ game, inCloud }: {
     setPref('overlay', { ...overlay, perGame });
   };
 
-  return (
+  const items = (Menu: MenuParts): ReactElement => (
     <>
-      <Menu.Root>
-        <Menu.Trigger className={cn(chip, 'w-[30px] justify-center px-0')} aria-label={t.game.moreOptions}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
-        </Menu.Trigger>
+      <Menu.Item className={row} onSelect={() => { setTitle(game.title); setOpen('rename'); }}>{t.game.renameGame}</Menu.Item>
+      <Menu.Item className={row} onSelect={() => { void changeIcon(); }}>{t.game.changeIcon}</Menu.Item>
+      <Menu.Sub>
+        <Menu.SubTrigger className={row}>
+          <span className="flex-1">{t.game.changeColor}</span>
+          <span aria-hidden="true" className="size-3.5 rounded-full" style={{ background: accentVars(game.accent_hue)['--acc'] }} />
+          <ChevronRight size={14} aria-hidden="true" className="text-tx3" />
+        </Menu.SubTrigger>
         <Menu.Portal>
-          <Menu.Content align="start" sideOffset={6} className={`${popover} w-[240px]`}>
-            <Menu.Item className={row} onSelect={() => { setTitle(game.title); setOpen('rename'); }}>{t.game.renameGame}</Menu.Item>
-            <Menu.Item className={row} onSelect={() => { void changeIcon(); }}>{t.game.changeIcon}</Menu.Item>
-            <Menu.Sub>
-              <Menu.SubTrigger className={row}>
-                <span className="flex-1">{t.game.changeColor}</span>
-                <span aria-hidden="true" className="size-3.5 rounded-full" style={{ background: accentVars(game.accent_hue)['--acc'] }} />
-                <ChevronRight size={14} aria-hidden="true" className="text-tx3" />
-              </Menu.SubTrigger>
-              <Menu.Portal>
-                <Menu.SubContent sideOffset={8} className={`${popover} w-[208px]`}>
-                  <div className="grid grid-cols-6 gap-1.5 p-1.5">
-                    {HUES.map((hue) => (
-                      <Menu.Item
-                        key={hue}
-                        aria-label={t.game.colorHue(hue)}
-                        className="flex size-7 items-center justify-center rounded-full outline-none transition-transform duration-150 ease-spring data-[highlighted]:scale-110 data-[highlighted]:shadow-[0_0_0_2px_var(--tx2)]"
-                        style={{ background: accentVars(hue)['--acc'], color: accentVars(hue)['--acc-ink'] }}
-                        onSelect={() => { void run(() => setGameAccent(game.id, hue), t.game.failed.color); }}
-                      >
-                        {userHue === hue && <Check size={14} strokeWidth={3} aria-hidden="true" />}
-                      </Menu.Item>
-                    ))}
-                  </div>
-                  <Menu.Item className={row} onSelect={() => { void run(() => setGameAccent(game.id, null), t.game.failed.color); }}>
-                    <span className="flex-1">{t.game.colorAuto}</span>
-                    {userHue === null && <Check size={14} strokeWidth={3} aria-hidden="true" />}
-                  </Menu.Item>
-                </Menu.SubContent>
-              </Menu.Portal>
-            </Menu.Sub>
-            <Menu.Item className={row} onSelect={() => { setOpen('folders'); }}>
-              <span className="flex-1">{t.game.saveFolders}</span>
-              <span className="font-mono text-xs text-tx3">{dirs.length}</span>
+          <Menu.SubContent sideOffset={8} className={`${popover} w-[208px]`}>
+            <div className="grid grid-cols-6 gap-1.5 p-1.5">
+              {HUES.map((hue) => (
+                <Menu.Item
+                  key={hue}
+                  aria-label={t.game.colorHue(hue)}
+                  className="flex size-7 items-center justify-center rounded-full outline-none transition-transform duration-150 ease-spring data-[highlighted]:scale-110 data-[highlighted]:shadow-[0_0_0_2px_var(--tx2)]"
+                  style={{ background: accentVars(hue)['--acc'], color: accentVars(hue)['--acc-ink'] }}
+                  onSelect={() => { void run(() => setGameAccent(game.id, hue), t.game.failed.color); }}
+                >
+                  {userHue === hue && <Check size={14} strokeWidth={3} aria-hidden="true" />}
+                </Menu.Item>
+              ))}
+            </div>
+            <Menu.Item className={row} onSelect={() => { void run(() => setGameAccent(game.id, null), t.game.failed.color); }}>
+              <span className="flex-1">{t.game.colorAuto}</span>
+              {userHue === null && <Check size={14} strokeWidth={3} aria-hidden="true" />}
             </Menu.Item>
-            <Menu.Sub>
-              <Menu.SubTrigger className={row}>
-                <span className="flex-1">{t.overlay.section}</span>
-                <ChevronRight size={14} aria-hidden="true" className="text-tx3" />
-              </Menu.SubTrigger>
-              <Menu.Portal>
-                <Menu.SubContent sideOffset={8} className={`${popover} w-[262px]`}>
-                  <Menu.RadioGroup value={popupCorner} onValueChange={setPopupCorner}>
-                    {(['default', ...CORNERS, 'off'] as const).map((value) => (
-                      <Fragment key={value}>
-                        {(value === 'br' || value === 'off') && <Menu.Separator className="mx-1 my-1.5 h-px bg-[oklch(100%_0_0/0.07)]" />}
-                        <Menu.RadioItem value={value} className={row}>
-                          <span className="flex w-4 text-acc">
-                            <Menu.ItemIndicator><Check size={16} strokeWidth={2.6} aria-hidden="true" /></Menu.ItemIndicator>
-                          </span>
-                          {value === 'default' ? (
-                            <PopupChoice label={t.overlay.useDefault} hint={t.overlay.corners[overlay.corner]} />
-                          ) : value === 'off' ? (
-                            <PopupChoice label={t.overlay.off} hint={t.overlay.offHint} />
-                          ) : (
-                            <span className="flex-1">{t.overlay.corners[value]}</span>
-                          )}
-                        </Menu.RadioItem>
-                      </Fragment>
-                    ))}
-                  </Menu.RadioGroup>
-                </Menu.SubContent>
-              </Menu.Portal>
-            </Menu.Sub>
-            <Menu.Item className={row} onSelect={() => { void exportHistory(); }}>{t.game.exportHistory}</Menu.Item>
-            <Menu.Separator className="mx-1 my-1.5 h-px bg-[oklch(100%_0_0/0.07)]" />
-            <Menu.Item
-              className={cn(row, 'flex-col items-start gap-0.5')}
-              disabled={!inCloud}
-              onSelect={() => {
-                void leave(
-                  () => untrackGame(game.id),
-                  (games) => games.map((g) => (g.uuid === game.uuid ? { ...g, adopted: false } : g)),
-                  t.game.failed.remove,
-                  t.game.removed(game.title),
-                );
-              }}
-            >
-              {t.game.removeFromPc}
-              {!inCloud && <span className="text-xs font-medium text-tx3">{t.game.removeNeedsCloud}</span>}
-            </Menu.Item>
-            <Menu.Item className={cn(row, 'text-err')} onSelect={() => { setOpen('delete'); }}>{t.game.deleteEverywhere}</Menu.Item>
-          </Menu.Content>
+          </Menu.SubContent>
         </Menu.Portal>
-      </Menu.Root>
+      </Menu.Sub>
+      <Menu.Item className={row} onSelect={() => { setOpen('folders'); }}>
+        <span className="flex-1">{t.game.saveFolders}</span>
+        <span className="font-mono text-xs text-tx3">{dirs.length}</span>
+      </Menu.Item>
+      <Menu.Sub>
+        <Menu.SubTrigger className={row}>
+          <span className="flex-1">{t.overlay.section}</span>
+          <ChevronRight size={14} aria-hidden="true" className="text-tx3" />
+        </Menu.SubTrigger>
+        <Menu.Portal>
+          <Menu.SubContent sideOffset={8} className={`${popover} w-[262px]`}>
+            <Menu.RadioGroup value={popupCorner} onValueChange={setPopupCorner}>
+              {(['default', ...CORNERS, 'off'] as const).map((value) => (
+                <Fragment key={value}>
+                  {(value === 'br' || value === 'off') && <Menu.Separator className="mx-1 my-1.5 h-px bg-[oklch(100%_0_0/0.07)]" />}
+                  <Menu.RadioItem value={value} className={row}>
+                    <span className="flex w-4 text-acc">
+                      <Menu.ItemIndicator><Check size={16} strokeWidth={2.6} aria-hidden="true" /></Menu.ItemIndicator>
+                    </span>
+                    {value === 'default' ? (
+                      <PopupChoice label={t.overlay.useDefault} hint={t.overlay.corners[overlay.corner]} />
+                    ) : value === 'off' ? (
+                      <PopupChoice label={t.overlay.off} hint={t.overlay.offHint} />
+                    ) : (
+                      <span className="flex-1">{t.overlay.corners[value]}</span>
+                    )}
+                  </Menu.RadioItem>
+                </Fragment>
+              ))}
+            </Menu.RadioGroup>
+          </Menu.SubContent>
+        </Menu.Portal>
+      </Menu.Sub>
+      <Menu.Item className={row} onSelect={() => { void exportHistory(); }}>{t.game.exportHistory}</Menu.Item>
+      <Menu.Separator className="mx-1 my-1.5 h-px bg-[oklch(100%_0_0/0.07)]" />
+      <Menu.Item
+        className={cn(row, 'flex-col items-start gap-0.5')}
+        disabled={!inCloud}
+        onSelect={() => {
+          void leave(
+            () => untrackGame(game.id),
+            (games) => games.map((g) => (g.uuid === game.uuid ? { ...g, adopted: false } : g)),
+            t.game.failed.remove,
+            t.game.removed(game.title),
+          );
+        }}
+      >
+        {t.game.removeFromPc}
+        {!inCloud && <span className="text-xs font-medium text-tx3">{t.game.removeNeedsCloud}</span>}
+      </Menu.Item>
+      <Menu.Item className={cn(row, 'text-err')} onSelect={() => { setOpen('delete'); }}>{t.game.deleteEverywhere}</Menu.Item>
+    </>
+  );
 
+  const dialogs = (
+    <>
       <Dialog open={open === 'rename'} onOpenChange={(o) => { if (!o) setOpen(null); }}>
         <DialogContent className="bg-sf sm:max-w-[400px]">
           <DialogHeader>
@@ -272,6 +312,8 @@ export function GameMenu({ game, inCloud }: {
       </Dialog>
     </>
   );
+
+  return { items, dialogs };
 }
 
 function PopupChoice({ label, hint }: { label: string; hint: string }): ReactElement {

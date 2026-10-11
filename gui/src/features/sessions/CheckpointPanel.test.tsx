@@ -146,3 +146,52 @@ describe('zoomBox', () => {
     });
   });
 });
+
+describe('CheckpointPanel name', () => {
+  function setup(tag: string | null): ReturnType<typeof vi.fn> {
+    vi.mocked(useScreenshot).mockReturnValue({ data: null } as unknown as ReturnType<typeof useScreenshot>);
+    const version = makeVersion({ id: 3, tag });
+    const onName = vi.fn();
+    render(
+      <CheckpointPanel
+        game={makeGame({ id: 1, title: 'Hades' })}
+        version={version}
+        active={version}
+        unrecorded={null}
+        onLine
+        device={{ here: true, name: null, kind: 'desktop' }}
+        lessPlayMs={0}
+        aheadDevice={null}
+        busy={false}
+        running={false}
+        onName={onName}
+        onRewind={vi.fn()}
+        now={new Date(Date.UTC(2026, 9, 10, 12, 0))}
+      />,
+    );
+    return onName;
+  }
+
+  it('offers to remove a name only when there is one', () => {
+    setup(null);
+    expect(screen.queryByRole('button', { name: 'Remove name' })).not.toBeInTheDocument();
+  });
+
+  it('removes the name with an empty tag once confirmed', () => {
+    const onName = setup('Before the boss');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove name' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove the name “Before the boss”?' });
+    expect(dialog).toHaveTextContent('cleanup can remove it like any other checkpoint');
+    expect(onName).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove name' }));
+    expect(onName).toHaveBeenCalledExactlyOnceWith('');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the name when cancelled', () => {
+    const onName = setup('Before the boss');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove name' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onName).not.toHaveBeenCalled();
+  });
+});
