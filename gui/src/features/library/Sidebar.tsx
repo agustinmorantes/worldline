@@ -143,20 +143,18 @@ export function Sidebar(): ReactElement {
             </AnimatePresence>
           </>
         )}
-        {/* Follows the rows as a search filters them. */}
-        <motion.div layout="position" transition={{ duration: reduced ? 0 : 0.56, ease }}>
-          <NavRow
-            target={{ view: 'add' }}
-            to="/add"
-            label={t.shell.addGames}
-            icon={<Plus size={16} strokeWidth={2.4} />}
-            className="mt-2.5 outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
-            badge={notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
-            fold={fold}
-          />
-        </motion.div>
       </nav>
+      {/* Pinned below the scrolling list so it stays reachable in a long library. */}
       <div className="flex flex-col gap-2 px-3 pb-3">
+        <NavRow
+          target={{ view: 'add' }}
+          to="/add"
+          label={t.shell.addGames}
+          icon={<Plus size={16} strokeWidth={2.4} />}
+          className="outline-[1.5px] -outline-offset-[1.5px] outline-dashed outline-ln"
+          badge={notHere > 0 ? { count: notHere, label: t.shell.inCloudBadge(notHere) } : undefined}
+          fold={fold}
+        />
         <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} fold={fold} />
         <SyncCard fold={fold} />
       </div>
