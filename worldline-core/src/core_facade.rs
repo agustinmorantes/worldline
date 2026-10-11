@@ -1035,41 +1035,19 @@ impl WorldlineCore {
                     }
                 })
                 .collect();
-            let mut cache_png = icon_cache_dir.join(format!("{safe_title}.png"));
-            if !cache_png.exists() {
-                let local = Path::new(source_path);
-                let source = match item.steam_appid {
-                    Some(appid) => crate::icon::Source::Steam { appid, local },
-                    None => crate::icon::Source::File(local),
-                };
-                let mut unanswered = false;
-                let image = crate::icon::resolve_with(source, |url| {
-                    let bytes = if offline {
-                        Err(anyhow!("Skipped while offline"))
-                    } else {
-                        crate::icon::download(url)
-                    };
-                    // An HTTP error status is an answer (older apps have no
-                    // 184 px icon); anything else means no answer.
-                    unanswered = bytes.as_ref().is_err_and(|error| {
-                        !matches!(
-                            error.downcast_ref::<ureq::Error>(),
-                            Some(ureq::Error::Status(..))
-                        )
-                    });
-                    offline |= unanswered;
-                    bytes
-                });
-                // The local fallback isn't cached, so a later scan can upgrade it.
-                if unanswered {
-                    cache_png = icon_cache_dir.join(format!("{safe_title}.offline.png"));
-                }
-                if image.and_then(|image| Ok(image.save(&cache_png)?)).is_err() {
-                    item.icon_path = None;
-                    continue;
-                }
-            }
-            item.icon_path = Some(cache_png.to_string_lossy().into_owned());
+            let local = Path::new(source_path);
+            let source = match item.steam_appid {
+                Some(appid) => crate::icon::Source::Steam { appid, local },
+                None => crate::icon::Source::File(local),
+            };
+            item.icon_path = cached_preview(
+                &icon_cache_dir,
+                &safe_title,
+                source,
+                &mut offline,
+                crate::icon::download,
+            )
+            .map(|path| path.to_string_lossy().into_owned());
         }
         Ok(items)
     }
@@ -2483,6 +2461,46 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(backup))
 }
 
+/// The Add Games preview of `source`, cached in `dir` as `{name}.png` once
+/// final. When a Steam download fails in a way a later scan may get past
+/// (offline, a server error, a body that isn't an image), the local fallback
+/// goes to `{name}.retry.png` instead, so the next scan tries again; a
+/// missing icon is final. Once Steam proves unreachable, `offline` makes the
+/// rest of the scan skip downloads instead of waiting out a timeout per game.
+fn cached_preview(
+    dir: &Path,
+    name: &str,
+    source: crate::icon::Source,
+    offline: &mut bool,
+    fetch: impl FnOnce(&str) -> Result<Vec<u8>>,
+) -> Option<PathBuf> {
+    let settled = dir.join(format!("{name}.png"));
+    if settled.exists() {
+        return Some(settled);
+    }
+    let skip = *offline;
+    let (image, failed) = crate::icon::resolve_with(source, |url| {
+        if skip {
+            bail!("Skipped while offline");
+        }
+        fetch(url)
+    })
+    .ok()?;
+    let retry = dir.join(format!("{name}.retry.png"));
+    let path = match &failed {
+        Some(error) if !crate::icon::is_missing_download(error) => {
+            *offline |= crate::icon::is_unreachable(error);
+            retry
+        }
+        _ => {
+            let _ = std::fs::remove_file(&retry);
+            settled
+        }
+    };
+    image.save(&path).ok()?;
+    Some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2606,5 +2624,92 @@ mod tests {
         let (created, active) = created_and_active(&core, game_id, &kept);
         assert_eq!(active.id, created.id);
         assert_eq!(created.tag.as_deref(), Some("Kept in game, 21:04"));
+    }
+
+    fn jpg(size: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(size, size))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn http_status(status: u16) -> anyhow::Error {
+        ureq::Error::Status(status, ureq::Response::new(status, "", "").unwrap()).into()
+    }
+
+    /// A temp preview cache and a Steam game's local 32 px icon.
+    fn steam_preview_dirs() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir
+            .path()
+            .join("3eec57d783c54036166564e195039b20f600a52f.jpg");
+        std::fs::write(&local, jpg(32)).unwrap();
+        std::fs::create_dir(dir.path().join("cache")).unwrap();
+        (dir, local)
+    }
+
+    fn preview(
+        dir: &Path,
+        local: &Path,
+        offline: &mut bool,
+        fetch: impl FnOnce(&str) -> Result<Vec<u8>>,
+    ) -> (PathBuf, u32) {
+        let source = crate::icon::Source::Steam { appid: 1, local };
+        let path = cached_preview(&dir.join("cache"), "Game", source, offline, fetch).unwrap();
+        let width = image::open(&path).unwrap().width();
+        (path.strip_prefix(dir).unwrap().to_owned(), width)
+    }
+
+    #[test]
+    fn a_preview_whose_steam_download_failed_for_now_is_retried_next_scan() {
+        type Fetch = Box<dyn FnOnce(&str) -> Result<Vec<u8>>>;
+        let failures: [(Fetch, bool); 2] = [
+            (Box::new(|_| Err(http_status(503))), true),
+            // An HTTP 200 whose body isn't an image.
+            (Box::new(|_| Ok(b"<html>".to_vec())), false),
+        ];
+        for (fetch, unreachable) in failures {
+            let (dir, local) = steam_preview_dirs();
+            let dir = dir.path();
+            let mut offline = false;
+            let fallback = preview(dir, &local, &mut offline, fetch);
+            assert_eq!(fallback, (Path::new("cache/Game.retry.png").into(), 32));
+            assert_eq!(offline, unreachable);
+            assert!(!dir.join("cache/Game.png").exists());
+
+            // The next scan.
+            let mut offline = false;
+            let upgraded = preview(dir, &local, &mut offline, |_| Ok(jpg(184)));
+            assert_eq!(upgraded, (Path::new("cache/Game.png").into(), 184));
+            assert!(!dir.join("cache/Game.retry.png").exists());
+            let cached = preview(dir, &local, &mut offline, |_| panic!("cached"));
+            assert_eq!(cached, upgraded);
+        }
+    }
+
+    #[test]
+    fn a_missing_steam_icon_settles_on_the_local_one() {
+        let (dir, local) = steam_preview_dirs();
+        let dir = dir.path();
+        let mut offline = false;
+        let fallback = preview(dir, &local, &mut offline, |_| Err(http_status(404)));
+        assert_eq!(fallback, (Path::new("cache/Game.png").into(), 32));
+        assert!(!offline);
+        let cached = preview(dir, &local, &mut offline, |_| panic!("cached"));
+        assert_eq!(cached, fallback);
+    }
+
+    #[test]
+    fn once_steam_is_unreachable_the_rest_of_the_scan_skips_downloads() {
+        let (dir, local) = steam_preview_dirs();
+        let mut offline = true;
+        let fallback = preview(dir.path(), &local, &mut offline, |_| {
+            panic!("skipped while offline")
+        });
+        assert_eq!(fallback, (Path::new("cache/Game.retry.png").into(), 32));
     }
 }

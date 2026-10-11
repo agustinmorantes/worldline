@@ -41,37 +41,60 @@ pub enum Source<'a> {
 
 /// The icon `source` points to, as large as it comes (exe icons up to 256 px).
 pub fn resolve(source: Source) -> Result<DynamicImage> {
-    resolve_with(source, download)
+    Ok(resolve_with(source, download)?.0)
 }
 
 /// `resolve` with `fetch` downloading a URL's bytes. A Steam icon cached under
 /// its `community_icon` hash is replaced by the 184 px `_full` one when the
 /// download works; otherwise (offline, or an older app without one) the
-/// local 32 px file is used.
+/// local 32 px file is used, and the download's or decoding's error comes
+/// along so the caller can tell a missing icon from one to try again.
 pub fn resolve_with(
     source: Source,
     fetch: impl FnOnce(&str) -> Result<Vec<u8>>,
-) -> Result<DynamicImage> {
+) -> Result<(DynamicImage, Option<anyhow::Error>)> {
+    let mut failed = None;
     let path = match source {
         Source::Steam { appid, local } => {
-            if let Some(hash) = steam_icon_hash(local)
-                && let Ok(image) =
-                    fetch(&steam_icon_url(appid, hash)).and_then(|bytes| decode(&bytes))
-            {
-                return Ok(image);
+            if let Some(hash) = steam_icon_hash(local) {
+                match fetch(&steam_icon_url(appid, hash)).and_then(|bytes| decode(&bytes)) {
+                    Ok(image) => return Ok((image, None)),
+                    Err(error) => failed = Some(error),
+                }
             }
             local
         }
         Source::File(path) => path,
     };
-    let is_exe = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-    if is_exe {
-        from_exe(path)
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let image = if extension.eq_ignore_ascii_case("exe") {
+        from_exe(path)?
+    } else if extension.eq_ignore_ascii_case("ico") {
+        let bytes = std::fs::read(path).context("Failed to open image file")?;
+        // Some `.ico` files are really PNGs or BMPs.
+        largest_icon_image(&ico_images(&bytes)).or_else(|_| decode(&bytes))?
     } else {
-        image::open(path).context("Failed to open image file")
+        image::open(path).context("Failed to open image file")?
+    };
+    Ok((image, failed))
+}
+
+/// Whether a failed Steam download says the icon doesn't exist (older apps
+/// have no 184 px one), rather than that it couldn't be had right now.
+pub fn is_missing_download(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ureq::Error>(),
+        Some(ureq::Error::Status(403 | 404 | 410, _))
+    )
+}
+
+/// Whether a failed download means Steam can't be reached right now: no
+/// answer, throttling or a server error.
+pub fn is_unreachable(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<ureq::Error>() {
+        Some(ureq::Error::Status(status, _)) => *status == 429 || *status >= 500,
+        Some(ureq::Error::Transport(_)) => true,
+        None => false,
     }
 }
 
@@ -138,12 +161,33 @@ pub fn from_exe(_: &Path) -> Result<DynamicImage> {
     anyhow::bail!("Executable icon extraction is only supported on Windows")
 }
 
-/// The largest (then deepest) of an icon's `RT_ICON` images that decodes.
-/// Each is a PNG or a DIB (`BITMAPINFOHEADER` + pixels + AND mask). They're
-/// decoded one by one rather than as one `.ico`: `image`'s ICO decoder picks
-/// by color depth before size, and rejects the whole file over quirks real
-/// exes have (non-RGBA PNGs, directory sizes that disagree with the image).
-#[cfg_attr(not(windows), allow(dead_code))]
+/// The images an `.ico` file holds, as `largest_icon_image` takes them.
+/// Entries pointing outside the file are skipped.
+fn ico_images(ico: &[u8]) -> Vec<Vec<u8>> {
+    // ICONDIR: reserved, type 1, count; then 16-byte ICONDIRENTRYs ending in
+    // the image's size and offset.
+    if ico.len() < 6 || ico[0..4] != [0, 0, 1, 0] {
+        return Vec::new();
+    }
+    let count = u16::from_le_bytes([ico[4], ico[5]]) as usize;
+    ico[6..]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .take(count)
+        .filter_map(|entry| {
+            let size = u32::from_le_bytes(entry[8..12].try_into().ok()?) as usize;
+            let offset = u32::from_le_bytes(entry[12..16].try_into().ok()?) as usize;
+            Some(ico.get(offset..offset.checked_add(size)?)?.to_vec())
+        })
+        .collect()
+}
+
+/// The largest (then deepest) of an icon's images that decodes. Each is a
+/// PNG or a DIB (`BITMAPINFOHEADER` + pixels + AND mask). They're decoded one
+/// by one rather than as one `.ico`: `image`'s ICO decoder picks by color
+/// depth before size, and rejects the whole file over quirks real icons have
+/// (non-RGBA PNGs, directory sizes that disagree with the image).
 fn largest_icon_image(images: &[Vec<u8>]) -> Result<DynamicImage> {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
     let header = |data: &[u8]| -> Option<(u32, u16)> {
@@ -157,7 +201,8 @@ fn largest_icon_image(images: &[Vec<u8>]) -> Result<DynamicImage> {
             let height = i32::from_le_bytes(data.get(8..12)?.try_into().ok()?) / 2;
             let depth = u16::from_le_bytes(data.get(14..16)?.try_into().ok()?);
             let valid = (1..=256).contains(&width) && (1..=256).contains(&height);
-            valid.then_some(((width * height) as u32, depth))
+            // Lazily: the product only fits once both are known to be small.
+            valid.then(|| ((width * height) as u32, depth))
         }
     };
     let mut ranked: Vec<_> = images
@@ -225,22 +270,12 @@ mod exe_resources {
             )
         };
         let group_name = first.context("The executable has no icon")?;
-        let group = resource(module, group_name.as_pcwstr(), RT_GROUP_ICON)
+        // SAFETY: `module` stays loaded while the slices are used.
+        let group = unsafe { resource(module, group_name.as_pcwstr(), RT_GROUP_ICON) }
             .context("Failed to read the executable's icon group")?;
-        // GRPICONDIR: reserved, type, count; then 14-byte GRPICONDIRENTRYs
-        // ending in the RT_ICON id. Some groups are shorter than their count.
-        ensure!(group.len() >= 6, "Malformed icon group");
-        let count = u16::from_le_bytes([group[4], group[5]]) as usize;
-        let images: Vec<Vec<u8>> = group[6..]
-            .as_chunks::<14>()
-            .0
-            .iter()
-            .take(count)
-            .filter_map(|entry| {
-                let id = u16::from_le_bytes([entry[12], entry[13]]);
-                resource(module, Name::Id(id).as_pcwstr(), RT_ICON)
-            })
-            .collect();
+        let images = super::copy_icon_images(super::group_icon_ids(group), |id| unsafe {
+            resource(module, Name::Id(id).as_pcwstr(), RT_ICON)
+        });
         ensure!(!images.is_empty(), "The executable's icon has no images");
         Ok(images)
     }
@@ -262,7 +297,11 @@ mod exe_resources {
         false.into()
     }
 
-    fn resource(module: HMODULE, name: PCWSTR, kind: PCWSTR) -> Option<Vec<u8>> {
+    /// A resource's bytes, mapped in the module rather than copied.
+    ///
+    /// # Safety
+    /// The slice is only valid while `module` stays loaded.
+    unsafe fn resource<'a>(module: HMODULE, name: PCWSTR, kind: PCWSTR) -> Option<&'a [u8]> {
         unsafe {
             let info = FindResourceW(Some(module), name, kind);
             if info.is_invalid() {
@@ -273,9 +312,58 @@ mod exe_resources {
                 return None;
             }
             let size = SizeofResource(Some(module), info) as usize;
-            Some(std::slice::from_raw_parts(data, size).to_vec())
+            Some(std::slice::from_raw_parts(data, size))
         }
     }
+}
+
+/// A single icon image larger than this is skipped: a 256 px 32 bpp DIB is
+/// about 270 KB.
+const MAX_ICON_IMAGE_BYTES: usize = 1 << 20;
+/// Icon images are copied up to this much in total.
+const MAX_ICON_BYTES: usize = 4 << 20;
+
+/// The distinct `RT_ICON` ids an `RT_GROUP_ICON` lists, in order.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn group_icon_ids(group: &[u8]) -> Vec<u16> {
+    // GRPICONDIR: reserved, type, count; then 14-byte GRPICONDIRENTRYs
+    // ending in the RT_ICON id. Some groups are shorter than their count.
+    let Some(count) = group.get(4..6) else {
+        return Vec::new();
+    };
+    let count = u16::from_le_bytes([count[0], count[1]]) as usize;
+    let mut ids = Vec::new();
+    for entry in group[6..].as_chunks::<14>().0.iter().take(count) {
+        let id = u16::from_le_bytes([entry[12], entry[13]]);
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// Copies the images `find` maps for `ids`, skipping oversized ones and
+/// stopping before the copies would pass `MAX_ICON_BYTES`, so a hostile exe
+/// can't make us allocate much.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn copy_icon_images<'a>(
+    ids: Vec<u16>,
+    mut find: impl FnMut(u16) -> Option<&'a [u8]>,
+) -> Vec<Vec<u8>> {
+    let mut images = Vec::new();
+    let mut total = 0;
+    for id in ids {
+        let Some(data) = find(id) else { continue };
+        if data.len() > MAX_ICON_IMAGE_BYTES {
+            continue;
+        }
+        if total + data.len() > MAX_ICON_BYTES {
+            break;
+        }
+        total += data.len();
+        images.push(data.to_vec());
+    }
+    images
 }
 
 /// The `icon_sha256` naming these icon bytes.
@@ -439,7 +527,8 @@ mod tests {
                 Ok(jpg(184))
             },
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(image.width(), 184);
         assert_eq!(
             requested.unwrap(),
@@ -463,7 +552,8 @@ mod tests {
             offline,
         )
         .unwrap();
-        assert_eq!(image.width(), 32);
+        assert_eq!(image.0.width(), 32);
+        assert!(image.1.is_some());
         let garbage = |_: &str| Ok(b"<html>".to_vec());
         let image = resolve_with(
             Source::Steam {
@@ -473,7 +563,8 @@ mod tests {
             garbage,
         )
         .unwrap();
-        assert_eq!(image.width(), 32);
+        assert_eq!(image.0.width(), 32);
+        assert!(image.1.is_some());
     }
 
     #[test]
@@ -489,7 +580,8 @@ mod tests {
             |_| panic!("no download without a hash"),
         )
         .unwrap();
-        assert_eq!(image.width(), 32);
+        assert_eq!(image.0.width(), 32);
+        assert!(image.1.is_none());
     }
 
     #[test]
@@ -503,18 +595,103 @@ mod tests {
         assert_eq!(hash(&format!("x/{}g.jpg", &HASH[1..])), None);
     }
 
-    /// A 32 bpp `RT_ICON` DIB: header, pixels, 1 bpp AND mask.
-    fn dib(size: u32) -> Vec<u8> {
+    /// An `RT_ICON` (or `.ico` entry) DIB: header, pixels, 1 bpp AND mask.
+    fn dib(size: u32, depth: u16) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&40u32.to_le_bytes());
         data.extend_from_slice(&(size as i32).to_le_bytes());
         data.extend_from_slice(&(2 * size as i32).to_le_bytes());
         data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&32u16.to_le_bytes());
+        data.extend_from_slice(&depth.to_le_bytes());
         data.resize(40, 0);
-        data.resize(40 + (size * size * 4) as usize, 0xff);
+        let row = (size * depth as u32).div_ceil(32) * 4;
+        data.resize(40 + (row * size) as usize, 0xff);
         data.resize(data.len() + (size.div_ceil(32) * 4 * size) as usize, 0);
         data
+    }
+
+    /// An `.ico` file holding `images` as (directory size, depth, data).
+    fn ico(images: &[(u8, u16, Vec<u8>)]) -> Vec<u8> {
+        let mut ico = vec![0, 0, 1, 0];
+        ico.extend_from_slice(&(images.len() as u16).to_le_bytes());
+        let mut offset = 6 + 16 * images.len();
+        for (size, depth, data) in images {
+            ico.extend_from_slice(&[*size, *size, 0, 0, 1, 0]);
+            ico.extend_from_slice(&depth.to_le_bytes());
+            ico.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            ico.extend_from_slice(&(offset as u32).to_le_bytes());
+            offset += data.len();
+        }
+        for (_, _, data) in images {
+            ico.extend_from_slice(data);
+        }
+        ico
+    }
+
+    #[test]
+    fn a_larger_shallower_ico_entry_beats_a_smaller_deeper_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.ico");
+        // 256 px is 0 in the directory.
+        std::fs::write(&path, ico(&[(32, 32, dib(32, 32)), (0, 24, dib(256, 24))])).unwrap();
+        let image = resolve(Source::File(&path)).unwrap();
+        assert_eq!((image.width(), image.height()), (256, 256));
+    }
+
+    #[test]
+    fn ico_entries_outside_the_file_are_skipped_and_misnamed_files_still_decode() {
+        let mut file = ico(&[(16, 32, dib(16, 32)), (48, 32, dib(48, 32))]);
+        // The 48 px entry now claims more bytes than the file has.
+        file[6 + 16 + 8..6 + 16 + 12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(ico_images(&file).len(), 1);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.ico");
+        std::fs::write(&path, &file).unwrap();
+        assert_eq!(resolve(Source::File(&path)).unwrap().width(), 16);
+        // A PNG saved as `.ico`.
+        let png = dir.path().join("png.ico");
+        solid([0, 0, 255, 255])
+            .save_with_format(&png, ImageFormat::Png)
+            .unwrap();
+        assert_eq!(resolve(Source::File(&png)).unwrap().width(), 64);
+    }
+
+    #[test]
+    fn huge_dib_dimensions_are_rejected_without_overflowing() {
+        let mut huge = dib(16, 32);
+        huge[4..8].copy_from_slice(&i32::MAX.to_le_bytes());
+        huge[8..12].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(largest_icon_image(std::slice::from_ref(&huge)).is_err());
+        let image = largest_icon_image(&[huge, dib(16, 32)]).unwrap();
+        assert_eq!(image.width(), 16);
+    }
+
+    #[test]
+    fn exe_icon_images_are_read_once_each_and_copied_within_bounds() {
+        // 1024 entries naming the same RT_ICON, and a group cut short.
+        let mut group = vec![0, 0, 1, 0];
+        group.extend_from_slice(&1024u16.to_le_bytes());
+        for _ in 0..1024 {
+            let mut entry = [0u8; 14];
+            entry[12..].copy_from_slice(&7u16.to_le_bytes());
+            group.extend_from_slice(&entry);
+        }
+        assert_eq!(group_icon_ids(&group), [7]);
+        assert!(group_icon_ids(&group[..5]).is_empty());
+
+        let oversized = vec![0u8; MAX_ICON_IMAGE_BYTES + 1];
+        let mut reads = 0;
+        let images = copy_icon_images(group_icon_ids(&group), |_| {
+            reads += 1;
+            Some(&oversized[..])
+        });
+        assert_eq!(reads, 1);
+        assert!(images.is_empty());
+
+        // Distinct images at the size limit stop at the total.
+        let largest = vec![0u8; MAX_ICON_IMAGE_BYTES];
+        let images = copy_icon_images((1..=100).collect(), |_| Some(&largest[..]));
+        assert_eq!(images.len(), MAX_ICON_BYTES / MAX_ICON_IMAGE_BYTES);
     }
 
     #[test]
@@ -528,9 +705,9 @@ mod tests {
         broken[16..24].copy_from_slice(&[0, 0, 1, 0, 0, 0, 1, 0]);
         broken.truncate(40);
 
-        let image = largest_icon_image(&[dib(16), png.clone(), dib(48)]).unwrap();
+        let image = largest_icon_image(&[dib(16, 32), png.clone(), dib(48, 32)]).unwrap();
         assert_eq!(image.width(), 64);
-        let image = largest_icon_image(&[dib(16), broken.clone(), dib(48)]).unwrap();
+        let image = largest_icon_image(&[dib(16, 32), broken.clone(), dib(48, 32)]).unwrap();
         assert_eq!(image.width(), 48);
         assert!(largest_icon_image(&[broken]).is_err());
     }
