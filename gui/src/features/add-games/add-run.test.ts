@@ -21,6 +21,7 @@ const item = (title: string): InstallScannerItem => ({
   candidate_dirs: [],
   install_path: null,
   icon_path: null,
+  steam_appid: null,
   last_modified_at: null,
   source: 'steam',
 });

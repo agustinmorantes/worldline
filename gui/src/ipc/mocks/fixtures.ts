@@ -300,10 +300,10 @@ function addGames(scan: Fixture['scan']): Fixture {
 }
 
 const SCANNED: InstallScannerItem[] = [
-  { title: 'Hades', dirs: ['C:/Users/Player/Saved Games/Hades'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: Date.now() - 3_600_000, source: 'steam' },
-  { title: 'Sea of Stars', dirs: ['C:/Users/Player/AppData/LocalLow/Sabotage/SeaOfStars'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: Date.now() - 7_200_000, source: 'steam' },
-  { title: 'Outer Wilds', dirs: ['C:/Users/Player/AppData/LocalLow/Mobius Digital/Outer Wilds'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: Date.now() - 86_400_000, source: 'epic' },
-  { title: 'Cassette Beasts', dirs: ['D:/Games/Cassette Beasts/saves'], candidate_dirs: [], install_path: null, icon_path: null, last_modified_at: null, source: 'custom' },
+  { title: 'Hades', dirs: ['C:/Users/Player/Saved Games/Hades'], candidate_dirs: [], install_path: null, icon_path: null, steam_appid: null, last_modified_at: Date.now() - 3_600_000, source: 'steam' },
+  { title: 'Sea of Stars', dirs: ['C:/Users/Player/AppData/LocalLow/Sabotage/SeaOfStars'], candidate_dirs: [], install_path: null, icon_path: null, steam_appid: null, last_modified_at: Date.now() - 7_200_000, source: 'steam' },
+  { title: 'Outer Wilds', dirs: ['C:/Users/Player/AppData/LocalLow/Mobius Digital/Outer Wilds'], candidate_dirs: [], install_path: null, icon_path: null, steam_appid: null, last_modified_at: Date.now() - 86_400_000, source: 'epic' },
+  { title: 'Cassette Beasts', dirs: ['D:/Games/Cassette Beasts/saves'], candidate_dirs: [], install_path: null, icon_path: null, steam_appid: null, last_modified_at: null, source: 'custom' },
 ];
 
 /** Everything in the cloud is already here, and the scan finds nothing new. */

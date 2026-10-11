@@ -862,23 +862,7 @@ impl WorldlineCore {
     /// Stores an image (or an executable's icon) as the game's shared icon
     /// and returns its local path.
     pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
-        let source = Path::new(source_path);
-        let is_exe = source
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-        let image = if is_exe {
-            let cache = self.data_dir.join("cache");
-            std::fs::create_dir_all(&cache).context("Failed to create the cache directory")?;
-            let extracted = cache.join(format!(".icon-{}.png", store::short_random()));
-            let image = extract_exe_icon(source, &extracted).and_then(|()| {
-                image::open(&extracted).context("Failed to read the extracted icon")
-            });
-            let _ = std::fs::remove_file(&extracted);
-            image?
-        } else {
-            image::open(source).context("Failed to open image file")?
-        };
+        let image = crate::icon::resolve(crate::icon::Source::File(Path::new(source_path)))?;
         let png = crate::icon::normalize(&image)?;
         let game = store::with_lock(self.repository_root(), || {
             self.history().set_icon(game_id, &png)
@@ -1029,8 +1013,13 @@ impl WorldlineCore {
             .into_iter()
             .filter(|item| !item.dirs.is_empty())
             .collect();
-        let icon_cache_dir = cache_dir.join("icon_cache");
+        // v1 held 32 px exe icons and 32 px Steam ones.
+        let _ = std::fs::remove_dir_all(cache_dir.join("icon_cache"));
+        let icon_cache_dir = cache_dir.join("icon_cache_v2");
         let _ = std::fs::create_dir_all(&icon_cache_dir);
+        // After one failed download, the rest of this scan uses local icons
+        // instead of waiting out a timeout per game.
+        let mut offline = false;
         for item in &mut items {
             let Some(source_path) = &item.icon_path else {
                 continue;
@@ -1046,21 +1035,36 @@ impl WorldlineCore {
                     }
                 })
                 .collect();
-            let cache_png = icon_cache_dir.join(format!("{safe_title}.png"));
+            let mut cache_png = icon_cache_dir.join(format!("{safe_title}.png"));
             if !cache_png.exists() {
-                let source = Path::new(source_path);
-                let is_exe = source
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-                let extracted = if is_exe {
-                    extract_exe_icon(source, &cache_png).is_ok()
-                } else {
-                    image::open(source)
-                        .and_then(|img| img.save(&cache_png))
-                        .is_ok()
+                let local = Path::new(source_path);
+                let source = match item.steam_appid {
+                    Some(appid) => crate::icon::Source::Steam { appid, local },
+                    None => crate::icon::Source::File(local),
                 };
-                if !extracted {
+                let mut unanswered = false;
+                let image = crate::icon::resolve_with(source, |url| {
+                    let bytes = if offline {
+                        Err(anyhow!("Skipped while offline"))
+                    } else {
+                        crate::icon::download(url)
+                    };
+                    // An HTTP error status is an answer (older apps have no
+                    // 184 px icon); anything else means no answer.
+                    unanswered = bytes.as_ref().is_err_and(|error| {
+                        !matches!(
+                            error.downcast_ref::<ureq::Error>(),
+                            Some(ureq::Error::Status(..))
+                        )
+                    });
+                    offline |= unanswered;
+                    bytes
+                });
+                // The local fallback isn't cached, so a later scan can upgrade it.
+                if unanswered {
+                    cache_png = icon_cache_dir.join(format!("{safe_title}.offline.png"));
+                }
+                if image.and_then(|image| Ok(image.save(&cache_png)?)).is_err() {
                     item.icon_path = None;
                     continue;
                 }
@@ -2477,30 +2481,6 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
         }
     }
     Ok(Some(backup))
-}
-
-#[cfg(target_os = "windows")]
-fn extract_exe_icon(exe_path: &Path, output_path: &Path) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    let script = "Add-Type -AssemblyName System.Drawing; \
-                  $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:EXE_PATH); \
-                  $icon.ToBitmap().Save($env:OUT_PATH)";
-    // CREATE_NO_WINDOW: the GUI is a windowed app, so a console would flash per icon.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let status = std::process::Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("EXE_PATH", exe_path)
-        .env("OUT_PATH", output_path)
-        .status()
-        .context("Failed to run PowerShell")?;
-    anyhow::ensure!(status.success(), "PowerShell icon extraction failed");
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn extract_exe_icon(_: &Path, _: &Path) -> Result<()> {
-    bail!("Executable icon extraction is only supported on Windows")
 }
 
 #[cfg(test)]
