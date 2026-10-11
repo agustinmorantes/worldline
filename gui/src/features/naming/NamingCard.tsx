@@ -39,7 +39,8 @@ export interface NamingCardProps {
 
 /** The card itself: one name field, saved with Enter or ✓, kept automatic with Esc. It covers the
  * window, and a click in it never moves the focus off the field, so the focus leaving the card
- * means the window lost it. In the app it's a modal over any other, so it holds the focus. */
+ * means the window lost it: in the app a focus loss, over the game the field takes it back. In the
+ * app it's a modal over any other, so it holds the focus. */
 export function NamingCard({ card, place, left = false, onClose, onDone }: NamingCardProps): ReactElement {
   const t = MESSAGES[card.language].naming;
   const reduced = card.motion === 'reduced';
@@ -99,12 +100,19 @@ export function NamingCard({ card, place, left = false, onClose, onDone }: Namin
   useEffect(() => {
     if (left) closeRef.current('blur');
   }, [left]);
-  // The window lost the focus, wherever it was in the card.
+  // The window lost the focus, wherever it was in the card. Over the game only Rust can tell: the
+  // page also blurs for a moment while Windows activates the overlay, so the field takes the
+  // focus back, and Rust says when another window really took it (`left`).
   useEffect(() => {
+    if (place === 'overlay') {
+      const refocus = (): void => { if (!closedRef.current) inputRef.current?.focus(); };
+      window.addEventListener('focus', refocus);
+      return () => { window.removeEventListener('focus', refocus); };
+    }
     const blurred = (): void => { closeRef.current('blur'); };
     window.addEventListener('blur', blurred);
     return () => { window.removeEventListener('blur', blurred); };
-  }, []);
+  }, [place]);
 
   const style = {
     ...accentVars(card.accentHue),
@@ -168,10 +176,12 @@ export function NamingCard({ card, place, left = false, onClose, onDone }: Namin
       style={style}
       // A click in the card never takes the focus off the field.
       onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault(); }}
-      // The focus leaving the card, not just moving between the field and ✓, is a focus loss.
+      // The focus leaving the card, not just moving between the field and ✓, is a focus loss in
+      // the app; over the game the field takes it back.
       onBlur={(e) => {
         if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
-        close('blur');
+        if (place === 'overlay') inputRef.current?.focus();
+        else close('blur');
       }}
       onKeyDown={(e) => {
         if (e.key === 'Escape') {

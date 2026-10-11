@@ -78,11 +78,22 @@ describe('NamingCard', () => {
     expect(onClose).toHaveBeenCalledWith('save', 'Kept in game, 21:04');
   });
 
-  it('losing the focus saves what was typed', () => {
-    const { onClose } = setup();
+  it('losing the focus in the app saves what was typed', () => {
+    const { onClose } = setup({ place: 'app' });
     fireEvent.change(field(), { target: { value: 'Half typ' } });
     fireEvent.blur(field());
     expect(onClose).toHaveBeenCalledWith('blur', 'Half typ');
+  });
+
+  it('over the game, the page losing the focus isn’t a focus loss: the field takes it back', () => {
+    const { onClose } = setup();
+    fireEvent.change(field(), { target: { value: 'Half typ' } });
+    field().blur();
+    fireEvent.blur(window);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.focus(window);
+    expect(field()).toHaveFocus();
+    expect(field()).toHaveValue('Half typ');
   });
 
   it('moving between the field and ✓ isn’t a focus loss; leaving the card is', () => {
