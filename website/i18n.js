@@ -1,5 +1,6 @@
 // Spanish for the landing page. The English in index.html is the source: each text node,
 // aria-label, alt and meta whose English text is a key below gets the Spanish instead.
+// Clips and settings crops switch to their Spanish recordings in media/es/.
 // The language comes from ?lang=, then the visitor's last pick, then the browser's languages.
 // Wording follows the app's own Spanish (gui/src/shared/i18n/es.ts).
 
@@ -41,7 +42,7 @@ const ES = {
     'Elige un juego y mira cada vez que lo jugaste, con un punto de control por cada guardado. Cambia al grafo para ver todas las líneas temporales a la&nbsp;vez.',
   "Worldline showing a game's checkpoints grouped into sessions, then switching to the graph of its timelines":
     'Worldline muestra los puntos de control de un juego agrupados en sesiones y luego cambia al grafo de sus líneas temporales',
-  'Recorded from Worldline, with demo saves': 'Grabado de Worldline, con partidas de prueba (app en inglés)',
+  'Recorded from Worldline, with demo saves': 'Grabado de Worldline, con partidas de prueba',
 
   // How it works
   'Install it. Then forget about it.': 'Instálalo. Y olvídate.',
@@ -73,11 +74,11 @@ const ES = {
   'Worldline popups in the corner of a game: recording, checkpoint 42 then 43, a new timeline, kept forever':
     'Avisos de Worldline en la esquina de un juego: grabando, punto de control 42 y luego 43, una nueva línea temporal, conservado para siempre',
   'The Name it hotkey opens a card over the game; typing Spared the mimic and pressing Enter keeps it':
-    'El atajo para ponerle nombre abre una tarjeta sobre el juego; se escribe Spared the mimic y Enter lo conserva',
-  'Popup: Checkpoint #42, Lantern Knight': 'Aviso: Checkpoint #42, Lantern Knight',
-  'Popup: New timeline #44, branched off “Before the bridge”': 'Aviso: New timeline #44, se separa de «Before the bridge»',
-  'Popup: Kept forever #46, “Spared the mimic”': 'Aviso: Kept forever #46, «Spared the mimic»',
-  'Popup: Laptop is ahead, 3 newer checkpoints, quit and sync first': 'Aviso: Laptop va por delante, 3 puntos de control más nuevos, sal y sincroniza primero',
+    'El atajo para ponerle nombre abre una tarjeta sobre el juego; se escribe Perdoné al mímico y Enter lo conserva',
+  'Popup: Checkpoint #42, Lantern Knight': 'Aviso: Punto de control #42, Lantern Knight',
+  'Popup: New timeline #44, branched off “Before the bridge”': 'Aviso: Nueva línea temporal #44, se separa de «Antes del puente»',
+  'Popup: Kept forever #46, “Spared the mimic”': 'Aviso: Conservado para siempre #46, «Perdoné al mímico»',
+  'Popup: Laptop is ahead, 3 newer checkpoints, quit and sync first': 'Aviso: Portátil va por delante, 3 puntos de control más nuevos, sal y sincroniza primero',
   'Every checkpoint': 'Cada punto de control',
   'When you branch off': 'Cuando te separas',
   'Kept with a hotkey': 'Conservado con un atajo',
@@ -228,6 +229,20 @@ const WL = (() => {
     if (!orig.has(document)) orig.set(document, document.title);
     document.title = t(orig.get(document));
     document.querySelectorAll('[data-lang]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === lang)));
+    localizeMedia();
+  }
+
+  // Clips and stills recorded from the Spanish app live in media/es/ under the same names.
+  const mediaFor = (url) => (lang === 'es' ? url.replace(/^media\/(?!es\/|icons\/)/, 'media/es/') : url.replace(/^media\/es\//, 'media/'));
+  function localizeMedia() {
+    document.querySelectorAll('video[src^="media/"], img[src^="media/"]').forEach((m) => {
+      const src = mediaFor(m.getAttribute('src'));
+      if (src === m.getAttribute('src')) return;
+      const playing = m.tagName === 'VIDEO' && !m.paused;
+      if (m.hasAttribute('poster')) m.setAttribute('poster', mediaFor(m.getAttribute('poster')));
+      m.setAttribute('src', src);
+      if (playing) m.play().catch(() => {});
+    });
   }
 
   function set(next, { save = true } = {}) {
