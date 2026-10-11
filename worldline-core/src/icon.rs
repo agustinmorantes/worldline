@@ -5,6 +5,7 @@ use crate::store::format_hash;
 use anyhow::{Context, Result};
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::time::Duration;
@@ -114,6 +115,100 @@ fn steam_icon_url(appid: u64, hash: &str) -> String {
     format!(
         "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/{appid}/{hash}_full.jpg"
     )
+}
+
+/// The 32 px community icon, for apps without a `_full` one.
+fn steam_small_icon_url(appid: u64, hash: &str) -> String {
+    format!(
+        "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/{appid}/{hash}.jpg"
+    )
+}
+
+/// How many appids one `GetItems` call asks about.
+pub const STEAM_ITEMS_PER_CALL: usize = 100;
+
+/// The `community_icon` hash of each of `appids` (at most
+/// `STEAM_ITEMS_PER_CALL`) that Steam has one for, from one
+/// `IStoreBrowseService/GetItems` call through `fetch`. Delisted or
+/// region-hidden apps answer `success != 1` and are left out, as are items
+/// for appids not asked about and hashes that aren't 40 hex digits: only
+/// these two values ever go into the icon URLs.
+pub fn steam_community_icons(
+    appids: &[u64],
+    fetch: impl FnOnce(&str) -> Result<Vec<u8>>,
+) -> Result<HashMap<u64, String>> {
+    #[derive(serde::Deserialize)]
+    struct Body {
+        response: Items,
+    }
+    #[derive(serde::Deserialize)]
+    struct Items {
+        #[serde(default)]
+        store_items: Vec<Item>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Item {
+        appid: Option<u64>,
+        success: Option<u32>,
+        assets: Option<Assets>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Assets {
+        community_icon: Option<String>,
+    }
+
+    let input = serde_json::json!({
+        "ids": appids.iter().map(|appid| serde_json::json!({ "appid": appid })).collect::<Vec<_>>(),
+        "context": { "language": "english", "country_code": "US" },
+        "data_request": { "include_assets": true },
+    });
+    let url = format!(
+        "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json={}",
+        percent_encode(&input.to_string())
+    );
+    let body: Body =
+        serde_json::from_slice(&fetch(&url)?).context("Unexpected answer from Steam")?;
+    Ok(body
+        .response
+        .store_items
+        .into_iter()
+        .filter(|item| item.success == Some(1))
+        .filter_map(|item| {
+            let appid = item.appid.filter(|appid| appids.contains(appid))?;
+            let hash = item.assets?.community_icon?;
+            let valid = hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+            valid.then_some((appid, hash))
+        })
+        .collect())
+}
+
+/// Every byte but the unreserved ones as `%XX`.
+fn percent_encode(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len() * 3);
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+/// Steam's icon for `appid`, named by its `community_icon` `hash`: the
+/// 184 px `_full` one, or the 32 px one when Steam has no `_full` (older
+/// apps), so the game still gets an icon. Errors like `resolve_with`'s:
+/// `is_missing_download` tells Steam having neither from a failure for now.
+pub fn steam_icon(
+    appid: u64,
+    hash: &str,
+    fetch: impl Fn(&str) -> Result<Vec<u8>>,
+) -> Result<DynamicImage> {
+    match fetch(&steam_icon_url(appid, hash)).and_then(|bytes| decode(&bytes)) {
+        Err(error) if is_missing_download(&error) => {}
+        result => return result,
+    }
+    fetch(&steam_small_icon_url(appid, hash)).and_then(|bytes| decode(&bytes))
 }
 
 /// Downloads `url` with a short timeout.

@@ -12,6 +12,7 @@ use uuid::Uuid;
 use worldline_core::icon::fallback_hue;
 use worldline_core::models::Game;
 use worldline_core::store::Store;
+use worldline_core::{OpenOptions, WorldlineCore};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -434,4 +435,22 @@ fn a_rename_another_device_made_wins_over_the_fill() {
         .game;
     assert_eq!(on_b.uuid, game.uuid);
     assert_eq!(on_b.icon_path, None, "matched by its old title");
+}
+
+/// `worldline sync` opens a core that hasn't scanned installs yet; an
+/// installed game without an icon still gets its install's on that sync.
+#[test]
+fn a_fresh_cli_sync_fills_an_installed_games_icon() {
+    let remote = tempfile::tempdir().unwrap();
+    let device = Device::synced(remote.path());
+    let root = install(&device, RED);
+    let game = device.add_game_at(INSTALLED, &install_saves(&root)).game;
+    let Device { core, data, saves } = device;
+    drop(core);
+
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+    let device = Device { core, data, saves };
+    device.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&device, &game.uuid), Some(RED));
+    assert!(remote_icon(remote.path(), &game).is_file(), "pushed");
 }

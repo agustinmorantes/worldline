@@ -1193,6 +1193,34 @@ pub fn scan_installed(
         .collect())
 }
 
+/// Steam appids by normalized title, from the manifest the scan uses. Titles
+/// that normalize alike but name different appids are left out: an icon is
+/// only looked up for an exact match.
+pub fn steam_appids(cache_dir: &Path) -> HashMap<String, u64> {
+    steam_appids_in(&load_manifest(cache_dir))
+}
+
+fn steam_appids_in(manifest: &Manifest) -> HashMap<String, u64> {
+    let mut appids: HashMap<String, Option<u64>> = HashMap::new();
+    for (title, game) in &manifest.games {
+        let Some(appid) = game.steam.as_ref().and_then(|steam| steam.id) else {
+            continue;
+        };
+        appids
+            .entry(crate::store::normalize_display_name(title))
+            .and_modify(|known| {
+                if *known != Some(appid) {
+                    *known = None;
+                }
+            })
+            .or_insert(Some(appid));
+    }
+    appids
+        .into_iter()
+        .filter_map(|(title, appid)| Some((title, appid?)))
+        .collect()
+}
+
 pub fn scan_installed_candidates(
     cache_dir: &Path,
     custom_roots: &[String],
@@ -1249,6 +1277,27 @@ mod tests {
             Some(cache.join("70_icon.jpg"))
         );
         assert_eq!(steam_library_icon(steam.path(), 80), None);
+    }
+
+    #[test]
+    fn steam_appids_match_normalized_titles_and_skip_ambiguous_ones() {
+        let manifest: Manifest = serde_yaml_ng::from_str(
+            "Hollow  Knight:\n  steam: {id: 367520}\n\
+             Doom:\n  steam: {id: 2280}\n\
+             DOOM:\n  steam: {id: 379720}\n\
+             Celeste:\n  steam: {id: 504230}\n\
+             CELESTE:\n  steam: {id: 504230}\n\
+             No Steam: {}\n",
+        )
+        .unwrap();
+        let appids = steam_appids_in(&manifest);
+        assert_eq!(
+            appids,
+            HashMap::from([
+                ("hollow knight".to_string(), 367520),
+                ("celeste".to_string(), 504230),
+            ])
+        );
     }
 
     #[test]
