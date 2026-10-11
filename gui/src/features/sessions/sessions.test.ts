@@ -223,17 +223,52 @@ describe('navOrder', () => {
 
 describe('trackWidth', () => {
   it('grows with the session, from 40 to 380 px', () => {
-    expect(trackWidth(0)).toBe(40);
-    expect(trackWidth(120 * MIN)).toBe(210);
-    expect(trackWidth(24 * 60 * MIN)).toBe(380);
+    expect(trackWidth(line(1, null, [0]))).toBe(40);
+    expect(trackWidth(line(1, null, [0, 120]))).toBe(210);
+    expect(trackWidth(line(1, null, [0, day(24)]))).toBe(380);
+  });
+
+  it('has room for each checkpoint, up to 380 px', () => {
+    expect(trackWidth(line(1, null, [0, 1, 2, 3, 4]))).toBe(4 * 16 + 22);
+    expect(trackWidth(line(1, null, Array.from({ length: 40 }, (_, i) => i)))).toBe(380);
   });
 });
 
 describe('trackPosition', () => {
+  const at = (session: Version[]): number[] => session.map((x) => trackPosition(x, session));
+  /** Smallest distance between neighbours, in px along a track's room. */
+  const closest = (session: Version[]): number => {
+    const px = at(session).map((p) => p * (trackWidth(session) - 22));
+    return Math.min(...px.slice(1).map((p, i) => p - px[i]));
+  };
+
   it('places checkpoints by time along the session, a lone one in the middle', () => {
     const session = line(1, null, [0, 10, 40]);
-    expect(session.map((x) => trackPosition(x, session))).toEqual([0, 0.25, 1]);
+    expect(at(session)).toEqual([0, 0.25, 1]);
     expect(trackPosition(session[0], [session[0]])).toBe(0.5);
+  });
+
+  it('nudges checkpoints close in time apart, in order, keeping the ends', () => {
+    const session = line(1, null, [0, 60, 61, 62, 120]);
+    const spots = at(session);
+    expect(spots[0]).toBe(0);
+    expect(spots[4]).toBe(1);
+    expect(closest(session)).toBeGreaterThanOrEqual(16 - 1e-9);
+    expect(spots[1]).toBeCloseTo(0.5, 1);
+  });
+
+  it('pulls a burst at the end back inside the track', () => {
+    const session = line(1, null, [0, 120, 120, 120]);
+    const spots = at(session);
+    expect(spots[3]).toBe(1);
+    expect(spots.every((p) => p >= 0 && p <= 1)).toBe(true);
+    expect(closest(session)).toBeGreaterThanOrEqual(16 - 1e-9);
+  });
+
+  it('spaces checkpoints evenly when the longest track cannot fit the gap', () => {
+    const session = line(1, null, Array.from({ length: 40 }, (_, i) => (i < 30 ? i * 0.1 : 200 + i)));
+    const spots = at(session);
+    spots.slice(1).forEach((p, i) => { expect(p - spots[i]).toBeCloseTo(1 / 39); });
   });
 });
 

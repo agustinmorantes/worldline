@@ -82,16 +82,37 @@ export function durationParts(ms: number): { hours: number; minutes: number } {
   return { hours: Math.floor(total / 60), minutes: total % 60 };
 }
 
-/** A session's track length in px: longer sessions get longer tracks, within bounds. */
-export function trackWidth(durationMs: number): number {
-  return Math.round(Math.max(40, Math.min(380, 40 + (durationMs / (240 * MINUTE)) * 340)));
+/** The least room between two checkpoints' centres on a track, in px, while the track fits it. */
+const DOT_GAP = 16;
+/** A dot's hit area: the track's ends keep half of it each. */
+const DOT_SIZE = 22;
+
+/**
+ * A session's track length in px: longer sessions get longer tracks, and a track has room for
+ * each checkpoint, within bounds.
+ */
+export function trackWidth(session: Version[]): number {
+  const durationMs = timeOf(session[session.length - 1]) - timeOf(session[0]);
+  const byTime = 40 + (durationMs / (240 * MINUTE)) * 340;
+  const byCount = (session.length - 1) * DOT_GAP + DOT_SIZE;
+  return Math.round(Math.max(40, Math.min(380, Math.max(byTime, byCount))));
 }
 
-/** Where a checkpoint sits along its session's track, 0–1. */
+/**
+ * Where a checkpoint sits along its session's track, 0–1: by time, but nudged apart so no two
+ * sit closer than `DOT_GAP` (evenly spaced when the longest track can't fit that).
+ */
 export function trackPosition(version: Version, session: Version[]): number {
   if (session.length < 2) return 0.5;
   const first = timeOf(session[0]);
-  return (timeOf(version) - first) / Math.max(1, timeOf(session[session.length - 1]) - first);
+  const span = Math.max(1, timeOf(session[session.length - 1]) - first);
+  const room = trackWidth(session) - DOT_SIZE;
+  const gap = Math.min(DOT_GAP, room / (session.length - 1));
+  const at = session.map((x) => ((timeOf(x) - first) / span) * room);
+  for (let i = 1; i < at.length; i++) at[i] = Math.max(at[i], at[i - 1] + gap);
+  at[at.length - 1] = Math.min(at[at.length - 1], room);
+  for (let i = at.length - 2; i >= 0; i--) at[i] = Math.min(at[i], at[i + 1] - gap);
+  return at[session.indexOf(version)] / room;
 }
 
 /** Local midnight of `date`, as a timestamp. */

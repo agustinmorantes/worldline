@@ -90,7 +90,7 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
   const elsewhere = !device.here && session.every((v) => !deviceOf(v).here);
   const playedOn = elsewhere ? t.sessions.playedOn(device.name ?? t.sessions.anotherDevice) : undefined;
   const tagged = session.filter((v) => v.tag !== null && v.tag !== '');
-  const width = trackWidth(durationMs);
+  const width = trackWidth(session);
   const holdsSelection = selectedId !== null && session.some((v) => v.id === selectedId);
   const pending = !side && unrecorded !== null && session.some((v) => v.id === activeId) ? unrecorded : null;
   const color = markColor({ side, elsewhere });
@@ -168,7 +168,7 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
 /** Where a timeline leaves `session`'s track: x of the checkpoint it leaves from. */
 function forkX(fork: Fork, session: Version[]): number {
   const at = fork.from === null ? 0 : trackPosition(fork.from, session);
-  return 14 + TRACK_LEFT + 11 + at * (trackWidth(timeOf(session[session.length - 1]) - timeOf(session[0])) - 22);
+  return 14 + TRACK_LEFT + 11 + at * (trackWidth(session) - 22);
 }
 
 function ForkView(props: SessionListProps & {
