@@ -19,7 +19,10 @@ pub fn remove() -> Result<()> {
 
 fn update(change: fn(&str, &str) -> Option<String>) -> Result<()> {
     let exe = std::env::current_exe().context("failed to find this executable")?;
-    let dir = exe.parent().map(PathBuf::from).context("this executable has no folder")?;
+    let dir = exe
+        .parent()
+        .map(PathBuf::from)
+        .context("this executable has no folder")?;
     let env = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
         .context("failed to open the user environment")?;
@@ -32,7 +35,8 @@ fn update(change: fn(&str, &str) -> Option<String>) -> Result<()> {
     if let Some(changed) = change(&current, &dir.to_string_lossy()) {
         let mut value = changed.to_reg_value();
         value.vtype = vtype;
-        env.set_raw_value("Path", &value).context("failed to write the user PATH")?;
+        env.set_raw_value("Path", &value)
+            .context("failed to write the user PATH")?;
     }
     Ok(())
 }
@@ -59,7 +63,12 @@ fn without_entry(path: &str, dir: &str) -> Option<String> {
     if !path.split(';').any(|entry| is_dir(entry, dir)) {
         return None;
     }
-    Some(path.split(';').filter(|entry| !is_dir(entry, dir)).collect::<Vec<_>>().join(";"))
+    Some(
+        path.split(';')
+            .filter(|entry| !is_dir(entry, dir))
+            .collect::<Vec<_>>()
+            .join(";"),
+    )
 }
 
 #[cfg(test)]
@@ -70,7 +79,10 @@ mod tests {
 
     #[test]
     fn adds_to_the_end() {
-        assert_eq!(with_entry(r"C:\a;C:\b", DIR), Some(format!(r"C:\a;C:\b;{DIR}")));
+        assert_eq!(
+            with_entry(r"C:\a;C:\b", DIR),
+            Some(format!(r"C:\a;C:\b;{DIR}"))
+        );
         assert_eq!(with_entry(r"C:\a;", DIR), Some(format!(r"C:\a;{DIR};")));
         assert_eq!(with_entry("", DIR), Some(DIR.to_string()));
     }
@@ -92,7 +104,10 @@ mod tests {
     #[test]
     fn removes_only_its_own_entry() {
         let path = format!(r"%USERPROFILE%\bin;{DIR};;C:\b;{DIR}\");
-        assert_eq!(without_entry(&path, DIR), Some(r"%USERPROFILE%\bin;;C:\b".to_string()));
+        assert_eq!(
+            without_entry(&path, DIR),
+            Some(r"%USERPROFILE%\bin;;C:\b".to_string())
+        );
         assert_eq!(without_entry(r"C:\a;C:\b", DIR), None);
     }
 }
