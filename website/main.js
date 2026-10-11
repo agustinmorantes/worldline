@@ -18,8 +18,14 @@ function detectOS() {
 async function wireDownloads() {
   const os = detectOS();
   const label = os === 'linux' ? 'Download for Linux' : os === 'windows' ? 'Download for Windows' : 'Download';
-  $$('[data-dl-label]').forEach((el) => (el.textContent = label));
-  if (os === 'other') $$('[data-dl-meta]').forEach((el) => (el.textContent = 'For Windows and Linux'));
+  let meta = os === 'other' ? 'For Windows and Linux' : 'Latest release';
+  // English source strings, painted in the current language and repainted when it changes.
+  const paint = () => {
+    $$('[data-dl-label]').forEach((el) => (el.textContent = WL.t(label)));
+    $$('[data-dl-meta]').forEach((el) => (el.textContent = WL.t(meta)));
+  };
+  paint();
+  WL.onChange(paint);
 
   let release;
   try {
@@ -40,8 +46,8 @@ async function wireDownloads() {
     : null;
 
   const version = release.tag_name || release.name || 'Latest';
-  const meta = asset ? `${version} · ${Math.max(1, Math.round(asset.size / 1048576))} MB` : version;
-  $$('[data-dl-meta]').forEach((el) => (el.textContent = meta));
+  meta = asset ? `${version} · ${Math.max(1, Math.round(asset.size / 1048576))} MB` : version;
+  paint();
   if (asset) $$('[data-dl]').forEach((el) => (el.href = asset.browser_download_url));
 }
 
@@ -196,7 +202,7 @@ function initDemo() {
   };
 
   function setText(phase) {
-    const [t, b] = COPY[phase];
+    const [t, b] = COPY[phase].map(WL.t);
     if (el.title.textContent === t && el.body.textContent === b) return;
     el.title.textContent = t;
     el.body.textContent = b;
@@ -238,7 +244,7 @@ function initDemo() {
 
     const actLabel = { play: 'Play', open: 'Open the chest', walk: 'Walk past it' }[s.phase];
     el.act.hidden = !actLabel;
-    if (actLabel) el.act.textContent = actLabel;
+    if (actLabel) el.act.textContent = WL.t(actLabel);
     el.act.disabled = busy;
     el.hold.hidden = s.phase !== 'rewind';
     el.hold.disabled = busy;
@@ -408,6 +414,7 @@ function initDemo() {
   el.hold.addEventListener('keyup', (e) => { if (e.key === ' ' || e.key === 'Enter') endHold(); });
   el.hold.addEventListener('click', (e) => e.preventDefault());
 
+  WL.onChange(render);
   render();
 }
 

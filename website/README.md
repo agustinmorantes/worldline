@@ -13,6 +13,7 @@ npx serve .     # or: python -m http.server
 - `og-image.jpg` is the 1200×630 link preview: a screenshot of the hero without the title bar or buttons. Retake it if the hero changes.
 - Colors and type follow the app's design tokens. The whole page is driven by one hue (`--h`), like a game's accent in the app; picking a game in the "Every game gets its own color" card re-tints it.
 - `media/` holds the clips and stills. They are recorded from the real GUI in mock mode (`bun run dev:mock`), with the demo saves relabelled as Hollow Knight, and the overlay clips play the real popups over a drawn stand-in game. Re-record them when the UI they show changes. `media/icons/` are the games' Steam icons, the same ones the app fetches.
+- The page is in English and Spanish. `i18n.js` maps each English string in `index.html` (text, `aria-label`, `alt`, meta) to its Spanish; when you change English copy, update its key there too. The language comes from `?lang=en|es`, then the visitor's last pick in the title bar switch, then the browser's languages. Spanish follows the app's own wording (`gui/src/shared/i18n/es.ts`).
 - Clips load only when they near the viewport and pause off screen; with reduced motion they show their poster and controls instead.
 
 ## Deploy

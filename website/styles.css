@@ -176,6 +176,13 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .nav-gh svg { width: 18px; height: 18px; }
 .nav .btn { margin-left: 6px; }
 
+/* EN / ES: a two-segment pill; the selected one slides like the app's view switch. */
+.lang { position: relative; display: flex; padding: 3px; margin: 0 4px; border-radius: 99px; background: oklch(100% 0 0 / .05); box-shadow: inset 0 0 0 1px oklch(100% 0 0 / .06); }
+.lang::before { content: ''; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 99px; background: var(--acc-soft); box-shadow: inset 0 0 0 1px var(--acc-line); transition: transform 380ms var(--spring); }
+.lang:has([data-lang='es'][aria-pressed='true'])::before { transform: translateX(100%); }
+.lang button { position: relative; width: 34px; height: 26px; border-radius: 99px; font: 700 11.5px var(--mono); letter-spacing: .04em; color: var(--tx3); transition: color 200ms; }
+.lang button:hover, .lang button[aria-pressed='true'] { color: var(--tx); }
+
 /* ---------- Hero ---------- */
 
 main { position: relative; overflow-x: clip; }
