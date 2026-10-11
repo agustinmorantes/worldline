@@ -618,6 +618,7 @@ dependencies = [
  "predicates",
  "tempfile",
  "uuid",
+ "winreg 0.55.0",
  "worldline-core",
 ]
 

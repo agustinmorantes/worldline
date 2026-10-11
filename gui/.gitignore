@@ -30,3 +30,6 @@ dist-ssr
 # Playwright
 playwright-report
 test-results
+
+# Built by scripts/build-cli.mjs for the installers
+src-tauri/binaries

@@ -4,6 +4,10 @@ version = "1.0.0-rc1"
 edition = "2024"
 license = "MIT"
 
+[[bin]]
+name = "worldline-cli"
+path = "src/main.rs"
+
 [dependencies]
 worldline-core = { path = "../worldline-core" }
 clap = { version = "4", features = ["derive"] }
@@ -11,6 +15,9 @@ anyhow = "1"
 dirs = "5"
 uuid = { version = "1", features = ["serde"] }
 ctrlc = "3"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [dev-dependencies]
 tempfile = "3"

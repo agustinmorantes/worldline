@@ -1,11 +1,13 @@
 # Command-line interface
 
-The CLI works on the same local repository as the desktop app. Run it from the repository root:
+The CLI works on the same local repository as the desktop app. The installers include it as `worldline-cli`: the Windows installer adds it to your PATH (open a new terminal afterwards), and the Linux package puts it in `/usr/bin`.
 
 ```sh
-cargo run -p cli -- --help
-cargo run -p cli -- <command> --help
+worldline-cli --help
+worldline-cli <command> --help
 ```
+
+From a source checkout, run it from the repository root with `cargo run -p cli -- <command>` instead.
 
 Put `--data-dir <path>` before the command to use a separate repository, for example for testing. Without it, the CLI uses the app's [data directory](storage-format.md#where-it-lives).
 

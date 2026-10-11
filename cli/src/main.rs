@@ -13,6 +13,9 @@ use worldline_core::sync::DeviceKind;
 use worldline_core::sync::SyncSettings;
 use worldline_core::{OpenOptions, WorldlineCore};
 
+#[cfg(windows)]
+mod user_path;
+
 #[derive(Parser)]
 #[command(name = "worldline-cli")]
 struct Cli {
@@ -81,6 +84,20 @@ enum Commands {
         #[arg(long, default_value = "screenshot.jpg")]
         out: PathBuf,
     },
+    /// Puts this executable's folder on the user's PATH, or takes it off (run by the installer).
+    #[cfg(windows)]
+    #[command(hide = true)]
+    UserPath {
+        #[command(subcommand)]
+        action: UserPathAction,
+    },
+}
+
+#[cfg(windows)]
+#[derive(Subcommand)]
+enum UserPathAction {
+    Add,
+    Remove,
 }
 
 #[derive(Subcommand)]
@@ -434,6 +451,14 @@ fn main() -> Result<()> {
     {
         print_history_summary(&WorldlineCore::inspect_history_bundle(bundle_zip)?);
         return Ok(());
+    }
+    // Before opening the core, so installing doesn't create the data folder.
+    #[cfg(windows)]
+    if let Commands::UserPath { action } = &cli.command {
+        return match action {
+            UserPathAction::Add => user_path::add(),
+            UserPathAction::Remove => user_path::remove(),
+        };
     }
     let data_dir = match cli.data_dir {
         Some(p) => p,
@@ -832,6 +857,8 @@ fn main() -> Result<()> {
                 .ok_or_else(|| anyhow!("game {game} has no install dir"))?;
             screenshot_stress(&install_dir, every, count, &out)?;
         }
+        #[cfg(windows)]
+        Commands::UserPath { .. } => unreachable!("handled before opening the core"),
     }
 
     Ok(())

@@ -18,10 +18,10 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: deb
-            cli: cli
+            cli: worldline-cli
           - os: windows-latest
             target: nsis
-            cli: cli.exe
+            cli: worldline-cli.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -64,17 +64,14 @@ jobs:
 
       - name: Build bundle
         working-directory: gui
-        run: bun run tauri build --bundles ${{ matrix.target }}
-
-      - name: Build CLI
-        run: cargo build --release --locked -p cli
+        run: bun run bundle --bundles ${{ matrix.target }}
 
       - name: Collect release files
         shell: bash
         run: |
           mkdir dist
           find target/release/bundle/${{ matrix.target }} -maxdepth 1 -type f \( -name '*.deb' -o -name '*.exe' \) -exec cp {} dist/ \;
-          cp target/release/${{ matrix.cli }} dist/worldline-${{ matrix.cli }}
+          cp target/release/${{ matrix.cli }} dist/
 
       - uses: actions/upload-artifact@v4
         with:

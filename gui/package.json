@@ -14,12 +14,14 @@
     "check": "eslint . && tsc --noEmit && tsc --noEmit -p tests/e2e",
     "test": "vitest",
     "test:screens": "playwright test",
+    "bundle": "tauri build --config src-tauri/tauri.bundle.conf.json",
     "e2e:build": "tauri build --debug --no-bundle --features e2e",
     "e2e": "wdio run tests/e2e/wdio.conf.ts",
     "bindings": "cd .. && cargo test -p worldline-core --features ts export_bindings",
     "lint": "lint-staged",
     "ci": "eslint --fix && tsc --noEmit && cd src-tauri && cargo clippy",
-    "gen-icon": "node scripts/gen-icons.mjs"
+    "gen-icon": "node scripts/gen-icons.mjs",
+    "gen-installer-art": "node scripts/gen-installer-art.mjs"
   },
   "dependencies": {
     "@fontsource/bricolage-grotesque": "^5.3.0",

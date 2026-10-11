@@ -7,7 +7,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 fn cli(data_dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("cli").unwrap();
+    let mut cmd = Command::cargo_bin("worldline-cli").unwrap();
     cmd.arg("--data-dir").arg(data_dir);
     cmd
 }
@@ -402,7 +402,7 @@ fn watch_captures_changes() {
         }
     }
     let _watch = KillOnDrop(
-        std::process::Command::new(cargo_bin("cli"))
+        std::process::Command::new(cargo_bin("worldline-cli"))
             .arg("--data-dir")
             .arg(dir.path())
             .arg("watch")

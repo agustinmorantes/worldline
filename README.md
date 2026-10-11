@@ -94,12 +94,12 @@ In **Settings → Cloud**, choose a folder that your sync tool of choice keeps i
 
 ### Command line
 
-Everything the app does is also available from the CLI, which works on the same data:
+Everything the app does is also available from the `worldline-cli` command, which works on the same data. The installers put it on your PATH; open a new terminal after installing.
 
 ```sh
-cargo run -p cli -- games list
-cargo run -p cli -- watch          # capture without the app
-cargo run -p cli -- --help
+worldline-cli games list
+worldline-cli watch          # capture without the app
+worldline-cli --help
 ```
 
 See [docs/cli.md](docs/cli.md) for every command.
@@ -117,7 +117,7 @@ git clone https://github.com/agustinmorantes/worldline.git
 cd worldline/gui
 bun install --frozen-lockfile
 bun run tauri dev      # run the app
-bun run tauri build    # build an installer into target/release/bundle/
+bun run bundle         # build an installer, CLI included, into target/release/bundle/
 ```
 
 Linux packages should be built on Linux. The checked-in Ludusavi manifest is an empty placeholder; release builds fetch the real one (see [`.github/workflows/bundles.yml`](.github/workflows/bundles.yml)), and the app downloads it at runtime otherwise.
