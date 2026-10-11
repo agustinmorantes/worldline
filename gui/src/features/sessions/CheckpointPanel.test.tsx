@@ -9,6 +9,7 @@ vi.mock('./queries', () => ({
 }));
 
 vi.mock('@/ipc/commands', () => ({ tagVersion: vi.fn(() => Promise.resolve()) }));
+vi.mock('@/shared/errors/report', () => ({ reportError: vi.fn() }));
 
 // Holding is a timed pointer gesture; a click stands for a completed hold.
 vi.mock('@/shared/ui/HoldButton', () => ({
@@ -20,6 +21,7 @@ vi.mock('@/shared/ui/HoldButton', () => ({
 import { useCleanupWouldRemove, useScreenshot } from './queries';
 import { tagVersion } from '@/ipc/commands';
 import { nameCheckpoint } from './name-checkpoint';
+import { reportError } from '@/shared/errors/report';
 
 function setup(path: string | null | undefined): void {
   vi.mocked(useScreenshot).mockReturnValue({ data: path } as unknown as ReturnType<typeof useScreenshot>);
@@ -175,7 +177,7 @@ describe('CheckpointPanel name', () => {
         aheadDevice={null}
         busy={false}
         running={false}
-        onName={(next) => { void nameCheckpoint(1, shown.id, next, 'Couldn’t name the checkpoint.'); }}
+        onName={(next) => nameCheckpoint(1, shown.id, next, 'Couldn’t name the checkpoint.')}
         onRewind={vi.fn()}
         now={new Date(Date.UTC(2026, 9, 10, 12, 0))}
       />,
@@ -240,14 +242,32 @@ describe('CheckpointPanel name', () => {
   });
 
   it('removes a name cleared by hand once, when confirmed', async () => {
+    let land = (): void => undefined;
+    vi.mocked(tagVersion).mockReturnValueOnce(new Promise((resolve) => { land = () => { resolve(makeVersion({ id: 3, tag: null })); }; }));
     setup('Before the boss');
     clearByHand();
     fireEvent.click(within(dialog()).getByRole('button', { name: 'Remove name' }));
     await waitFor(() => { expect(field()).toHaveFocus(); });
-    // Leaving the still-empty field before the new name arrives neither asks nor saves again.
+    // Leaving the still-empty field while the removal is on its way neither asks nor saves again.
     fireEvent.blur(field());
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(tagVersion).toHaveBeenCalledExactlyOnceWith(3, '');
+    land();
+    await waitFor(() => { expect(tagVersion).toHaveBeenCalledExactlyOnceWith(3, ''); });
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it('shows the name again when removing it fails, and asks again next time', async () => {
+    vi.mocked(tagVersion).mockRejectedValueOnce(new Error('locked'));
+    setup('Before the boss');
+    clearByHand();
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Remove name' }));
+    await waitFor(() => { expect(reportError).toHaveBeenCalledWith('Couldn’t name the checkpoint.', expect.any(Error)); });
+    await waitFor(() => { expect(field()).toHaveValue('Before the boss'); });
+
+    clearByHand();
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Remove name' }));
+    await waitFor(() => { expect(tagVersion).toHaveBeenCalledTimes(2); });
+    expect(tagVersion).toHaveBeenLastCalledWith(3, '');
   });
 
   it('saves a new name at once', () => {
@@ -257,11 +277,16 @@ describe('CheckpointPanel name', () => {
     expect(tagVersion).toHaveBeenCalledExactlyOnceWith(3, 'After the boss');
   });
 
-  it('asks about the next cleanup only while the dialog is open, for this checkpoint', () => {
+  it('asks about the next cleanup only while the dialog is open, afresh each time, for this checkpoint', async () => {
     setup('Before the boss');
-    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, false);
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 0, false);
     fireEvent.click(removeButton());
-    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, true);
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 1, true);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 1, false);
+    fireEvent.click(removeButton());
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 2, true);
   });
 
   it('warns when the next cleanup would remove it', () => {

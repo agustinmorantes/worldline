@@ -48,11 +48,11 @@ export function useUnrecorded(gameId: number): { dueAt: Date } | null {
 
 /**
  * Whether the next cleanup would remove the checkpoint `uuid` once its name is gone, asked
- * fresh each time. A failure stays quiet: the dialog says it couldn't tell.
+ * fresh for each `opening` of the dialog. A failure stays quiet: the dialog says it couldn't tell.
  */
-export const useCleanupWouldRemove = (uuid: string, enabled: boolean): UseQueryResult<boolean> =>
+export const useCleanupWouldRemove = (uuid: string, opening: number, enabled: boolean): UseQueryResult<boolean> =>
   useQuery({
-    queryKey: ['pruning-preview', 'untag', uuid],
+    queryKey: ['pruning-preview', 'untag', uuid, opening],
     queryFn: async () => (await previewPruning(undefined, uuid)).retire_versions.includes(uuid),
     enabled,
     gcTime: 0,

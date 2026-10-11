@@ -1,6 +1,6 @@
 // The selected checkpoint: its screenshot, when and where it was made, its name, and the
 // hold-to-rewind button.
-import { type ReactElement, useRef, useState } from 'react';
+import { type ReactElement, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { ArrowDown, X } from 'lucide-react';
@@ -36,7 +36,8 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
   busy: boolean;
   /** The game is running here, so it may hold or save over its files. */
   running: boolean;
-  onName: (tag: string) => void;
+  /** Saves the name; resolves whether it was saved. */
+  onName: (tag: string) => Promise<boolean>;
   onRewind: () => void;
   /** Present when the panel is a drawer. */
   onClose?: () => void;
@@ -52,15 +53,19 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
   const source = `${version.id.toString()}:${version.tag ?? ''}`;
   const [shown, setShown] = useState(source);
   const [unnaming, setUnnaming] = useState(false);
+  // Each opening of the confirm dialog asks the next cleanup afresh.
+  const [opening, setOpening] = useState(0);
   const fieldRef = useRef<HTMLInputElement>(null);
   const removeButtonRef = useRef<HTMLButtonElement>(null);
   // Where focus goes when the confirm dialog closes: back where it was asked from, or to the field
   // once the name (and with it the X button) is gone.
   const closeFocusRef = useRef<'button' | 'field'>('button');
-  // The checkpoint and name a removal was confirmed for: until the new name arrives, leaving the
-  // empty field mustn't ask again.
-  const removedRef = useRef<string | null>(null);
-  const removal = useCleanupWouldRemove(version.uuid, unnaming);
+  // The checkpoint and name a removal is on its way for: until it lands, leaving the empty field
+  // mustn't ask again. Released when it ends, so a failed one can be asked again.
+  const removingRef = useRef<string | null>(null);
+  const sourceRef = useRef(source);
+  useEffect(() => { sourceRef.current = source; });
+  const removal = useCleanupWouldRemove(version.uuid, opening, unnaming);
   if (shown !== source) {
     setShown(source);
     setDraft(version.tag ?? '');
@@ -82,14 +87,15 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
     if (next === (version.tag ?? '')) return;
     // Clearing the name by hand asks first, like the Remove name button.
     if (next === '' && tagged) {
-      if (removedRef.current !== source) askUnname('field');
+      if (removingRef.current !== source) askUnname('field');
       return;
     }
-    onName(next);
+    void onName(next);
   }
 
   function askUnname(from: 'button' | 'field'): void {
     closeFocusRef.current = from;
+    setOpening((n) => n + 1);
     setUnnaming(true);
   }
 
@@ -99,10 +105,16 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
   }
 
   function unname(): void {
-    removedRef.current = source;
+    const removing = source;
+    const kept = version.tag ?? '';
+    removingRef.current = removing;
     closeFocusRef.current = 'field';
     setUnnaming(false);
-    onName('');
+    void onName('').then((saved) => {
+      removingRef.current = null;
+      // The name is still there (the failure was reported): show it again.
+      if (!saved && sourceRef.current === removing) setDraft(kept);
+    });
   }
 
   return (

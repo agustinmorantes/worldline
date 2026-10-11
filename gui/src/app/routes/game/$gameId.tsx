@@ -290,7 +290,7 @@ export function GameDetail(): ReactElement {
               aheadDevice={pendingId === null ? null : (status?.remote_device ?? t.sessions.anotherDevice)}
               busy={busy}
               running={gameRunning}
-              onName={(tag) => { void nameCheckpoint(id, selected.id, tag, t.game.failed.name); }}
+              onName={(tag) => nameCheckpoint(id, selected.id, tag, t.game.failed.name)}
               onRewind={() => { void rewind(selected); }}
               onClose={() => { select(undefined); }}
               now={now}
