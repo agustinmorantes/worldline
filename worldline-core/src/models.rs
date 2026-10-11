@@ -160,3 +160,25 @@ impl Default for MonitoringSettings {
         }
     }
 }
+
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum DeletedKind {
+    Game,
+    Slot,
+}
+
+/// A game or slot deleted everywhere and still in its recovery window (ADR 0011).
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DeletedItem {
+    pub kind: DeletedKind,
+    pub uuid: uuid::Uuid,
+    /// The game's title, or the slot's name.
+    pub title: String,
+    /// The game a slot belongs to; the game's own title for a game.
+    pub game_title: String,
+    pub deleted_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}

@@ -8,7 +8,7 @@ use worldline_core::bundle::HistoryBundleSummary;
 use worldline_core::detection::Notification;
 use worldline_core::history::CheckpointOutcome;
 use worldline_core::maintenance::RetentionSettings;
-use worldline_core::models::GameForm;
+use worldline_core::models::{DeletedKind, GameForm};
 use worldline_core::sync::DeviceKind;
 use worldline_core::sync::SyncSettings;
 use worldline_core::{OpenOptions, WorldlineCore};
@@ -125,6 +125,16 @@ enum GamesAction {
     Untrack {
         id: i32,
     },
+    /// List deleted games and slots that can still be recovered.
+    Deleted,
+    /// Bring back a deleted game with its history; live saves are not touched.
+    Recover {
+        uuid: Uuid,
+    },
+    /// End a deleted game's or slot's recovery window now.
+    Purge {
+        uuid: Uuid,
+    },
 }
 
 #[derive(Subcommand)]
@@ -166,6 +176,10 @@ enum SlotsAction {
         #[arg(long)]
         replacement: Option<String>,
     },
+    /// Bring back a deleted slot into its game, inactive.
+    Recover {
+        uuid: Uuid,
+    },
 }
 
 #[derive(Subcommand)]
@@ -198,6 +212,7 @@ enum HistoryAction {
     Inspect {
         bundle_zip: PathBuf,
     },
+    /// Export a game, or by its UUID a deleted one still recoverable.
     Export {
         game: String,
         destination_zip: PathBuf,
@@ -544,6 +559,35 @@ fn main() -> Result<()> {
                 core.untrack_game(id)?;
                 println!("Untracked game {id}; its history stays in the sync folder");
             }
+            GamesAction::Deleted => {
+                let items = core.recently_deleted()?;
+                if items.is_empty() {
+                    println!("Nothing deleted.");
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs() as i64;
+                for item in items {
+                    let days = (item.expires_at.timestamp() - now + 86_399) / 86_400;
+                    match item.kind {
+                        DeletedKind::Game => {
+                            println!("game {} {} — {days} day(s) left", item.uuid, item.title)
+                        }
+                        DeletedKind::Slot => println!(
+                            "slot {} {} in {} — {days} day(s) left",
+                            item.uuid, item.title, item.game_title
+                        ),
+                    }
+                }
+            }
+            GamesAction::Recover { uuid } => {
+                core.recover_game(uuid)?;
+                println!("Recovered game {uuid}");
+            }
+            GamesAction::Purge { uuid } => {
+                core.purge_deleted(uuid)?;
+                println!("Purged {uuid}; its history goes with the next cleanup");
+            }
         },
         Commands::Versions { action } => match action {
             VersionsAction::Checkpoint { game } => {
@@ -624,6 +668,10 @@ fn main() -> Result<()> {
                 core.delete_slot(slot_id, replacement)?;
                 println!("Deleted slot {slot_id}");
             }
+            SlotsAction::Recover { uuid } => {
+                core.recover_slot(uuid)?;
+                println!("Recovered slot {uuid}");
+            }
         },
         Commands::Prune { action } => match action {
             PruneAction::Settings {
@@ -702,8 +750,13 @@ fn main() -> Result<()> {
                 game,
                 destination_zip,
             } => {
-                let report =
-                    core.export_game_history(resolve_game_id(&core, &game)?, &destination_zip)?;
+                let report = match resolve_game_id(&core, &game) {
+                    Ok(id) => core.export_game_history(id, &destination_zip)?,
+                    Err(error) => match Uuid::parse_str(&game) {
+                        Ok(uuid) => core.export_deleted_game(uuid, &destination_zip)?,
+                        Err(_) => return Err(error),
+                    },
+                };
                 println!(
                     "Exported {}: {} slot(s), {} version(s), {} chunk(s), {} retired version(s)",
                     report.title,

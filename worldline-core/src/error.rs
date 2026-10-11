@@ -26,6 +26,8 @@ pub enum ErrorKind {
     SharedFolder,
     /// The save folders hold far more than the game's saves usually take.
     TooLarge,
+    /// A store was written by a newer Worldline; this app leaves it untouched.
+    UpdateRequired,
 }
 
 impl fmt::Display for ErrorKind {
@@ -39,6 +41,7 @@ impl fmt::Display for ErrorKind {
             Self::FolderTaken => "Another game tracks this folder",
             Self::SharedFolder => "Other apps keep files in this folder",
             Self::TooLarge => "The save folders are unusually large",
+            Self::UpdateRequired => "A newer version of Worldline wrote this data",
         })
     }
 }

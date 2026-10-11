@@ -135,15 +135,26 @@ impl<'a> Transfer<'a> {
             .map(|slot| (slot.meta.uuid, slot.meta.folder_slug.as_str()))
             .collect();
 
+        // History past its recovery window (ADR 0011) is collected
+        // everywhere: only its metadata travels, so later deletes still reach
+        // every device. Versions it parented count as there.
+        let now = Utc::now();
+        let (kept, gone): (Vec<_>, Vec<_>) = game.slots.iter().partition(|slot| {
+            game.meta.deletion.keeps_history(now) && slot.meta.deletion.keeps_history(now)
+        });
+        let gone: HashSet<Uuid> = gone
+            .iter()
+            .flat_map(|slot| slot.versions.iter().map(|version| version.uuid))
+            .collect();
         // Parent order: a version is visited once its parent is in `dst`.
-        let mut pending: Vec<&VersionMeta> = game.versions().collect();
+        let mut pending: Vec<&VersionMeta> = kept.iter().flat_map(|slot| &slot.versions).collect();
         loop {
             let before = pending.len();
             let mut deferred = Vec::new();
             for version in pending {
                 if version
                     .parent_uuid
-                    .is_some_and(|parent| !present.contains(&parent))
+                    .is_some_and(|parent| !present.contains(&parent) && !gone.contains(&parent))
                 {
                     deferred.push(version);
                     continue;
@@ -213,10 +224,10 @@ impl<'a> Transfer<'a> {
             .filter(|png| icon::sha256(png) == *wanted))
     }
 
-    /// Gives `dst` the icon `meta` names, when `src` has it. Tombstoned games
-    /// need none.
+    /// Gives `dst` the icon `meta` names, when `src` has it. Games past
+    /// their recovery window need none.
     fn copy_icon(&self, meta: &GameMeta) -> Result<()> {
-        if meta.deleted_at.is_some() {
+        if !meta.deletion.keeps_history(Utc::now()) {
             return Ok(());
         }
         let Some(wanted) = &meta.icon_sha256 else {
@@ -345,7 +356,7 @@ mod tests {
             folder_slug: folder_slug('g', "Game", uuid),
             created_at: now,
             updated_at: now,
-            deleted_at: None,
+            deletion: Default::default(),
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: Default::default(),
@@ -358,7 +369,7 @@ mod tests {
             name: "Main".into(),
             created_at: now,
             updated_at: now,
-            deleted_at: None,
+            deletion: Default::default(),
             seen_versions: Vec::new(),
         };
         let live = tempdir().unwrap();
