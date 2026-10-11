@@ -240,6 +240,9 @@ export const en = {
     removeName: 'Remove name',
     removeNameTitle: (name: string): string => `Remove the name “${name}”?`,
     removeNameBody: 'The checkpoint stays, but it’s no longer kept forever: cleanup can remove it like any other checkpoint.',
+    removeNameChecking: 'Checking the next cleanup…',
+    removeNameNextCleanup: 'The next cleanup will remove it, and it can’t be brought back after that.',
+    removeNameUnchecked: 'Couldn’t check whether the next cleanup would remove it.',
   },
   settings: {
     title: 'Settings',

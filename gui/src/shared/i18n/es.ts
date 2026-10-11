@@ -236,6 +236,9 @@ export const es: Messages = {
     removeName: 'Quitar el nombre',
     removeNameTitle: (name) => `¿Quitar el nombre «${name}»?`,
     removeNameBody: 'El punto de control se queda, pero ya no se conserva para siempre: la limpieza puede borrarlo como a cualquier otro.',
+    removeNameChecking: 'Comprobando la próxima limpieza…',
+    removeNameNextCleanup: 'La próxima limpieza lo borrará, y después no se podrá recuperar.',
+    removeNameUnchecked: 'No se pudo comprobar si la próxima limpieza lo borraría.',
   },
   settings: {
     title: 'Configuración',

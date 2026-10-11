@@ -16,7 +16,7 @@ import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog';
 import { HoldButton } from '@/shared/ui/HoldButton';
 import { formatDuration, markColor } from './Timeline';
-import { useScreenshot } from './queries';
+import { useCleanupWouldRemove, useScreenshot } from './queries';
 import { minutesUntil, timeOf } from './sessions';
 
 export function CheckpointPanel({ game, version, active, unrecorded, onLine, device, lessPlayMs, aheadDevice, busy, running, onName, onRewind, onClose, now }: {
@@ -52,6 +52,15 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
   const source = `${version.id.toString()}:${version.tag ?? ''}`;
   const [shown, setShown] = useState(source);
   const [unnaming, setUnnaming] = useState(false);
+  const fieldRef = useRef<HTMLInputElement>(null);
+  const removeButtonRef = useRef<HTMLButtonElement>(null);
+  // Where focus goes when the confirm dialog closes: back where it was asked from, or to the field
+  // once the name (and with it the X button) is gone.
+  const closeFocusRef = useRef<'button' | 'field'>('button');
+  // The checkpoint and name a removal was confirmed for: until the new name arrives, leaving the
+  // empty field mustn't ask again.
+  const removedRef = useRef<string | null>(null);
+  const removal = useCleanupWouldRemove(version.uuid, unnaming);
   if (shown !== source) {
     setShown(source);
     setDraft(version.tag ?? '');
@@ -70,7 +79,30 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
 
   function commit(): void {
     const next = draft.trim();
-    if (next !== (version.tag ?? '')) onName(next);
+    if (next === (version.tag ?? '')) return;
+    // Clearing the name by hand asks first, like the Remove name button.
+    if (next === '' && tagged) {
+      if (removedRef.current !== source) askUnname('field');
+      return;
+    }
+    onName(next);
+  }
+
+  function askUnname(from: 'button' | 'field'): void {
+    closeFocusRef.current = from;
+    setUnnaming(true);
+  }
+
+  function keepName(): void {
+    setDraft(version.tag ?? '');
+    setUnnaming(false);
+  }
+
+  function unname(): void {
+    removedRef.current = source;
+    closeFocusRef.current = 'field';
+    setUnnaming(false);
+    onName('');
   }
 
   return (
@@ -121,10 +153,12 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
           <label className="mt-3.5 flex h-10 items-center gap-2.5 rounded-xl bg-el px-3 text-sm text-acc transition-shadow duration-200 focus-within:shadow-[inset_0_0_0_1.5px_var(--acc-line)]">
             <span aria-hidden="true" className="size-2 shrink-0 rotate-45 bg-current" />
             <input
+              ref={fieldRef}
               value={draft}
               onChange={(e) => { setDraft(e.target.value); }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') e.currentTarget.blur();
+                // Its default would press whatever takes focus next, like the confirm dialog's Cancel.
+                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
                 if (e.key === 'Escape') { setDraft(version.tag ?? ''); e.stopPropagation(); }
               }}
               onBlur={commit}
@@ -135,8 +169,9 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
             {tagged && (
               <button
                 type="button"
+                ref={removeButtonRef}
                 aria-label={t.checkpoint.removeName}
-                onClick={() => { setUnnaming(true); }}
+                onClick={() => { askUnname('button'); }}
                 className="-mr-1.5 flex size-7 shrink-0 items-center justify-center rounded-full text-tx3 transition-colors hover:bg-ln hover:text-tx"
               >
                 <X size={14} strokeWidth={2.6} aria-hidden="true" />
@@ -145,15 +180,41 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
           </label>
         </div>
       </div>
-      <Dialog open={unnaming} onOpenChange={setUnnaming}>
-        <DialogContent className="bg-sf sm:max-w-[420px]">
+      <Dialog open={unnaming} onOpenChange={(open) => { if (!open) keepName(); }}>
+        <DialogContent
+          className="bg-sf sm:max-w-[420px]"
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            (closeFocusRef.current === 'button' ? removeButtonRef : fieldRef).current?.focus();
+          }}
+        >
           <DialogHeader>
             <DialogTitle className="text-lg font-bold tracking-tight">{t.checkpoint.removeNameTitle(version.tag ?? '')}</DialogTitle>
             <DialogDescription className="text-tx2">{t.checkpoint.removeNameBody}</DialogDescription>
           </DialogHeader>
+          <div aria-live="polite">
+            <AnimatePresence initial={false}>
+              {(removal.isPending || removal.isError || removal.data) && (
+                <motion.p
+                  key="cleanup"
+                  className="overflow-hidden text-sm"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={fold}
+                >
+                  {removal.isPending
+                    ? <span className="text-tx3">{t.checkpoint.removeNameChecking}</span>
+                    : removal.isError
+                      ? <span className="text-tx3">{t.checkpoint.removeNameUnchecked}</span>
+                      : <span className="font-semibold text-warn">{t.checkpoint.removeNameNextCleanup}</span>}
+                </motion.p>
+              )}
+            </AnimatePresence>
+          </div>
           <DialogFooter className="gap-2">
-            <button type="button" className={btnQuiet} onClick={() => { setUnnaming(false); }}>{t.game.cancel}</button>
-            <button type="button" className={btn} onClick={() => { setUnnaming(false); onName(''); }}>{t.checkpoint.removeName}</button>
+            <button type="button" className={btnQuiet} onClick={keepName}>{t.game.cancel}</button>
+            <button type="button" className={btn} onClick={unname}>{t.checkpoint.removeName}</button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

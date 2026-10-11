@@ -228,8 +228,14 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'update_pruning_settings':
       state.retentionSettings = args.settings as RetentionSettings;
       return state.retentionSettings;
-    case 'preview_pruning':
-      return previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+    case 'preview_pruning': {
+      const preview = previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+      // Without its name, a checkpoint goes in the next cleanup unless it is a root or the latest.
+      const latest = new Set(state.games.map((g) => g.last_version?.uuid));
+      const retires = state.games.flatMap((g) => g.versions).filter((v) => v.uuid === args.untag && v.parent_id !== null && !latest.has(v.uuid));
+      preview.retire_versions.push(...retires.map((v) => v.uuid));
+      return preview;
+    }
     case 'run_pruning': {
       const preview = previewOf(state.retentionSettings);
       return {

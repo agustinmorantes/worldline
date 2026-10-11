@@ -1,5 +1,5 @@
 // The playthrough chip: pick a slot, start a new one, or manage them all.
-import { type ReactElement, useState } from 'react';
+import { type ReactElement, useRef, useState } from 'react';
 import * as Menu from '@radix-ui/react-dropdown-menu';
 import { Check, ChevronDown, Layers, Plus, Settings2 } from 'lucide-react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
@@ -18,11 +18,12 @@ export function PlaythroughPicker({ game, disabled, onSwitch, onCreate }: {
   const locale = useLocale();
   const summaries = new Map(game.slot_summaries.map((s) => [s.slot_id, s]));
   const [managing, setManaging] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <>
       <Menu.Root>
-        <Menu.Trigger className={chip} aria-label={t.game.playthrough} disabled={disabled}>
+        <Menu.Trigger ref={triggerRef} className={chip} aria-label={t.game.playthrough} disabled={disabled}>
           <Layers size={14} strokeWidth={2.2} aria-hidden="true" />
           <span className="text-tx">{game.active_slot?.name ?? t.game.playthrough}</span>
           <ChevronDown size={14} strokeWidth={2.4} aria-hidden="true" />
@@ -61,7 +62,7 @@ export function PlaythroughPicker({ game, disabled, onSwitch, onCreate }: {
           </Menu.Content>
         </Menu.Portal>
       </Menu.Root>
-      <ManagePlaythroughs game={game} open={managing} onOpenChange={setManaging} />
+      <ManagePlaythroughs game={game} open={managing} onOpenChange={setManaging} opener={triggerRef} />
     </>
   );
 }

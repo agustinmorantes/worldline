@@ -1,5 +1,5 @@
 import { type UseQueryResult, useQuery } from '@tanstack/react-query';
-import { getDevice, getMonitoringSettings, getScreenshotPath, getUnrecordedChanges } from '@/ipc/commands';
+import { getDevice, getMonitoringSettings, getScreenshotPath, getUnrecordedChanges, previewPruning } from '@/ipc/commands';
 import type { DeviceMetadata } from '@/ipc/bindings/DeviceMetadata';
 import type { MonitoringSettings } from '@/ipc/bindings/MonitoringSettings';
 import { utcDate } from '@/ipc/time';
@@ -45,3 +45,16 @@ export function useUnrecorded(gameId: number): { dueAt: Date } | null {
   });
   return dueAt === undefined ? null : { dueAt: utcDate(dueAt) };
 }
+
+/**
+ * Whether the next cleanup would remove the checkpoint `uuid` once its name is gone, asked
+ * fresh each time. A failure stays quiet: the dialog says it couldn't tell.
+ */
+export const useCleanupWouldRemove = (uuid: string, enabled: boolean): UseQueryResult<boolean> =>
+  useQuery({
+    queryKey: ['pruning-preview', 'untag', uuid],
+    queryFn: async () => (await previewPruning(undefined, uuid)).retire_versions.includes(uuid),
+    enabled,
+    gcTime: 0,
+    meta: { quiet: true },
+  });

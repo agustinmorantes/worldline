@@ -1301,3 +1301,79 @@ fn one_games_status_is_read_as_it_is_now_without_pulling() {
         .unwrap();
     assert!(b.core.game_sync_status(uuid).is_err());
 }
+
+#[test]
+fn previewing_without_a_name_says_whether_cleanup_would_retire_it_and_writes_nothing() {
+    let remote = tempfile::tempdir().unwrap();
+    let device = Device::synced(remote.path());
+    device.write("save.dat", "1");
+    let game = device.add_game("Named");
+    let root = device.active_version(game.game.id);
+    let mut versions = Vec::new();
+    for n in 2..=4 {
+        device.write("save.dat", &n.to_string());
+        versions.push(device.checkpoint(game.game.id));
+    }
+    let (named, active) = (&versions[0], &versions[2]);
+    device.core.tag_version(root.id, "Start".into()).unwrap();
+    device.core.tag_version(named.id, "Boss".into()).unwrap();
+    device.core.tag_version(active.id, "Here".into()).unwrap();
+    device.core.push_sync().unwrap();
+    // Age the versions so recency doesn't protect them.
+    for entry in walk(&device.data.path().join("repository"))
+        .into_iter()
+        .chain(walk(remote.path()))
+    {
+        if entry.file_name().is_some_and(|n| n == "metadata.json")
+            && entry.to_string_lossy().contains("versions")
+        {
+            let mut meta: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&entry).unwrap()).unwrap();
+            meta["created_at"] = format!("2020-0{}-01T00:00:00Z", meta["version_number"]).into();
+            fs::write(&entry, serde_json::to_string(&meta).unwrap()).unwrap();
+        }
+    }
+    device.core.reindex().unwrap();
+    let strict = RetentionSettings {
+        max_bytes: Some(1),
+        ..device.core.get_pruning_settings().unwrap()
+    };
+    let retires = |untag: Option<&str>, version: &str| {
+        device
+            .core
+            .preview_pruning_untagged(&strict, untag.map(|u| u.parse().unwrap()))
+            .unwrap()
+            .retire_versions
+            .contains(&version.parse().unwrap())
+    };
+
+    assert!(!retires(None, &named.uuid), "a name protects it");
+    assert!(
+        retires(Some(&named.uuid), &named.uuid),
+        "removable once unnamed"
+    );
+    assert!(
+        !retires(Some(&root.uuid), &root.uuid),
+        "the root stays protected"
+    );
+    assert!(
+        !retires(Some(&active.uuid), &active.uuid),
+        "the active version stays protected"
+    );
+
+    let tags: Vec<_> = [&root, named, active]
+        .iter()
+        .map(|v| {
+            device
+                .game(game.game.id)
+                .versions
+                .iter()
+                .find(|x| x.id == v.id)
+                .unwrap()
+                .tag
+                .clone()
+        })
+        .collect();
+    assert_eq!(tags, ["Start", "Boss", "Here"].map(|t| Some(t.to_string())));
+    assert!(device.core.retired_versions().unwrap().is_empty());
+}

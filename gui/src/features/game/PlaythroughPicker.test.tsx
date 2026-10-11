@@ -58,4 +58,30 @@ describe('Manage playthroughs', () => {
     fireEvent.blur(screen.getByRole('textbox'));
     expect(renameSlot).not.toHaveBeenCalled();
   });
+
+  it('gives focus back to the row’s Rename button after Enter or Escape', async () => {
+    openManage();
+    const rename = screen.getByRole('button', { name: 'Rename Steel Soul' });
+    fireEvent.click(rename);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Rename Steel Soul' })).toHaveFocus(); });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Steel Soul' }));
+    fireEvent.submit(screen.getByRole('textbox'));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Rename Steel Soul' })).toHaveFocus(); });
+  });
+
+  it('gives focus back to the playthrough chip when it closes', async () => {
+    openManage();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+    expect(screen.getByRole('button', { name: 'Playthrough' })).toHaveFocus();
+  });
+
+  it('scrolls a long list between a fixed heading and footer', () => {
+    openManage();
+    const dialog = screen.getByRole('dialog', { name: 'Playthroughs' });
+    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]');
+    expect(within(dialog).getByRole('list')).toHaveClass('min-h-0', 'overflow-y-auto');
+  });
 });
