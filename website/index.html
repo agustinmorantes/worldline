@@ -51,8 +51,10 @@
     <span class="disp">Worldline</span>
   </a>
   <nav class="nav">
+    <a href="#app">See it</a>
+    <a href="#how">How it works</a>
+    <a href="#game">In game</a>
     <a href="#try">Try it</a>
-    <a href="#features">Features</a>
     <a class="nav-gh" href="https://github.com/agustinmorantes/worldline" data-gh aria-label="Worldline on GitHub">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
       <span>GitHub</span>
@@ -66,19 +68,18 @@
 
 <section class="hero">
   <div class="hero-copy">
-    <p class="eyebrow rise" style="--d: 0ms">Save history for PC games</p>
+    <p class="eyebrow rise" style="--d: 0ms">Automatic save backups for PC games</p>
     <h1 class="disp wm rise" style="--d: 80ms">Worldline</h1>
     <p class="tagline rise" style="--d: 160ms">Every save. Every timeline.</p>
-    <p class="lede rise" style="--d: 240ms">Worldline checkpoints your game saves while you play. Rewind a bad call, take the road not taken, and pick up on any of your devices right where you left&nbsp;off.</p>
+    <p class="lede rise" style="--d: 240ms">Worldline keeps a checkpoint every time your game saves. Rewind a bad call, take the road not taken, and pick up on your other PC right where you left&nbsp;off.</p>
     <div class="ctas rise" style="--d: 320ms">
       <a class="btn btn-lg" href="https://github.com/agustinmorantes/worldline/releases/latest" data-dl data-dl-main>
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
         <span class="btn-stack"><b data-dl-label>Download for Windows</b><small data-dl-meta>Latest release</small></span>
       </a>
-      <a class="chip chip-lg" href="https://github.com/agustinmorantes/worldline" data-gh>
-        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
-        View on GitHub
-        <span class="gh-stars" data-stars hidden><svg class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.3l-5.7 3 1.1-6.3-4.6-4.5 6.4-.9z"/></svg><b>0</b></span>
+      <a class="chip chip-lg" href="#app">
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/></svg>
+        See it in action
       </a>
     </div>
     <p class="fine rise" style="--d: 400ms">Windows &amp; Linux · Free and open source, MIT · <a href="https://github.com/agustinmorantes/worldline/releases" data-releases>All downloads</a></p>
@@ -152,10 +153,89 @@
   </div>
 </section>
 
+<section id="app" class="section app-sec">
+  <header class="sec-head centered">
+    <p class="eyebrow">See it</p>
+    <h2 class="disp">Your saves, as a timeline.</h2>
+    <p class="sub">Pick a game and see every time you played it, with a checkpoint for each save. Switch to the graph to see every timeline at&nbsp;once.</p>
+  </header>
+  <div class="stage">
+    <div class="appshot">
+      <video src="media/graph.mp4" poster="media/graph.jpg" width="1280" height="800" muted loop playsinline preload="none" data-clip aria-label="Worldline showing a game's checkpoints grouped into sessions, then switching to the graph of its timelines"></video>
+    </div>
+  </div>
+  <p class="real"><i></i>Recorded from Worldline, with demo saves</p>
+</section>
+
+<section id="how" class="section">
+  <header class="sec-head">
+    <p class="eyebrow">How it works</p>
+    <h2 class="disp">Install it. Then forget about it.</h2>
+  </header>
+  <div class="rows">
+    <div class="row">
+      <div class="row-copy">
+        <span class="num">1</span>
+        <h3 class="disp">Every save becomes a checkpoint.</h3>
+        <p>When a game saves, Worldline keeps a copy. Checkpoints group into the sessions you actually played, and naming one keeps it forever.</p>
+      </div>
+      <div class="clip"><video src="media/name.mp4" poster="media/name.jpg" width="1016" height="560" muted loop playsinline preload="none" data-clip aria-label="Naming the latest Hollow Knight checkpoint Hornet defeated"></video></div>
+    </div>
+    <div class="row flip">
+      <div class="row-copy">
+        <span class="num">2</span>
+        <h3 class="disp">Hold to rewind.</h3>
+        <p>Pick a checkpoint and hold the button. The save you’re leaving isn’t thrown away: it stays as its own timeline, so you can always go back to it.</p>
+      </div>
+      <div class="clip"><video src="media/rewind.mp4" poster="media/rewind.jpg" width="1016" height="560" muted loop playsinline preload="none" data-clip aria-label="Selecting the Before Hornet checkpoint and holding to rewind to it"></video></div>
+    </div>
+    <div class="row">
+      <div class="row-copy">
+        <span class="num">3</span>
+        <h3 class="disp">Pick up on another PC.</h3>
+        <p>Point Worldline at a folder you already sync, like Dropbox or Syncthing. Played on your laptop? It shows up at the top. Continue here. If both PCs played, both timelines are kept and you choose.</p>
+      </div>
+      <div class="clip"><video src="media/continue.mp4" poster="media/continue.jpg" width="1016" height="560" muted loop playsinline preload="none" data-clip aria-label="A newer save from the laptop appears at the top, and Continue here brings it in"></video></div>
+    </div>
+    <div class="row flip">
+      <div class="row-copy">
+        <span class="num">4</span>
+        <h3 class="disp">Finds your games.</h3>
+        <p>Scans Steam, Epic and your own folders, and knows where thousands of games keep their saves thanks to the Ludusavi manifest. Games you track on your other PCs show up too.</p>
+      </div>
+      <div class="clip"><video src="media/add.mp4" poster="media/add.jpg" width="1016" height="760" muted loop playsinline preload="none" data-clip aria-label="Looking for installed games and adding two of them"></video></div>
+    </div>
+  </div>
+</section>
+
+<section id="game" class="section">
+  <header class="sec-head">
+    <p class="eyebrow">In the game</p>
+    <h2 class="disp">It tells you without pausing you.</h2>
+    <p class="sub">When Worldline keeps a checkpoint, a small popup slides into a corner of the game and gets out of the way. Press a hotkey to keep the moment for good, or to name it right over the game.</p>
+  </header>
+  <div class="ovtabs" role="tablist" aria-label="Overlay clips">
+    <button class="ovtab" role="tab" aria-selected="true" aria-controls="ov-popups" data-ov="popups">Popups</button>
+    <button class="ovtab" role="tab" aria-selected="false" aria-controls="ov-nameit" data-ov="nameit">Name it hotkey</button>
+  </div>
+  <div class="gameshot">
+    <video id="ov-popups" class="on" src="media/ov-popups.mp4" poster="media/ov-popups.jpg" muted loop playsinline preload="none" data-clip aria-label="Worldline popups in the corner of a game: recording, checkpoint 42 then 43, a new timeline, kept forever"></video>
+    <video id="ov-nameit" src="media/ov-nameit.mp4" poster="media/ov-nameit.jpg" muted loop playsinline preload="none" aria-label="The Name it hotkey opens a card over the game; typing Spared the mimic and pressing Enter keeps it"></video>
+  </div>
+  <div class="ovchips">
+    <figure class="ovchip"><img src="media/ov-chip-checkpoint.png" alt="Popup: Checkpoint #42, Lantern Knight" loading="lazy"><figcaption>Every checkpoint</figcaption></figure>
+    <figure class="ovchip"><img src="media/ov-chip-timeline.png" alt="Popup: New timeline #44, branched off “Before the bridge”" loading="lazy"><figcaption>When you branch off</figcaption></figure>
+    <figure class="ovchip"><img src="media/ov-chip-kept.png" alt="Popup: Kept forever #46, “Spared the mimic”" loading="lazy"><figcaption>Kept with a hotkey</figcaption></figure>
+    <figure class="ovchip"><img src="media/ov-chip-ahead.png" alt="Popup: Laptop is ahead, 3 newer checkpoints, quit and sync first" loading="lazy"><figcaption>When another PC is ahead</figcaption></figure>
+  </div>
+  <p class="real left"><i></i>The real popups, over a stand-in game. Works in windowed and borderless games.</p>
+</section>
+
 <section id="try" class="section">
   <header class="sec-head">
     <p class="eyebrow">Try it</p>
-    <h2 class="disp">Thirty seconds with a knight.</h2>
+    <h2 class="disp">Play a tiny game, then rewind it.</h2>
+    <p class="sub">A thirty-second toy version: play, lose your gold, rewind, take the other road.</p>
   </header>
 
   <div class="demo">
@@ -231,61 +311,40 @@
 
 <section id="features" class="section">
   <header class="sec-head">
-    <p class="eyebrow">What it does</p>
+    <p class="eyebrow">And the small stuff</p>
     <h2 class="disp">Fewer worries. More attempts.</h2>
   </header>
 
   <div class="bento">
     <article class="cell span3">
-      <div class="viz lib" data-lib>
-        <span class="lib-pill" data-lib-pill></span>
-        <button class="lib-row" data-hue="255"><span class="gi" style="--gh: 255">HK</span><span><b>Hollow Knight</b><small class="live"><i></i>Playing now</small></span></button>
-        <button class="lib-row" data-hue="75"><span class="gi" style="--gh: 75">ER</span><span><b>Elden Ring</b><small class="deck"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="4"/><path d="M7 10v4M5 12h4"/></svg>Played on Steam Deck</small></span></button>
-        <button class="lib-row" data-hue="335"><span class="gi" style="--gh: 335">CE</span><span><b>Celeste</b><small>3 sessions this week</small></span></button>
-        <button class="lib-row" data-hue="145"><span class="gi" style="--gh: 145">SV</span><span><b>Stardew Valley</b><small>Not in the cloud yet</small></span></button>
-      </div>
-      <h3 class="disp">Finds your games.</h3>
-      <p>Scans Steam and Epic, and already knows where thousands of games keep their saves, thanks to the Ludusavi manifest. For anything else, pick the folder.</p>
-      <p class="hint">Every game gets its own color. Go on, pick one.</p>
+      <div class="viz shot tall"><img src="media/card-popup.png" alt="Worldline settings: Quick keep hotkey Ctrl Shift K and Name it hotkey Ctrl Shift N" loading="lazy" style="margin-top: -28%"></div>
+      <h3 class="disp">Set it up your way.</h3>
+      <p>Pick the popup’s corner for each game, choose your hotkeys, or switch to Quiet mode: only the Worldline mark, for streams and speedruns.</p>
     </article>
 
     <article class="cell span3">
-      <div class="viz sync">
-        <div class="node"><span class="nb"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>This PC</div>
-        <div class="wire"><i></i></div>
-        <div class="node hub"><span class="nb"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1-1 8z"/></svg></span>Your folder</div>
-        <div class="wire rev"><i></i></div>
-        <div class="node devn"><span class="nb"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></svg></span>Laptop</div>
-        <p class="sync-status mono"><i></i>Synced just now</p>
-      </div>
-      <h3 class="disp">All your devices, in step.</h3>
-      <p>Point Worldline at any shared folder: Syncthing, Dropbox, a network drive. Progress follows you between devices. If both played, both lines are kept and you choose.</p>
-    </article>
-
-    <article class="cell span2">
-      <div class="viz sess">
-        <p class="eyebrow">Today</p>
-        <div class="srow"><span class="mono">8:12 PM</span><span class="strack" style="--w: 78%"><i style="--x: 0%"></i><i style="--x: 22%"></i><i style="--x: 41%"></i><i style="--x: 63%"></i><i style="--x: 100%"></i></span></div>
-        <div class="srow"><span class="mono">3:40 PM</span><span class="strack" style="--w: 30%"><i style="--x: 0%"></i><i style="--x: 50%"></i><i style="--x: 100%"></i></span><span class="tag"><span class="dia"></span>Before the boss</span></div>
-        <p class="eyebrow">Yesterday</p>
-        <div class="srow"><span class="mono">10:05 PM</span><span class="strack" style="--w: 62%"><i style="--x: 0%"></i><i style="--x: 30%"></i><i style="--x: 70%"></i><i style="--x: 100%"></i></span></div>
-      </div>
-      <h3 class="disp">Sessions, not commits.</h3>
-      <p>Checkpoints group into the evenings you actually played. Name one to keep it forever.</p>
-    </article>
-
-    <article class="cell span2">
-      <div class="viz keep">
-        <div class="ruler">
-          <span style="--n: 14"><b>Last day</b></span>
-          <span style="--n: 7"><b>Hourly</b></span>
-          <span style="--n: 4"><b>Daily</b></span>
-          <span style="--n: 2"><b>Weekly</b></span>
-        </div>
-        <p class="mono freed"><span class="ok">✓</span> Freed 1.2 GB · named checkpoints kept</p>
-      </div>
+      <div class="viz shot tall"><img src="media/card-keep.png" alt="Worldline settings: keep everything for 1 hour, then hourly up to 1 day, daily up to 7 days, weekly up to 3 months" loading="lazy" style="margin-top: -2%"></div>
       <h3 class="disp">Tidies up after itself.</h3>
-      <p>Old checkpoints thin out over time, hourly, then daily, then weekly. Named ones never go.</p>
+      <p>Everything for the first hour, then hourly, daily and weekly. Named checkpoints never go, and you choose the steps.</p>
+    </article>
+
+    <article class="cell span2">
+      <div class="viz lib" data-lib>
+        <span class="lib-pill" data-lib-pill></span>
+        <button class="lib-row" data-hue="215"><span class="gi"><img src="media/icons/hollow-knight.jpg" alt=""></span><span><b>Hollow Knight</b><small class="live"><i></i>Recording</small></span></button>
+        <button class="lib-row" data-hue="12"><span class="gi"><img src="media/icons/hades.jpg" alt=""></span><span><b>Hades</b><small class="deck"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></svg>New from Laptop</small></span></button>
+        <button class="lib-row" data-hue="330"><span class="gi"><img src="media/icons/celeste.jpg" alt=""></span><span><b>Celeste</b><small>Last week</small></span></button>
+        <button class="lib-row" data-hue="120"><span class="gi"><img src="media/icons/stardew-valley.jpg" alt=""></span><span><b>Stardew Valley</b><small>Not in the cloud yet</small></span></button>
+      </div>
+      <h3 class="disp">Every game gets its own color.</h3>
+      <p>The whole app takes on the color of the game you pick.</p>
+      <p class="hint">Go on, pick one.</p>
+    </article>
+
+    <article class="cell span2">
+      <div class="viz shot mid"><img src="media/card-capture.png" alt="Worldline settings: wait 3 seconds after the game saves, at most one checkpoint every 5 minutes, screenshot each checkpoint" loading="lazy"></div>
+      <h3 class="disp">Gentle with your saves.</h3>
+      <p>Waits for the game to finish writing, turns quick saves in a row into one checkpoint, and can keep a screenshot with each.</p>
     </article>
 
     <article class="cell span2">
@@ -298,7 +357,7 @@
         <p class="i2">b2/<span class="hash">04de…71c</span> <span class="z">zstd</span></p>
       </div>
       <h3 class="disp">No lock-in.</h3>
-      <p>Plain files on your disk, checksummed. Rebuild any save by hand with zstd, or export a game's whole history as a .zip.</p>
+      <p>Plain files on your disk, checksummed. Rebuild any save by hand with zstd, or export a game’s whole history as a .zip.</p>
     </article>
 
     <article class="cell span6 cli">

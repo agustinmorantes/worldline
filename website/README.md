@@ -11,7 +11,9 @@ npx serve .     # or: python -m http.server
 - If the repository is renamed, update `REPO` in `main.js` and the `github.com/...` links in `index.html`.
 - The page assumes it lives at `https://agustinmorantes.github.io/worldline/`. If that changes (a rename or a custom domain), update the canonical, `og:url`, `og:image` and JSON-LD URLs in `index.html`, plus `robots.txt` and `sitemap.xml`.
 - `og-image.jpg` is the 1200×630 link preview: a screenshot of the hero without the title bar or buttons. Retake it if the hero changes.
-- Colors and type follow the app's design tokens. The whole page is driven by one hue (`--h`), like a game's accent in the app.
+- Colors and type follow the app's design tokens. The whole page is driven by one hue (`--h`), like a game's accent in the app; picking a game in the "Every game gets its own color" card re-tints it.
+- `media/` holds the clips and stills. They are recorded from the real GUI in mock mode (`bun run dev:mock`), with the demo saves relabelled as Hollow Knight, and the overlay clips play the real popups over a drawn stand-in game. Re-record them when the UI they show changes. `media/icons/` are the games' Steam icons, the same ones the app fetches.
+- Clips load only when they near the viewport and pause off screen; with reduced motion they show their poster and controls instead.
 
 ## Deploy
 

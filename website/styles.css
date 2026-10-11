@@ -56,6 +56,19 @@ body {
   overflow-x: hidden;
 }
 
+/* Scrollbar like the app's: a pill thumb inset on a clear track, no arrows, that takes the
+   accent while you grab it. Chromium and Safari use the pseudo-elements (setting
+   scrollbar-color would override them and lose the inset); Firefox gets the closest match. */
+::-webkit-scrollbar { width: 12px; height: 12px; background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-thumb { min-height: 48px; background-color: oklch(96.5% .005 265 / .14); background-clip: padding-box; border: 3px solid transparent; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background-color: oklch(96.5% .005 265 / .26); }
+::-webkit-scrollbar-thumb:active { background-color: var(--acc); }
+@supports not selector(::-webkit-scrollbar) {
+  html { scrollbar-width: thin; scrollbar-color: oklch(96.5% .005 265 / .2) transparent; }
+}
+
 a { color: inherit; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; border-radius: 6px; }
@@ -170,9 +183,8 @@ main { position: relative; overflow-x: clip; }
 .hero {
   position: relative;
   max-width: 1200px;
-  min-height: calc(100vh - 60px);
   margin: 0 auto;
-  padding: 48px 20px 80px;
+  padding: 72px 20px 110px;
   display: grid;
   grid-template-columns: 1.05fr 1fr;
   align-items: center;
@@ -293,6 +305,76 @@ main { position: relative; overflow-x: clip; }
 
 .reveal { opacity: 0; transform: translateY(24px); transition: opacity 700ms var(--ez), transform 700ms var(--ez); }
 .reveal.in { opacity: 1; transform: none; }
+
+.sec-head.centered { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.sec-head .sub { margin: 14px 0 0; max-width: 40em; font-size: 18px; color: var(--tx2); }
+.sec-head.centered .sub { max-width: 38em; }
+#try .sec-head .sub { margin-top: 12px; font-size: 17px; }
+
+/* A label under recordings, so nobody mistakes demo saves for theirs. */
+.real { display: flex; justify-content: center; align-items: center; gap: 8px; margin: 18px 0 0; font-size: 13px; color: var(--tx3); }
+.real.left { justify-content: flex-start; }
+.real i { width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex: none; animation: livePulse 1.8s ease-out infinite; }
+
+video { display: block; width: 100%; height: auto; }
+
+/* ---------- See it: the real app ---------- */
+
+.app-sec { padding-top: 20px; }
+.stage { perspective: 1600px; }
+.appshot {
+  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
+  background: var(--side);
+  box-shadow: 0 60px 120px -50px oklch(0% 0 0 / .85), 0 0 0 1px oklch(100% 0 0 / .09), 0 0 160px -40px var(--acc-glow);
+}
+.appshot.reveal { opacity: 0; transform: rotateX(16deg) translateY(48px) scale(.95); transition: opacity 1200ms var(--ez), transform 1200ms var(--ez); }
+.appshot.reveal.in { opacity: 1; transform: none; }
+
+/* ---------- How it works ---------- */
+
+.rows { display: flex; flex-direction: column; gap: 120px; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 56px; align-items: center; }
+.row.flip .row-copy { order: 2; }
+.row-copy h3 { margin: 16px 0 0; font-size: 40px; font-weight: 800; line-height: 1.05; }
+.row-copy p { margin: 14px 0 0; font-size: 17px; color: var(--tx2); max-width: 30em; }
+.num { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; font: 600 12px var(--mono); background: var(--acc-soft); color: var(--acc); box-shadow: inset 0 0 0 1px var(--acc-line); }
+.clip {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--side);
+  box-shadow: 0 40px 80px -40px oklch(0% 0 0 / .8), 0 0 0 1px oklch(100% 0 0 / .08);
+  transition: transform 500ms var(--ez), box-shadow 500ms, opacity 700ms var(--ez);
+}
+.clip:hover { transform: translateY(-4px); box-shadow: 0 50px 90px -40px oklch(0% 0 0 / .85), 0 0 0 1px var(--acc-line); }
+/* Clips slide in from the side their row's text isn't on. */
+.row .clip.reveal:not(.in) { transform: translateX(40px); }
+.row.flip .clip.reveal:not(.in) { transform: translateX(-40px); }
+
+/* ---------- In the game: the overlay ---------- */
+
+.ovtabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.ovtab { height: 40px; padding: 0 16px; border-radius: 99px; font-size: 14px; font-weight: 700; color: var(--tx2); background: var(--el); transition: background-color 200ms, color 200ms, box-shadow 200ms, transform 180ms var(--spring); }
+.ovtab:hover { color: var(--tx); }
+.ovtab:active { transform: scale(.95); }
+.ovtab[aria-selected='true'] { background: var(--acc-soft); color: var(--tx); box-shadow: inset 0 0 0 1px var(--acc-line); }
+.gameshot {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 18px;
+  overflow: hidden;
+  background: #141030;
+  box-shadow: 0 50px 100px -45px oklch(0% 0 0 / .85), 0 0 0 1px oklch(100% 0 0 / .09), 0 0 140px -50px var(--acc-glow);
+}
+.gameshot video { position: absolute; inset: 0; height: 100%; object-fit: cover; opacity: 0; transition: opacity 450ms var(--ez); }
+.gameshot video.on { opacity: 1; }
+.ovchips { display: flex; flex-wrap: wrap; gap: 18px 22px; margin-top: 26px; }
+.ovchip { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.ovchip img { display: block; height: 74px; width: auto; max-width: 100%; border-radius: 16px; transition: transform 400ms var(--spring); }
+.ovchip:hover img { transform: translateY(-4px) scale(1.03); }
+.ovchip figcaption { padding-left: 10px; font-size: 13px; font-weight: 600; color: var(--tx3); }
 
 /* ---------- Demo ---------- */
 
@@ -537,48 +619,17 @@ main { position: relative; overflow-x: clip; }
 .lib-row small.deck { color: var(--deck); }
 .lib-row small svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .gi { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; flex: none; font: 800 13px var(--disp); background: linear-gradient(145deg, oklch(80% .13 var(--gh)), oklch(56% .16 calc(var(--gh) + 30))); color: oklch(20% .05 var(--gh)); transition: transform 300ms var(--spring); }
+.gi img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .lib-row:hover .gi, .lib-row:focus-visible .gi { transform: scale(1.08); }
 .lib-pill { position: absolute; left: 10px; right: 10px; top: 10px; height: 52px; border-radius: 14px; background: oklch(100% 0 0 / .06); opacity: 0; pointer-events: none; transition: transform 480ms var(--spring), opacity 200ms; }
 .lib-pill::before { content: ''; position: absolute; left: -10px; top: 14px; width: 4px; height: 24px; border-radius: 0 4px 4px 0; background: var(--acc); }
 .lib-pill.on { opacity: 1; }
 
-/* Sync */
-.sync { display: grid; grid-template-columns: auto 1fr auto 1fr auto; align-items: center; gap: 8px; padding: 34px 20px 50px; }
-.sync .node { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--tx2); }
-.sync .nb { width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: var(--el); color: var(--tx); }
-.sync .nb svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.sync .hub .nb { background: var(--acc-soft); color: var(--acc); box-shadow: inset 0 0 0 1.5px var(--acc-line); }
-.sync .devn .nb { color: var(--deck); }
-.wire { position: relative; height: 2px; margin-bottom: 26px; background: repeating-linear-gradient(90deg, var(--ln) 0 6px, transparent 6px 10px); }
-.wire i { position: absolute; top: -3px; left: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 10px var(--acc); animation: travel 2.2s var(--ez) infinite; }
-.wire.rev i { background: var(--deck); box-shadow: 0 0 10px var(--deck); animation-direction: reverse; animation-delay: 1.1s; }
-.sync-status { position: absolute; left: 0; right: 0; bottom: 16px; margin: 0; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 12px; color: var(--tx3); }
-.sync-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
-
-/* Sessions */
-.sess { padding: 16px 16px 10px; }
-.sess .eyebrow { font-size: 10.5px; margin: 4px 0 6px; }
-.srow { position: relative; height: 34px; display: flex; align-items: center; gap: 12px; }
-.srow .mono { width: 64px; font-size: 11.5px; color: var(--tx3); flex: none; }
-.strack { position: relative; height: 6px; width: var(--w); border-radius: 99px; background: var(--acc-line); }
-.strack i { position: absolute; left: var(--x); top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 0 3px oklch(17% .012 265); transition: transform 260ms var(--spring); }
-.cell:hover .strack i { transform: scale(1.25); }
-.tag { margin-left: auto; display: flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700; color: var(--acc); background: var(--acc-soft); white-space: nowrap; }
-.dia { width: 6px; height: 6px; background: currentColor; rotate: 45deg; flex: none; }
-
-/* Keep */
-.keep { padding: 26px 16px 16px; display: flex; flex-direction: column; justify-content: space-between; }
-.ruler { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 6px; }
-.ruler span {
-  position: relative;
-  height: 64px;
-  border-radius: 10px;
-  background: radial-gradient(circle, var(--acc) 0 3px, transparent 3.5px) 0 50% / calc(100% / var(--n)) 100% repeat-x, var(--el);
-  transition: background-size 500ms var(--ez);
-}
-.ruler b { position: absolute; left: 0; right: 0; top: calc(100% + 8px); text-align: center; font-size: 11.5px; font-weight: 600; color: var(--tx3); }
-.freed { margin: 48px 0 0 !important; font-size: 12px !important; color: var(--tx3) !important; }
-.freed .ok { color: var(--live); }
+/* Crops of the real settings screen */
+.shot { overflow: hidden; }
+.shot img { display: block; width: 100%; height: auto; }
+.shot.tall { height: 250px; }
+.shot.mid { height: 190px; display: flex; align-items: center; }
 
 /* Files */
 .files { padding: 18px 18px; font-size: 12.5px; color: var(--tx2); }
@@ -700,7 +751,6 @@ main { position: relative; overflow-x: clip; }
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes twinkle { 50% { opacity: .75; } }
 @keyframes livePulse { 0% { box-shadow: 0 0 0 0 oklch(82% .17 150 / .6); } 100% { box-shadow: 0 0 0 7px oklch(82% .17 150 / 0); } }
-@keyframes travel { 0% { left: 0; opacity: 0; } 15%, 85% { opacity: 1; } 100% { left: calc(100% - 8px); opacity: 0; } }
 @keyframes draw { to { stroke-dashoffset: 0; } }
 @keyframes twirl { 0% { transform: scale(.4) rotate(-90deg); } 60% { transform: scale(1.25) rotate(12deg); } 100% { transform: none; } }
 @keyframes askIn { from { opacity: 0; transform: translateY(24px) scale(.96); } }
@@ -718,6 +768,11 @@ main { position: relative; overflow-x: clip; }
   .span2, .span3 { grid-column: span 1; }
   .span6 { grid-column: span 2; }
   .cli { grid-template-columns: 1fr; }
+  .rows { gap: 80px; }
+  .row { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  .row.flip .row-copy { order: 0; }
+  .row-copy h3 { font-size: 32px; }
+  .row .clip.reveal:not(.in), .row.flip .clip.reveal:not(.in) { transform: translateY(24px); }
 }
 
 @media (max-width: 640px) {

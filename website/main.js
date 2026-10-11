@@ -1,5 +1,5 @@
 // Worldline landing page: latest-release download links, the hero icon pulse,
-// the playable demo, the Library re-tint and scroll reveals.
+// the app clips, the overlay tabs, the playable demo, the Library re-tint and scroll reveals.
 
 const REPO = 'agustinmorantes/worldline';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -66,6 +66,53 @@ function animateIcon() {
   };
   setTimeout(cycle, 900);
   setInterval(cycle, 3200);
+}
+
+/* ---------- App clips: play while on screen ---------- */
+
+// Clips load nothing until they come near the viewport and pause when they leave it.
+// With reduced motion they stay on their poster and get controls instead.
+const clipIO = 'IntersectionObserver' in window && !reduced
+  ? new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) e.target.play().catch(() => {});
+      else e.target.pause();
+    }
+  }, { rootMargin: '200px 0px' })
+  : null;
+
+function watchClip(v) {
+  if (clipIO) clipIO.observe(v);
+  else {
+    v.controls = true;
+    v.preload = 'metadata';
+  }
+}
+
+function wireClips() {
+  $$('video[data-clip]').forEach(watchClip);
+}
+
+/* ---------- Overlay: Popups / Name it tabs ---------- */
+
+function wireOverlayTabs() {
+  const tabs = $$('[data-ov]');
+  tabs.forEach((tab) => tab.addEventListener('click', () => {
+    tabs.forEach((t) => {
+      const on = t === tab;
+      const v = $(`#ov-${t.dataset.ov}`);
+      t.setAttribute('aria-selected', String(on));
+      v.classList.toggle('on', on);
+      if (on) {
+        v.currentTime = 0; // start the clip being shown from the top
+        watchClip(v);
+        if (clipIO) v.play().catch(() => {});
+      } else {
+        clipIO?.unobserve(v);
+        v.pause();
+      }
+    });
+  }));
 }
 
 /* ---------- Library: picking a game re-tints the page ---------- */
@@ -367,7 +414,7 @@ function initDemo() {
 /* ---------- Scroll reveals ---------- */
 
 function reveals() {
-  const targets = $$('.sec-head, .demo, .cell, .outro');
+  const targets = $$('.sec-head, .appshot, .row-copy, .row .clip, .gameshot, .demo, .cell, .outro');
   if (reduced || !('IntersectionObserver' in window)) {
     targets.forEach((t) => t.classList.add('in'));
     return;
@@ -445,6 +492,8 @@ wireDownloads();
 wireStars();
 starPrompt();
 animateIcon();
+wireClips();
+wireOverlayTabs();
 wireLibrary();
 initDemo();
 reveals();
