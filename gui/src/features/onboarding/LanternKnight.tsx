@@ -193,7 +193,7 @@ const LOOKS: Record<StripCheckpoint['look'], { fill: string; ring: string; fg: s
   main: { fill: ACC, ring: 'transparent', fg: ACC, bg: 'var(--acc-soft)' },
   bad: { fill: BAD, ring: BAD, fg: BAD, bg: 'oklch(68% 0.19 25 / 0.14)' },
   kept: { fill: 'transparent', ring: BAD, fg: BAD, bg: 'oklch(68% 0.19 25 / 0.14)' },
-  lane: { fill: 'var(--tx3)', ring: 'transparent', fg: 'var(--tx2)', bg: 'var(--el)' },
+  lane: { fill: 'var(--acc-dim)', ring: 'transparent', fg: 'var(--acc-dim)', bg: 'color-mix(in oklch, var(--acc-dim) 14%, transparent)' },
 };
 
 export function Strip({ demo }: { demo: Demo }): ReactElement {
@@ -216,7 +216,7 @@ export function Strip({ demo }: { demo: Demo }): ReactElement {
       {strip.ahead && <div className="lk-fade-in absolute left-[244px] top-[75px] w-[116px] border-t-2 border-dashed border-err opacity-60" />}
       {strip.branch && (
         <svg width="524" height="176" aria-hidden="true" className="absolute inset-0 overflow-visible">
-          <path className="lk-draw-branch" pathLength={1} d="M244 76 C 296 76 308 124 360 124" fill="none" stroke="var(--tx3)" strokeWidth="3" strokeLinecap="round" />
+          <path className="lk-draw-branch" pathLength={1} d="M244 76 C 296 76 308 124 360 124" fill="none" stroke="var(--acc-dim)" strokeWidth="3" strokeLinecap="round" />
         </svg>
       )}
       {strip.checkpoints.map((c) => {

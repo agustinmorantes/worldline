@@ -23,6 +23,19 @@ export function formatDuration(ms: number, t: Messages): string {
 
 const dotId = (id: number): string => `checkpoint-${id.toString()}`;
 
+/**
+ * The color of a checkpoint, and of the track, line and name it sits on, in every view: the
+ * hue says which device made it (the accent here, the deck's cyan on another device), the
+ * strength says which timeline (full on your line, dimmed on the others).
+ */
+export function markColor({ side, elsewhere }: { side: boolean; elsewhere: boolean }): string {
+  if (side) return elsewhere ? 'var(--deck-dim)' : 'var(--acc-dim)';
+  return elsewhere ? 'var(--deck)' : 'var(--acc)';
+}
+
+/** `color` at `percent` opacity. */
+export const tint = (color: string, percent: number): string => `color-mix(in oklch, ${color} ${percent.toString()}%, transparent)`;
+
 export function TimelineFrame({ order, selectedId, activeId, onSelect, rewinding, children }: {
   /** Checkpoints in keyboard order. */
   order: number[];
@@ -69,7 +82,7 @@ export function Diamond({ size = 6 }: { size?: number }): ReactElement {
   return <span aria-hidden="true" className="shrink-0 rotate-45 bg-current" style={{ width: size, height: size }} />;
 }
 
-export function Dot({ game, version, left, top, side, elsewhere, graph = false, active, selected, landed, onSelect, now }: {
+export function Dot({ game, version, left, top, side, elsewhere, active, selected, landed, onSelect, now }: {
   game: FullGame;
   version: Version;
   /** Centre of the dot within its positioned parent. */
@@ -80,8 +93,6 @@ export function Dot({ game, version, left, top, side, elsewhere, graph = false, 
   side: boolean;
   /** Made on another device. */
   elsewhere: boolean;
-  /** In the Graph view, other timelines keep a hint of the other device's color. */
-  graph?: boolean;
   active: boolean;
   selected: boolean;
   landed: boolean;
@@ -94,11 +105,7 @@ export function Dot({ game, version, left, top, side, elsewhere, graph = false, 
   const date = new Date(timeOf(version));
   const name = version.retired ? t.sessions.cleanedUp : tagged ? (version.tag ?? '') : t.sessions.autosave;
   const size = version.retired ? 7 : tagged ? 11 : selected && !active ? 12 : 9;
-  const fill = version.retired
-    ? 'transparent'
-    : side
-      ? (graph && elsewhere ? 'oklch(80% 0.11 205 / 0.75)' : 'var(--tx3)')
-      : elsewhere ? 'var(--deck)' : 'var(--acc)';
+  const fill = version.retired ? 'transparent' : markColor({ side, elsewhere });
   const place = { left, top: top ?? '50%' };
   const label = `${formatTime(date, locale)} · ${name}`;
 

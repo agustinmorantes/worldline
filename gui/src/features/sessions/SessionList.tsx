@@ -12,7 +12,7 @@ import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { byDay, dayLabel, type Fork, playedMs, type SessionsLayout, timeOf, trackPosition, trackWidth } from './sessions';
-import { Diamond, Dot, formatDuration, PendingDot } from './Timeline';
+import { Diamond, Dot, formatDuration, markColor, PendingDot, tint } from './Timeline';
 
 /** Time column + device column, before a track starts. */
 const TRACK_LEFT = 96;
@@ -93,6 +93,7 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
   const width = trackWidth(durationMs);
   const holdsSelection = selectedId !== null && session.some((v) => v.id === selectedId);
   const pending = !side && unrecorded !== null && session.some((v) => v.id === activeId) ? unrecorded : null;
+  const color = markColor({ side, elsewhere });
 
   return (
     <motion.div
@@ -122,10 +123,11 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
         </span>
       </Tooltip>
       <span
-        className={cn('relative h-2 min-w-10 shrink rounded-full transition-[background-color] duration-400', side && 'shadow-[inset_0_0_0_1.5px_var(--ln)]')}
+        className="relative h-2 min-w-10 shrink rounded-full transition-[background-color] duration-400"
         style={{
           flexBasis: width,
-          backgroundColor: side ? 'transparent' : elsewhere ? 'oklch(80% 0.11 205 / 0.2)' : 'color-mix(in oklch, var(--acc) 20%, transparent)',
+          backgroundColor: side ? 'transparent' : tint(color, 20),
+          boxShadow: side ? `inset 0 0 0 1.5px ${tint(color, 50)}` : undefined,
         }}
       >
         {session.map((version) => (
@@ -151,10 +153,8 @@ function SessionRowView({ game, session, durationMs, side, activeId, selectedId,
         <span
           // The naming card's tile flies here (`NamingHost`).
           data-versions={session.map((v) => v.id).join(' ')}
-          className={cn(
-            'relative ml-3.5 flex h-5 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-bold',
-            side ? 'bg-el text-tx2' : 'bg-acc-soft text-acc',
-          )}
+          className="relative ml-3.5 flex h-5 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-bold"
+          style={{ color, backgroundColor: tint(color, 14) }}
         >
           <Diamond />
           <span className="truncate">{tagged[tagged.length - 1].tag}</span>
@@ -191,6 +191,8 @@ function ForkView(props: SessionListProps & {
   const label = other !== null
     ? t.sessions.deviceTimeline(other.name ?? t.sessions.anotherDevice)
     : fork.latest ? t.sessions.leftOff : t.sessions.anotherTimeline;
+  // The timeline you left off on keeps a filled chip, in its own color.
+  const chipColor = markColor({ side: true, elsewhere: other !== null });
   const played = playedMs(fork.line, versions, gapMs);
   const lastPlayed = dayLabel(new Date(timeOf(fork.line[fork.line.length - 1])), now, locale, {
     today: t.sessions.today.toLocaleLowerCase(locale),
@@ -208,8 +210,13 @@ function ForkView(props: SessionListProps & {
         <span
           key={f.root.id}
           aria-hidden="true"
-          className="absolute border-l-[1.5px] border-dashed border-tx3"
-          style={{ left: forkX(f, session), top: first ? -22 : 0, bottom: f === fork ? 'calc(100% - 14px)' : 0 }}
+          className="absolute border-l-[1.5px] border-dashed"
+          style={{
+            left: forkX(f, session),
+            top: first ? -22 : 0,
+            bottom: f === fork ? 'calc(100% - 14px)' : 0,
+            borderColor: markColor({ side: true, elsewhere: f.line.every((v) => !deviceOf(v).here) }),
+          }}
         />
       ))}
       <motion.button
@@ -221,9 +228,9 @@ function ForkView(props: SessionListProps & {
         transition={spring}
         className={cn(
           'relative flex h-7 max-w-[calc(100%-28px)] items-center gap-[7px] rounded-full pl-[9px] pr-2.5 text-[12.5px] font-semibold transition-colors duration-200',
-          fork.latest ? 'bg-acc-soft text-acc hover:bg-acc/20' : cn('bg-el hover:bg-ln', other !== null ? 'text-deck' : 'text-tx2'),
+          fork.latest ? 'hover:brightness-125' : 'bg-el hover:bg-ln',
         )}
-        style={{ marginLeft: chipX }}
+        style={{ marginLeft: chipX, color: chipColor, backgroundColor: fork.latest ? tint(chipColor, 16) : undefined }}
       >
         <CornerDownRight size={14} strokeWidth={2.4} aria-hidden="true" className="shrink-0" />
         {other !== null && <DeviceGlyph kind={other.kind} size={15} />}

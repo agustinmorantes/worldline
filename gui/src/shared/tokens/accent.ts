@@ -12,6 +12,7 @@ export function accentVars(hue: number): AccentVars {
     '--acc-ink': `oklch(21% 0.06 ${h})`,
     '--acc-soft': `oklch(80% 0.13 ${h} / 0.12)`,
     '--acc-line': `oklch(80% 0.13 ${h} / 0.38)`,
+    '--acc-dim': `oklch(64% 0.095 ${h})`,
     '--acc-glow': `oklch(52% 0.15 ${h} / 0.32)`,
     '--acc-fill': `oklch(56% 0.15 ${h})`,
     '--acc-icon': `linear-gradient(145deg, oklch(80% 0.13 ${h}), oklch(56% 0.16 ${h2}))`,

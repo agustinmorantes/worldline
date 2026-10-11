@@ -13,7 +13,7 @@ import { formatRelative, formatTime, useLocale, useT } from '@/shared/i18n';
 import { duration, ease, spring, useMotionReduced } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { HoldButton } from '@/shared/ui/HoldButton';
-import { formatDuration } from './Timeline';
+import { formatDuration, markColor } from './Timeline';
 import { useScreenshot } from './queries';
 import { minutesUntil, timeOf } from './sessions';
 
@@ -63,7 +63,7 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
     ? { name: t.sessions.notRecorded, when: t.sessions.dueIn(minutesUntil(unrecorded.dueAt, now)) }
     : !here && active !== null ? { name: active.tag ?? t.sessions.autosave, when: formatRelative(new Date(timeOf(active)), locale, now) } : null;
   const fold = reduced ? { duration: 0 } : { duration: duration.base, ease };
-  const tint = here ? 'var(--acc)' : onLine ? 'var(--tx3)' : 'var(--deck)';
+  const tint = markColor({ side: !onLine, elsewhere: !device.here });
 
   function commit(): void {
     const next = draft.trim();

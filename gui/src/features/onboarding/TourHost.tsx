@@ -404,9 +404,9 @@ function Finish({ primaryRef, onFindGames, onSkip }: {
   );
 }
 
-/** The app mark drawing itself; on the finish, the lower branch is the grey mimic run. */
+/** The app mark drawing itself; on the finish, the lower branch is the dimmed mimic run. */
 function Mark({ size, branch = false }: { size: number; branch?: boolean }): ReactElement {
-  const other = branch ? 'var(--tx3)' : 'var(--acc)';
+  const other = branch ? 'var(--acc-dim)' : 'var(--acc)';
   const d = (ms: number): React.CSSProperties => ({ '--d': `${String(branch ? ms - 50 : ms)}ms` } as React.CSSProperties);
   return (
     <div

@@ -1,21 +1,20 @@
 // The Graph view: every checkpoint of every timeline on one vertical time axis, newest at the
-// top. Your line is the accent spine; other timelines branch into grey lanes; names line up in
-// one column. Dots share their layout ids with the Sessions view, so they fly between the two.
+// top. Your line is the accent spine; other timelines branch into dimmed lanes; names line up in
+// one column. Colors follow `markColor`. Dots share their layout ids with the Sessions view, so they fly between the two.
 import type { ReactElement } from 'react';
 import { AnimatePresence, motion, useIsPresent } from 'motion/react';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { Version } from '@/ipc/bindings/Version';
 import type { CheckpointDevice } from '@/features/game/game-view';
 import { dayLabel, timeOf } from '@/features/sessions/sessions';
-import { Diamond, Dot, formatDuration } from '@/features/sessions/Timeline';
+import { Diamond, Dot, formatDuration, markColor, tint } from '@/features/sessions/Timeline';
 import { formatTime, useLocale, useT } from '@/shared/i18n';
 import { ease } from '@/shared/motion/motion';
 import { DeviceGlyph } from '@/shared/ui/DeviceGlyph';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
-import type { GraphLayout } from './graph';
+import type { GraphEdge, GraphLayout } from './graph';
 
-const DECK_LINE = 'oklch(80% 0.11 205 / 0.55)';
 /** Furniture fades in once the dots have started moving. */
 const appear = { initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { duration: 0.32, delay: 0.26 } };
 
@@ -78,55 +77,69 @@ export function GraphView({ game, graph, versions, activeId, selectedId, onSelec
         );
       })}
 
-      {graph.capsules.map((capsule) => (
-        <motion.span
-          key={capsule.versions[0].id}
-          {...appear}
-          aria-hidden="true"
-          className={cn('absolute w-3.5 rounded-full', capsule.lane > 0 && 'bg-white/[0.03] shadow-[inset_0_0_0_1.5px_var(--ln)]')}
-          style={{
-            left: capsule.x,
-            top: capsule.y,
-            height: capsule.height,
-            backgroundColor: capsule.lane > 0 ? undefined : elsewhere(capsule.versions) ? 'oklch(80% 0.11 205 / 0.2)' : 'color-mix(in oklch, var(--acc) 20%, transparent)',
-          }}
-        />
-      ))}
+      {graph.capsules.map((capsule) => {
+        const side = capsule.lane > 0;
+        const color = markColor({ side, elsewhere: elsewhere(capsule.versions) });
+        return (
+          <motion.span
+            key={capsule.versions[0].id}
+            {...appear}
+            aria-hidden="true"
+            className="absolute w-3.5 rounded-full"
+            style={{
+              left: capsule.x,
+              top: capsule.y,
+              height: capsule.height,
+              backgroundColor: tint(color, side ? 8 : 20),
+              boxShadow: side ? `inset 0 0 0 1.5px ${tint(color, 50)}` : undefined,
+            }}
+          />
+        );
+      })}
 
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 size-full overflow-visible">
-        {graph.edges.map((edge, i) => (
-          <motion.path
-            key={edge.versions[0].id}
-            d={edge.d}
-            fill="none"
-            strokeLinecap="round"
-            stroke={edge.lane === 0 ? 'var(--acc)' : elsewhere(edge.versions) ? DECK_LINE : 'oklch(44% 0.02 265)'}
-            strokeWidth={edge.lane === 0 ? 3 : 2}
-            initial={{ pathLength: 0 }}
-            animate={{ pathLength: 1 }}
-            transition={{ duration: 0.7, ease, delay: edge.lane === 0 ? 0.18 : 0.34 + i * 0.09 }}
-          />
-        ))}
+        {graph.edges.map((edge, i) => {
+          const id = `edge-${game.id.toString()}-${edge.versions[0].id.toString()}`;
+          const stops = edgeStops(edge, graph, (v) => !deviceOf(v).here);
+          return (
+            <g key={edge.versions[0].id}>
+              {stops.length > 1 && (
+                <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={0} x2={0} y1={stops[0].y} y2={stops[stops.length - 1].y}>
+                  {stops.map((stop) => (
+                    <stop key={`${stop.y.toString()} ${stop.color}`} offset={(stop.y - stops[0].y) / Math.max(1, stops[stops.length - 1].y - stops[0].y)} style={{ stopColor: stop.color }} />
+                  ))}
+                </linearGradient>
+              )}
+              <motion.path
+                d={edge.d}
+                fill="none"
+                strokeLinecap="round"
+                stroke={stops.length > 1 ? `url(#${id})` : stops[0].color}
+                strokeWidth={edge.lane === 0 ? 3 : 2}
+                initial={{ pathLength: 0 }}
+                animate={{ pathLength: 1 }}
+                transition={{ duration: 0.7, ease, delay: edge.lane === 0 ? 0.18 : 0.34 + i * 0.09 }}
+              />
+            </g>
+          );
+        })}
       </svg>
 
       {graph.labels.map((label) => {
-        const deck = !deviceOf(label.version).here;
+        const color = markColor({ side: label.lane > 0, elsewhere: !deviceOf(label.version).here });
         return (
           <motion.div key={label.version.id} {...appear}>
             <span
               aria-hidden="true"
               className="absolute h-0 border-t-[1.5px] border-dotted"
-              style={{ left: label.from, top: label.y, width: Math.max(0, graph.labelX - label.from - 4), borderColor: label.lane > 0 ? 'var(--ln)' : 'var(--acc-line)' }}
+              style={{ left: label.from, top: label.y, width: Math.max(0, graph.labelX - label.from - 4), borderColor: tint(color, 45) }}
             />
             <button
               type="button"
               tabIndex={-1}
               onClick={() => { onSelect(label.version.id); }}
-              className={cn(
-                'absolute flex h-5 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-md px-2 text-xs font-bold hover:brightness-125',
-                label.lane > 0 ? 'bg-el text-tx2' : deck ? 'bg-[oklch(80%_0.11_205/0.14)] text-deck' : 'bg-acc-soft text-acc',
-              )}
-              style={{ left: graph.labelX, top: label.y - 10, maxWidth: `calc(100% - ${(graph.labelX + 12).toString()}px)` }}
+              className="absolute flex h-5 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-md px-2 text-xs font-bold hover:brightness-125"
+              style={{ left: graph.labelX, top: label.y - 10, maxWidth: `calc(100% - ${(graph.labelX + 12).toString()}px)`, color, backgroundColor: tint(color, 14) }}
             >
               <Diamond />
               <span className="truncate">{label.version.tag}</span>
@@ -149,7 +162,6 @@ export function GraphView({ game, graph, versions, activeId, selectedId, onSelec
               top={point.y}
               side={point.lane > 0}
               elsewhere={!deviceOf(version).here}
-              graph
               active={version.id === activeId}
               selected={version.id === selectedId}
               landed={version.id === landedId}
@@ -161,4 +173,22 @@ export function GraphView({ game, graph, versions, activeId, selectedId, onSelec
       </AnimatePresence>
     </div>
   );
+}
+
+/**
+ * Where a line changes color, top to bottom: each stretch takes the color of the checkpoint at
+ * its top, the one that play led to, and the stretch from where the line leaves its parent takes
+ * its oldest checkpoint's. Past the last stop the gradient keeps its color. One stop when the
+ * whole line is one color.
+ */
+function edgeStops(edge: GraphEdge, graph: GraphLayout, elsewhere: (version: Version) => boolean): { y: number; color: string }[] {
+  // The spine lists your line oldest first; other lines newest first.
+  const newest = edge.lane === 0 ? [...edge.versions].reverse() : edge.versions;
+  const marks = newest.map((v) => ({ y: graph.points.get(v.id)?.y ?? 0, color: markColor({ side: edge.lane > 0, elsewhere: elsewhere(v) }) }));
+  const stops = [marks[0]];
+  for (let k = 1; k < marks.length; k++) {
+    if (marks[k].color === marks[k - 1].color) continue;
+    stops.push({ y: marks[k].y, color: marks[k - 1].color }, marks[k]);
+  }
+  return stops;
 }

@@ -32,12 +32,14 @@
   --live: oklch(82% 0.17 150);
   --warn: oklch(84% 0.14 75);
   --deck: oklch(80% 0.11 205);
+  --deck-dim: oklch(66% 0.08 205);
   --err: oklch(68% 0.19 25);
 
   --acc: oklch(80% 0.13 290);
   --acc-ink: oklch(21% 0.06 290);
   --acc-soft: oklch(80% 0.13 290 / 0.12);
   --acc-line: oklch(80% 0.13 290 / 0.38);
+  --acc-dim: oklch(64% 0.095 290);
   --acc-glow: oklch(52% 0.15 290 / 0.32);
   --acc-fill: oklch(56% 0.15 290);
   --acc-icon: linear-gradient(145deg, oklch(80% 0.13 290), oklch(56% 0.16 320));
@@ -88,11 +90,13 @@
   --color-live: var(--live);
   --color-warn: var(--warn);
   --color-deck: var(--deck);
+  --color-deck-dim: var(--deck-dim);
   --color-err: var(--err);
   --color-acc: var(--acc);
   --color-acc-ink: var(--acc-ink);
   --color-acc-soft: var(--acc-soft);
   --color-acc-line: var(--acc-line);
+  --color-acc-dim: var(--acc-dim);
   --color-acc-fill: var(--acc-fill);
 
   --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;

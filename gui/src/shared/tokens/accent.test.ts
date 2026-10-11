@@ -8,6 +8,7 @@ describe('accentVars', () => {
       '--acc-ink': 'oklch(21% 0.06 150)',
       '--acc-soft': 'oklch(80% 0.13 150 / 0.12)',
       '--acc-line': 'oklch(80% 0.13 150 / 0.38)',
+      '--acc-dim': 'oklch(64% 0.095 150)',
       '--acc-glow': 'oklch(52% 0.15 150 / 0.32)',
       '--acc-fill': 'oklch(56% 0.15 150)',
       '--acc-icon': 'linear-gradient(145deg, oklch(80% 0.13 150), oklch(56% 0.16 180))',
