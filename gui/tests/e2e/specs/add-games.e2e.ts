@@ -87,8 +87,11 @@ describe('Add games', () => {
   it('imports the bundle back', async () => {
     answerDialog(bundle);
     await $('button*=Open a history bundle').click();
+    // The click returns before the app asks for the bundle: answering the next picker now would race it.
+    const choose = $('button=Choose folder');
+    await choose.waitForDisplayed();
     answerDialog(saves);
-    await $('button=Choose folder').click();
+    await choose.click();
     await $('button=Import').click();
 
     await expect($('h1=Hades')).toBeDisplayed();
