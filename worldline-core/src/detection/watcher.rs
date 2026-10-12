@@ -1,6 +1,6 @@
 use super::RunningGames;
 use super::scheduler::Scheduler;
-use super::shots::{Attach, Change, Shots};
+use super::shots::{self, Attach, Change, Shots};
 use super::worker::{Shoot, Worker};
 use super::{CaptureFailure, CaptureTarget, Notification, Suppression};
 use crate::history::CheckpointOutcome;
@@ -79,10 +79,12 @@ impl Watcher {
             running,
             notifications,
             shooter,
+            shots::FLOOR,
         )
     }
 
     /// `shooter`: how the screenshot worker takes shots; `None` when it can't.
+    /// `floor`: at least this long between two shots of a game.
     fn start_with(
         target: Arc<dyn CaptureTarget>,
         settings: MonitoringSettings,
@@ -90,6 +92,7 @@ impl Watcher {
         running: RunningGames,
         notifications: mpsc::Sender<Notification>,
         shooter: Option<fn() -> Shoot>,
+        floor: Duration,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
         let loop_tx = tx.clone();
@@ -103,7 +106,7 @@ impl Watcher {
                 games: Vec::new(),
                 scheduler: Scheduler::default(),
                 running,
-                shots: Shots::default(),
+                shots: Shots::with_floor(floor),
                 shooter,
                 worker: None,
             }
@@ -571,6 +574,8 @@ mod tests {
         dir: String,
         checkpoints: std::sync::OnceLock<Checkpoints>,
         created: AtomicUsize,
+        /// What it created, so a cooldown applies.
+        versions: std::sync::Mutex<Vec<crate::models::Version>>,
         attached: std::sync::Mutex<mpsc::Sender<(i32, Vec<u8>)>>,
     }
 
@@ -587,6 +592,7 @@ mod tests {
                 exclusions: "[]".into(),
                 retired_at: None,
             });
+            games[0].versions = self.versions.lock().unwrap().clone();
             Ok(games)
         }
 
@@ -609,6 +615,9 @@ mod tests {
                 created_at: started,
                 origin_device: None,
             });
+            if let CheckpointOutcome::Created(version) = &outcome {
+                self.versions.lock().unwrap().push(version.clone());
+            }
             if let Some(checkpoints) = self.checkpoints.get() {
                 checkpoints.completed(game_id, started, &outcome);
             }
@@ -642,6 +651,7 @@ mod tests {
             dir: saves.path().to_string_lossy().into_owned(),
             checkpoints: Default::default(),
             created: AtomicUsize::new(0),
+            versions: Default::default(),
             attached: std::sync::Mutex::new(attached_tx),
         });
         let running = RunningGames::default();
@@ -659,6 +669,7 @@ mod tests {
             running,
             notifications_tx,
             Some(fake_shooter),
+            shots::FLOOR,
         );
         let _ = target.checkpoints.set(watcher.checkpoints());
         // The startup checkpoint (version 10) predates any shot.
@@ -679,5 +690,83 @@ mod tests {
             notification,
             Notification::ScreenshotAttached { game_id: 1, version_id: id } if id == version_id
         )));
+    }
+
+    static SHOTS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Numbers its shots: `[n]` for the nth.
+    fn counting_shooter() -> Shoot {
+        Box::new(|_| Some(vec![SHOTS.fetch_add(1, Ordering::SeqCst) as u8 + 1]))
+    }
+
+    /// Waits for a shot after the `seen`th, and for the watcher to settle it.
+    fn wait_for_shot_after(seen: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while SHOTS.load(Ordering::SeqCst) <= seen {
+            assert!(std::time::Instant::now() < deadline, "no shot");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        SHOTS.load(Ordering::SeqCst)
+    }
+
+    /// Two saves during the cooldown, then a manual checkpoint: it gets the
+    /// shot of the second save, not the first.
+    #[test]
+    fn a_manual_checkpoint_during_the_cooldown_gets_the_shot_of_the_latest_save() {
+        let saves = tempfile::tempdir().unwrap();
+        let (attached_tx, attached) = mpsc::channel();
+        let target = Arc::new(Versioning {
+            dir: saves.path().to_string_lossy().into_owned(),
+            checkpoints: Default::default(),
+            created: AtomicUsize::new(0),
+            versions: Default::default(),
+            attached: std::sync::Mutex::new(attached_tx),
+        });
+        let running = RunningGames::default();
+        running.set(1, vec![42]);
+        let mut watcher = Watcher::start_with(
+            target.clone(),
+            MonitoringSettings {
+                version_cooldown_minutes: 15,
+                snapshot_debounce_seconds: 0.2,
+                screenshots_enabled: true,
+                ..MonitoringSettings::default()
+            },
+            Suppression::default(),
+            running,
+            mpsc::channel().0,
+            Some(counting_shooter),
+            Duration::zero(),
+        );
+        let _ = target.checkpoints.set(watcher.checkpoints());
+        // The startup checkpoint (version 10) starts the cooldown.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while target.created.load(Ordering::SeqCst) < 1 {
+            assert!(std::time::Instant::now() < deadline, "no startup capture");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        std::fs::write(saves.path().join("save.dat"), "bone bottom").unwrap();
+        let first = wait_for_shot_after(0);
+        std::fs::write(saves.path().join("save.dat"), "before miniboss").unwrap();
+        let latest = wait_for_shot_after(first);
+        assert_eq!(
+            target.created.load(Ordering::SeqCst),
+            1,
+            "still cooling down"
+        );
+        // Reported the way `WorldlineCore::checkpoint` reports a manual one.
+        let (CheckpointOutcome::Created(version), _) = target.capture(1).unwrap() else {
+            unreachable!("Versioning always creates");
+        };
+        let (version_id, jpeg) = attached
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a shot was attached");
+        assert_eq!(version_id, version.id);
+        assert_eq!(jpeg, vec![latest as u8], "the shot of the latest save");
+        // The shutdown flush's checkpoint gets no shot of an earlier save.
+        watcher.shutdown();
+        assert!(attached.try_recv().is_err());
     }
 }

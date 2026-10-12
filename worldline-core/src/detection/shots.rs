@@ -1,17 +1,16 @@
-//! Decides when a running game is screenshotted: one shot per pending
-//! checkpoint, at the first real save change after the last one. Pure state
-//! plus an injected clock, like `Scheduler`, so every rule is testable
-//! without sleeping.
+//! Decides when a running game is screenshotted: at each real save change,
+//! at most once a `FLOOR`, so the shot a checkpoint gets shows the screen
+//! when its saves were last written. Pure state plus an injected clock, like
+//! `Scheduler`, so every rule is testable without sleeping.
 //!
-//! Per game: Armed → in flight → taken → (checkpoint completes) → Armed. A
-//! checkpoint can also complete while the shot is in flight; the shot is then
-//! settled when it arrives.
+//! Per game, the latest finished shot waits for the checkpoint that contains
+//! its change, and a newer change replaces it. A checkpoint can also complete
+//! while a shot is in flight; the shot is then settled when it arrives.
 
 use chrono::{Duration, NaiveDateTime};
 use std::collections::HashMap;
 
-/// At least this long between two shot attempts of a game, even if it is
-/// re-armed sooner.
+/// At least this long between two shot attempts of a game.
 pub const FLOOR: Duration = Duration::seconds(60);
 
 /// What the watcher knows about a change when it is detected.
@@ -33,27 +32,34 @@ pub struct Attach {
     pub jpeg: Vec<u8>,
 }
 
-#[derive(Default)]
 pub struct Shots {
     games: HashMap<i32, Game>,
     /// The game whose shot the worker is taking: one in flight, globally.
     in_flight: Option<i32>,
+    floor: Duration,
+}
+
+impl Default for Shots {
+    fn default() -> Self {
+        Self::with_floor(FLOOR)
+    }
 }
 
 #[derive(Default)]
 struct Game {
-    phase: Phase,
     last_attempt: Option<NaiveDateTime>,
+    /// The latest finished shot no checkpoint has settled yet.
+    taken: Option<Shot>,
+    /// The shot being taken, requested at `last_attempt`, with the outcome
+    /// of a checkpoint that completed meanwhile.
+    in_flight: Option<Option<Outcome>>,
 }
 
-#[derive(Default)]
-enum Phase {
-    #[default]
-    Armed,
-    /// With the outcome of a checkpoint that completed meanwhile.
-    InFlight(Option<Outcome>),
+struct Shot {
+    /// When its change was reported.
+    requested: NaiveDateTime,
     /// The JPEG, or `None` when the shot failed (it still counts).
-    Taken(Option<Vec<u8>>),
+    jpeg: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy)]
@@ -62,7 +68,25 @@ enum Outcome {
     Discarded,
 }
 
+impl Outcome {
+    fn attach(self, jpeg: Option<Vec<u8>>) -> Option<Attach> {
+        match self {
+            Self::Created(version_id) => jpeg.map(|jpeg| Attach { version_id, jpeg }),
+            Self::Discarded => None,
+        }
+    }
+}
+
 impl Shots {
+    /// `floor`: at least this long between two shot attempts of a game.
+    pub fn with_floor(floor: Duration) -> Self {
+        Self {
+            games: HashMap::new(),
+            in_flight: None,
+            floor,
+        }
+    }
+
     /// A change of `game` was detected. Asks for a shot through `request`
     /// (the worker's `try_send`) when every rule allows one; returns whether
     /// the worker took it. A refused request is dropped, never queued.
@@ -77,50 +101,41 @@ impl Shots {
             return false;
         }
         let state = self.games.entry(game).or_default();
-        let armed = matches!(state.phase, Phase::Armed);
-        let floor_passed = state.last_attempt.is_none_or(|at| now - at >= FLOOR);
-        if !armed || !floor_passed || !request() {
+        let floor_passed = state.last_attempt.is_none_or(|at| now - at >= self.floor);
+        if state.in_flight.is_some() || !floor_passed || !request() {
             return false;
         }
-        state.phase = Phase::InFlight(None);
+        state.in_flight = Some(None);
         state.last_attempt = Some(now);
         self.in_flight = Some(game);
         true
     }
 
     /// The worker finished `game`'s shot (`None`: it failed). Returns the
-    /// shot to attach when its checkpoint was created meanwhile.
+    /// shot to attach when its checkpoint was created meanwhile; otherwise it
+    /// replaces the game's earlier shot, which shows an older screen.
     pub fn finished(&mut self, game: i32, jpeg: Option<Vec<u8>>) -> Option<Attach> {
         if self.in_flight == Some(game) {
             self.in_flight = None;
         }
         // A forgotten game's shot is dropped.
         let state = self.games.get_mut(&game)?;
-        let Phase::InFlight(outcome) = state.phase else {
-            return None;
-        };
-        match outcome {
+        match state.in_flight.take()? {
+            Some(outcome) => outcome.attach(jpeg),
             None => {
-                state.phase = Phase::Taken(jpeg);
+                state.taken = state.last_attempt.map(|requested| Shot { requested, jpeg });
                 None
-            }
-            Some(outcome) => {
-                state.phase = Phase::Armed;
-                match outcome {
-                    Outcome::Created(version_id) => jpeg.map(|jpeg| Attach { version_id, jpeg }),
-                    Outcome::Discarded => None,
-                }
             }
         }
     }
 
     /// A checkpoint of `game` that `started` (before reading the saves)
     /// completed: `created` is the new version, `None` when nothing changed.
-    /// Re-arms the game and returns the shot to attach.
+    /// Returns the shot to attach: the latest one whose change it contains.
     ///
-    /// A checkpoint that started before the shot's change was written (the
-    /// change was reported `debounce` after the write) can't contain it: its
-    /// outcome belongs to the previous cycle and leaves the shot pending.
+    /// A checkpoint that started before a shot's change was written (the
+    /// change was reported `debounce` after the write) can't contain it, and
+    /// leaves that shot for the next one.
     pub fn checkpointed(
         &mut self,
         game: i32,
@@ -129,26 +144,19 @@ impl Shots {
         debounce: Duration,
     ) -> Option<Attach> {
         let state = self.games.get_mut(&game)?;
-        if !matches!(state.phase, Phase::Armed)
-            && state
-                .last_attempt
-                .is_some_and(|requested| started < requested - debounce)
+        let contains = |requested: NaiveDateTime| started >= requested - debounce;
+        let outcome = created.map_or(Outcome::Discarded, Outcome::Created);
+        if let Some(first) = &mut state.in_flight
+            && state.last_attempt.is_some_and(contains)
         {
+            // The first outcome settles the shot; later ones belong to the
+            // next. The earlier shot shows an older screen.
+            first.get_or_insert(outcome);
+            state.taken = None;
             return None;
         }
-        let outcome = created.map_or(Outcome::Discarded, Outcome::Created);
-        match std::mem::take(&mut state.phase) {
-            Phase::Armed => None,
-            // The first outcome settles the shot; later ones belong to the next.
-            Phase::InFlight(first) => {
-                state.phase = Phase::InFlight(first.or(Some(outcome)));
-                None
-            }
-            Phase::Taken(jpeg) => match outcome {
-                Outcome::Created(version_id) => jpeg.map(|jpeg| Attach { version_id, jpeg }),
-                Outcome::Discarded => None,
-            },
-        }
+        let shot = state.taken.take_if(|shot| contains(shot.requested))?;
+        outcome.attach(shot.jpeg)
     }
 
     /// The worker was stopped: a new one may take a request at once. The
@@ -194,19 +202,77 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_inside_the_cooldown_takes_one_shot() {
+    fn a_burst_of_changes_shoots_at_most_once_a_floor() {
         let mut shots = Shots::default();
         let mut requests = 0;
-        for second in 0..20 {
-            shots.changed(1, PLAYING, at(second * 45), || {
+        for second in (0..300).step_by(10) {
+            if shots.changed(1, PLAYING, at(second), || {
                 requests += 1;
                 true
-            });
-            if second == 3 {
+            }) {
                 assert_eq!(shots.finished(1, jpeg(1)), None);
             }
         }
-        assert_eq!(requests, 1);
+        assert_eq!(requests, 5);
+    }
+
+    /// Silksong, with a 15-minute cooldown: saved at the bone bottom, then
+    /// before the miniboss five minutes later; the player keeps the second.
+    #[test]
+    fn a_later_change_replaces_the_held_shot() {
+        let debounce = Duration::seconds(5);
+        let mut shots = Shots::default();
+        assert!(shots.changed(1, PLAYING, at(0), || true));
+        assert_eq!(shots.finished(1, jpeg(1)), None);
+        // Inside the floor: the shot of the first change stays.
+        assert!(!shots.changed(1, PLAYING, at(30), || panic!("floor")));
+        assert!(shots.changed(1, PLAYING, at(300), || true));
+        assert_eq!(shots.finished(1, jpeg(2)), None);
+        // The manual checkpoint, 44 seconds after the second save.
+        assert_eq!(
+            shots.checkpointed(1, Some(19), at(344), debounce),
+            Some(Attach {
+                version_id: 19,
+                jpeg: vec![2]
+            })
+        );
+        // Nothing left for the next one.
+        assert_eq!(shots.checkpointed(1, Some(20), at(400), debounce), None);
+    }
+
+    #[test]
+    fn a_checkpoint_meets_the_shot_of_the_latest_change_it_contains() {
+        let debounce = Duration::seconds(5);
+        let mut shots = Shots::default();
+        assert!(shots.changed(1, PLAYING, at(0), || true));
+        shots.finished(1, jpeg(1));
+        // A newer change (written at ~95) is being shot when a checkpoint that
+        // read the saves at 90 completes: it gets the earlier shot.
+        assert!(shots.changed(1, PLAYING, at(100), || true));
+        assert_eq!(
+            shots.checkpointed(1, Some(10), at(90), debounce),
+            Some(Attach {
+                version_id: 10,
+                jpeg: vec![1]
+            })
+        );
+        assert_eq!(shots.finished(1, jpeg(2)), None);
+        assert_eq!(
+            shots.checkpointed(1, Some(11), at(120), debounce),
+            Some(Attach {
+                version_id: 11,
+                jpeg: vec![2]
+            })
+        );
+
+        // One that contains the newer change waits for its shot, and the
+        // earlier one never reaches a later version.
+        assert!(shots.changed(1, PLAYING, at(200), || true));
+        shots.finished(1, jpeg(3));
+        assert!(shots.changed(1, PLAYING, at(300), || true));
+        assert_eq!(shots.checkpointed(1, None, at(310), debounce), None);
+        assert_eq!(shots.finished(1, jpeg(4)), None, "unchanged: dropped");
+        assert_eq!(shots.checkpointed(1, Some(12), at(320), debounce), None);
     }
 
     #[test]
@@ -222,7 +288,7 @@ mod tests {
             requests += 1;
             true
         });
-        assert_eq!(requests, 0, "game 1 already has its shot");
+        assert_eq!(requests, 0, "game 1 is inside its floor");
         // ...and a refused `try_send` is dropped too: the game stays armed
         // for its next real change, nothing is queued.
         assert!(!shots.changed(2, PLAYING, at(3), || false));
@@ -230,23 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_checkpoint_rearms_and_the_next_change_shoots_again() {
-        let mut shots = Shots::default();
-        assert!(shots.changed(1, PLAYING, at(0), || true));
-        assert_eq!(shots.finished(1, jpeg(1)), None);
-        assert!(!shots.changed(1, PLAYING, at(100), || true));
-        assert_eq!(
-            shots.checkpointed(1, Some(10), late(), Duration::zero()),
-            Some(Attach {
-                version_id: 10,
-                jpeg: vec![1]
-            })
-        );
-        assert!(shots.changed(1, PLAYING, at(200), || true));
-    }
-
-    #[test]
-    fn the_floor_holds_even_when_rearmed_early() {
+    fn the_floor_holds_across_a_checkpoint() {
         let mut shots = Shots::default();
         assert!(shots.changed(1, PLAYING, at(0), || true));
         shots.finished(1, jpeg(1));
@@ -332,12 +382,20 @@ mod tests {
         let mut shots = Shots::default();
         assert!(shots.changed(1, PLAYING, at(0), || true));
         assert_eq!(shots.finished(1, None), None);
-        assert!(!shots.changed(1, PLAYING, at(100), || true), "no retry");
+        assert!(!shots.changed(1, PLAYING, at(30), || true), "the floor");
         assert_eq!(
             shots.checkpointed(1, Some(10), late(), Duration::zero()),
             None
         );
+        // A failed newer shot also drops the earlier one's older screen.
+        assert!(shots.changed(1, PLAYING, at(100), || true));
+        shots.finished(1, jpeg(1));
         assert!(shots.changed(1, PLAYING, at(200), || true));
+        assert_eq!(shots.finished(1, None), None);
+        assert_eq!(
+            shots.checkpointed(1, Some(11), late(), Duration::zero()),
+            None
+        );
     }
 
     #[test]
