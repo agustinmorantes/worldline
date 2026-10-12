@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { Cloud, CloudCheck } from 'lucide-react';
 import type { DeviceKind } from '@/ipc/bindings/DeviceKind';
 import type { FullGame } from '@/ipc/bindings/FullGame';
+import type { Slot } from '@/ipc/bindings/Slot';
 import { DockedGameIcon } from '@/features/library/DockedGameIcon';
 import { useT } from '@/shared/i18n';
 import { spring } from '@/shared/motion/motion';
@@ -18,7 +19,7 @@ import { PlaythroughPicker } from './PlaythroughPicker';
 
 export type GameView = 'sessions' | 'graph';
 
-export function GameHeader({ game, running, sync, inCloud, syncDevice, onSyncChip, played, sessions, view, onView, busy, onSwitchSlot, onCreateSlot }: {
+export function GameHeader({ game, running, sync, inCloud, syncDevice, onSyncChip, played, sessions, view, onView, busy, onSwitchSlot, onCreateSlot, onDeleteSlot }: {
   game: FullGame;
   /** The game is running, so its saves are being recorded. */
   running: boolean;
@@ -33,9 +34,11 @@ export function GameHeader({ game, running, sync, inCloud, syncDevice, onSyncChi
   sessions: number;
   view: GameView;
   onView: (view: GameView) => void;
+  /** Something is writing the save folder right now. */
   busy: boolean;
   onSwitchSlot: (slotId: number) => void;
   onCreateSlot: () => void;
+  onDeleteSlot: (slot: Slot, replacement: number | undefined) => Promise<boolean>;
 }): ReactElement {
   const t = useT();
 
@@ -45,7 +48,7 @@ export function GameHeader({ game, running, sync, inCloud, syncDevice, onSyncChi
       <div className="min-w-0 flex-1">
         <h1 className="truncate font-display text-[34px] font-extrabold leading-[1.15]">{game.title}</h1>
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
-          <PlaythroughPicker game={game} disabled={busy} onSwitch={onSwitchSlot} onCreate={onCreateSlot} />
+          <PlaythroughPicker game={game} disabled={busy} running={running} onSwitch={onSwitchSlot} onCreate={onCreateSlot} onDelete={onDeleteSlot} />
           <AnimatePresence initial={false}>
             {running && (
               <motion.span

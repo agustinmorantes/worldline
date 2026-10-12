@@ -6,6 +6,7 @@ import { useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { GameHeader, type GameView } from '@/features/game/GameHeader';
 import { checkpointDevice, linkedSlot, pendingRemoteVersion, slotDevice, syncChip } from '@/features/game/game-view';
+import { deletePlaythrough } from '@/features/game/delete-playthrough';
 import { LinkedPlaythroughNotice } from '@/features/game/LinkedPlaythroughNotice';
 import { CheckpointPanel } from '@/features/sessions/CheckpointPanel';
 import { nameCheckpoint } from '@/features/sessions/name-checkpoint';
@@ -15,6 +16,7 @@ import { GraphView } from '@/features/graph/GraphView';
 import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
 import { useDevice, useMonitoringSettings, useUnrecorded } from '@/features/sessions/queries';
 import { layoutSessions, navOrder, playedMs, sessionGapMs, splitSessions, totalPlayedMs } from '@/features/sessions/sessions';
+import type { Slot } from '@/ipc/bindings/Slot';
 import type { Version } from '@/ipc/bindings/Version';
 import { applyRemoteVersion, createSlot, dismissLinkedSlots, restoreVersion, switchSlot } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
@@ -171,6 +173,22 @@ export function GameDetail(): ReactElement {
     }
   }
 
+  /** Deleting the current playthrough switches the saves first, so it is one of the writes too. */
+  const deleteSlot = async (slot: Slot, replacement: number | undefined): Promise<boolean> => {
+    setBusy(true);
+    try {
+      const done = await deletePlaythrough(game, slot, replacement, gameRunning);
+      if (done && replacement !== undefined) {
+        await refresh();
+        setOpenForks(new Set());
+        select(undefined);
+      }
+      return done;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   function onSyncChip(): void {
     if (chipState.kind === 'played-too') {
       // Unfold the other device's timeline where it left yours.
@@ -210,11 +228,12 @@ export function GameDetail(): ReactElement {
         sessions={sessions}
         view={search.view ?? 'sessions'}
         onView={(view) => { void navigate({ search: (prev) => ({ ...prev, view: view === 'graph' ? view : undefined }) }); }}
-        busy={busy || gameRunning}
+        busy={busy}
         onSwitchSlot={(slotId) => {
           if (slotId !== game.active_slot?.id) void slotChange(() => switchSlot(game.id, slotId), t.game.failed.switchSlot);
         }}
         onCreateSlot={() => { void slotChange(() => createSlot(game.id, t.game.playthroughName(game.slots.length + 1)), t.game.failed.newSlot); }}
+        onDeleteSlot={deleteSlot}
       />
       {linked !== null && (
         <LinkedPlaythroughNotice

@@ -56,6 +56,7 @@ function previewOf(settings: RetentionSettings): PruningPreview {
 
 /** Games deleted in this session, by `uuid`, for `recover_game` to bring back. */
 const binned = new Map<string, FullGame>();
+const binnedSlots = new Map<string, { gameId: number; slot: FullGame['slots'][number] }>();
 
 function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
   const game = (id: unknown): Fixture['games'][number] => {
@@ -112,6 +113,26 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       if (target === undefined || slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
       slot.name = args.name as string;
       if (target.active_slot?.id === slot.id) target.active_slot.name = slot.name;
+      return structuredClone(target);
+    }
+    case 'delete_slot': {
+      const target = state.games.find((g) => g.slots.some((s) => s.id === args.slotId));
+      const slot = target?.slots.find((s) => s.id === args.slotId);
+      if (target === undefined || slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
+      if (target.slots.length <= 1) throw new Error('A game must keep at least one slot');
+      if (target.active_slot?.id === slot.id) {
+        const replacement = target.slots.find((s) => s.id === args.replacementSlotId && s.id !== slot.id);
+        if (replacement === undefined) throw new Error('Deleting the active slot requires a replacement slot');
+        target.active_slot = replacement;
+        target.active_slot_id = replacement.id;
+      }
+      target.slots = target.slots.filter((s) => s.id !== slot.id);
+      binnedSlots.set(slot.uuid, { gameId: target.id, slot });
+      const now = Date.now();
+      state.deleted = [
+        { kind: 'slot', uuid: slot.uuid, title: slot.name, game_title: target.title, deleted_at: new Date(now).toISOString(), expires_at: new Date(now + 30 * 86_400_000).toISOString() },
+        ...state.deleted ?? [],
+      ];
       return structuredClone(target);
     }
     case 'create_slot': {
@@ -173,7 +194,13 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
       return true;
     }
-    case 'recover_slot':
+    case 'recover_slot': {
+      const back = binnedSlots.get(args.uuid as string);
+      if (back !== undefined) game(back.gameId).slots.push(back.slot);
+      binnedSlots.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
+      return null;
+    }
     case 'purge_deleted':
       binned.delete(args.uuid as string);
       state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
