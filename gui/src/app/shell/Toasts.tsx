@@ -10,6 +10,8 @@ export function Toasts(): ReactElement {
       gap={10}
       offset={20}
       style={{
+        // A modal dialog turns pointer events off around it; a toast's Undo must still take a click.
+        pointerEvents: 'auto',
         '--normal-bg': 'var(--el)',
         '--normal-border': 'transparent',
         '--normal-text': 'var(--tx)',

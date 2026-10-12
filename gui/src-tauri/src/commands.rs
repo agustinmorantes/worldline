@@ -67,6 +67,84 @@ async fn delete_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
+/// Deletes several games everywhere, with one push; a result per game.
+#[tauri::command]
+async fn delete_games(
+    uuids: Vec<uuid::Uuid>,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<Vec<GameResult>, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.delete_games(&uuids))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+/// Recovers several deleted games (the batch undo), with one push.
+#[tauri::command]
+async fn recover_games(
+    uuids: Vec<uuid::Uuid>,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<Vec<GameResult>, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.recover_games(&uuids))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+/// Removes several games from this PC; those not in the cloud are skipped.
+#[tauri::command]
+async fn untrack_games(
+    uuids: Vec<uuid::Uuid>,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<Vec<GameResult>, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.untrack_games(&uuids))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+/// Games and slots deleted everywhere that can still be recovered (ADR 0011).
+#[tauri::command]
+async fn recently_deleted(core: State<'_, Arc<WorldlineCore>>) -> Result<Vec<DeletedItem>, String> {
+    let core = Arc::clone(&core);
+    off_main(move || core.recently_deleted())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn recover_game(
+    uuid: uuid::Uuid,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<bool, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.recover_game(uuid))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+#[tauri::command]
+async fn recover_slot(
+    uuid: uuid::Uuid,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<(), Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.recover_slot(uuid))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+#[tauri::command]
+async fn purge_deleted(
+    uuid: uuid::Uuid,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<(), Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.purge_deleted(uuid))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
 #[tauri::command]
 async fn untrack_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(), String> {
     let core = Arc::clone(&core);
@@ -357,10 +435,12 @@ async fn update_pruning_settings(
         .map_err(|e| e.to_string())
 }
 
-/// Previews `settings`, or the saved settings when none are given.
+/// Previews `settings`, or the saved settings when none are given; with
+/// `untag`, as if that version (a UUID) had no name.
 #[tauri::command]
 async fn preview_pruning(
     settings: Option<worldline_core::maintenance::RetentionSettings>,
+    untag: Option<String>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<worldline_core::core_facade::PruningPreview, String> {
     let core = Arc::clone(&core);
@@ -369,7 +449,8 @@ async fn preview_pruning(
             Some(settings) => settings,
             None => core.get_pruning_settings()?,
         };
-        core.preview_pruning(&settings)
+        let untag = untag.map(|u| uuid::Uuid::parse_str(&u)).transpose()?;
+        core.preview_pruning_untagged(&settings, untag)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -417,6 +498,18 @@ async fn export_game_history(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_deleted_game(
+    uuid: uuid::Uuid,
+    destination: String,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<worldline_core::bundle::HistoryTransferReport, String> {
+    let core = Arc::clone(&core);
+    off_main(move || core.export_deleted_game(uuid, std::path::Path::new(&destination)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -502,7 +595,14 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_unrecorded_changes,
         save_game,
         delete_game,
+        delete_games,
+        recently_deleted,
+        recover_game,
+        recover_games,
+        recover_slot,
+        purge_deleted,
         untrack_game,
+        untrack_games,
         create_slot,
         switch_slot,
         dismiss_linked_slots,
@@ -535,6 +635,7 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         run_pruning,
         inspect_history_bundle,
         export_game_history,
+        export_deleted_game,
         import_game_history,
         get_startup_notice,
         get_recovered_restores,

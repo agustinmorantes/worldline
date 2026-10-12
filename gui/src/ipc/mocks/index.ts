@@ -7,6 +7,7 @@ import { makeGame, makeSlot, makeTrackedDir } from '../builders';
 import type { DeviceKind } from '../bindings/DeviceKind';
 import type { Failure } from '../bindings/Failure';
 import type { FullGame } from '../bindings/FullGame';
+import type { GameResult } from '../bindings/GameResult';
 import type { MonitoringSettings } from '../bindings/MonitoringSettings';
 import type { PruningPreview } from '../bindings/PruningPreview';
 import type { RetentionSettings } from '../bindings/RetentionSettings';
@@ -53,6 +54,10 @@ function previewOf(settings: RetentionSettings): PruningPreview {
     local_gc: { chunks_deleted: 0, bytes_deleted: 0, chunks_condemned: 0 },
   };
 }
+
+/** Games deleted in this session, by `uuid`, for `recover_game` to bring back. */
+const binned = new Map<string, FullGame>();
+const binnedSlots = new Map<string, { gameId: number; slot: FullGame['slots'][number] }>();
 
 function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
   const game = (id: unknown): Fixture['games'][number] => {
@@ -103,6 +108,34 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       target.linked_slot_ids = [];
       return target;
     }
+    case 'rename_slot': {
+      const target = state.games.find((g) => g.slots.some((s) => s.id === args.slotId));
+      const slot = target?.slots.find((s) => s.id === args.slotId);
+      if (target === undefined || slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
+      slot.name = args.name as string;
+      if (target.active_slot?.id === slot.id) target.active_slot.name = slot.name;
+      return structuredClone(target);
+    }
+    case 'delete_slot': {
+      const target = state.games.find((g) => g.slots.some((s) => s.id === args.slotId));
+      const slot = target?.slots.find((s) => s.id === args.slotId);
+      if (target === undefined || slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
+      if (target.slots.length <= 1) throw new Error('A game must keep at least one slot');
+      if (target.active_slot?.id === slot.id) {
+        const replacement = target.slots.find((s) => s.id === args.replacementSlotId && s.id !== slot.id);
+        if (replacement === undefined) throw new Error('Deleting the active slot requires a replacement slot');
+        target.active_slot = replacement;
+        target.active_slot_id = replacement.id;
+      }
+      target.slots = target.slots.filter((s) => s.id !== slot.id);
+      binnedSlots.set(slot.uuid, { gameId: target.id, slot });
+      const now = Date.now();
+      state.deleted = [
+        { kind: 'slot', uuid: slot.uuid, title: slot.name, game_title: target.title, deleted_at: new Date(now).toISOString(), expires_at: new Date(now + 30 * 86_400_000).toISOString() },
+        ...state.deleted ?? [],
+      ];
+      return structuredClone(target);
+    }
     case 'create_slot': {
       const target = game(args.gameId);
       const id = Math.max(0, ...state.games.flatMap((g) => g.slots.map((s) => s.id))) + 1;
@@ -139,9 +172,63 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       target.accent_hue_source = hue === null ? 'auto' : 'user';
       return structuredClone(target);
     }
-    case 'delete_game':
+    case 'delete_game': {
+      const deleted = game(args.id);
+      binned.set(deleted.uuid, deleted);
+      const now = Date.now();
+      state.deleted = [
+        { kind: 'game', uuid: deleted.uuid, title: deleted.title, game_title: deleted.title, deleted_at: new Date(now).toISOString(), expires_at: new Date(now + 30 * 86_400_000).toISOString() },
+        ...state.deleted ?? [],
+      ];
+      state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
+    }
     case 'untrack_game':
       state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
+    case 'delete_games':
+    case 'untrack_games': {
+      // Each game once, like the core; only games already in the cloud leave this PC.
+      const cloud = typeof state.syncReport === 'object' ? state.syncReport.remote_games.map((g) => g.uuid) : [];
+      return [...new Set(args.uuids as string[])].map((uuid): GameResult => {
+        const found = state.games.find((g) => g.uuid === uuid);
+        if (found === undefined) {
+          const gone = cmd === 'delete_games' ? binned.get(uuid) : undefined;
+          return { uuid, game_id: null, title: gone?.title ?? '', outcome: { outcome: gone === undefined ? 'not_found' : 'already_done' } };
+        }
+        const result = { uuid, game_id: found.id, title: found.title };
+        if (cmd === 'untrack_games' && !cloud.includes(uuid)) return { ...result, outcome: { outcome: 'not_in_cloud' } };
+        backendCommand(state, cmd === 'delete_games' ? 'delete_game' : 'untrack_game', { id: found.id });
+        return { ...result, outcome: { outcome: 'done' } };
+      });
+    }
+    case 'recover_games':
+      return [...new Set(args.uuids as string[])].map((uuid): GameResult => {
+        const title = binned.get(uuid)?.title ?? state.games.find((g) => g.uuid === uuid)?.title;
+        if (title === undefined) return { uuid, game_id: null, title: '', outcome: { outcome: 'not_found' } };
+        if (!binned.has(uuid)) return { uuid, game_id: state.games.find((g) => g.uuid === uuid)?.id ?? null, title, outcome: { outcome: 'already_done' } };
+        backendCommand(state, 'recover_game', { uuid });
+        return { uuid, game_id: state.games.find((g) => g.uuid === uuid)?.id ?? null, title, outcome: { outcome: 'done' } };
+      });
+    case 'recently_deleted':
+      return structuredClone(state.deleted ?? []);
+    case 'recover_game': {
+      const back = binned.get(args.uuid as string);
+      if (back !== undefined) state.games.push(back);
+      binned.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
+      return true;
+    }
+    case 'recover_slot': {
+      const back = binnedSlots.get(args.uuid as string);
+      if (back !== undefined) game(back.gameId).slots.push(back.slot);
+      binnedSlots.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
+      return null;
+    }
+    case 'purge_deleted':
+      binned.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
       return null;
     case 'adopt_remote_game': {
       const report = state.syncReport;
@@ -188,6 +275,11 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
         // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
         return Promise.reject(failure);
       }
+      if (state.syncReport === 'newer') {
+        const failure: Failure = { message: 'The sync folder needs a newer version of Worldline', kind: 'update_required' };
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject(failure);
+      }
       if (state.syncReport === undefined) throw new Error('Sync is not configured');
       return state.syncReport;
     case 'get_retired_versions':
@@ -226,8 +318,14 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'update_pruning_settings':
       state.retentionSettings = args.settings as RetentionSettings;
       return state.retentionSettings;
-    case 'preview_pruning':
-      return previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+    case 'preview_pruning': {
+      const preview = previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+      // Without its name, a checkpoint goes in the next cleanup unless it is a root or the latest.
+      const latest = new Set(state.games.map((g) => g.last_version?.uuid));
+      const retires = state.games.flatMap((g) => g.versions).filter((v) => v.uuid === args.untag && v.parent_id !== null && !latest.has(v.uuid));
+      preview.retire_versions.push(...retires.map((v) => v.uuid));
+      return preview;
+    }
     case 'run_pruning': {
       const preview = previewOf(state.retentionSettings);
       return {

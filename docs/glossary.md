@@ -92,7 +92,7 @@ Starting to track, on this device, a game that exists on the remote.
 _Avoid_: download, import (import is for bundles)
 
 **Untrack**:
-Stopping tracking of a game on this device while its history stays on the remote; the inverse of adoption. Deleting a game, by contrast, writes a tombstone that reaches every device.
+Stopping tracking of a game on this device while its history stays on the remote; the inverse of adoption. Deleting a game, by contrast, reaches every device (and can be recovered there during the recovery window).
 _Avoid_: remove (ambiguous with delete)
 
 **Bundle**:
@@ -110,11 +110,22 @@ Marking a version as pruned. Its graph node stays (a tombstone) but its content 
 _Avoid_: deleting a version
 
 **Tombstone**:
-A retired version, or a deleted slot or game, kept only as a record so other devices don't resurrect it.
+A retired version, or a deleted slot or game, kept as a record so other devices don't resurrect it. A deleted slot or game keeps its history during its recovery window.
+
+**Recovery window**:
+The 30 days after a game or slot is deleted during which it can be recovered on any device. Its history stays live until the window ends or it is purged.
+_Avoid_: trash, recycle bin (in code and docs)
+
+**Recover**:
+Bringing a deleted game or slot back inside its recovery window. It changes metadata only, never live saves.
+_Avoid_: restore (that writes live saves), undelete
+
+**Purge**:
+Ending a deleted game's or slot's recovery window early, permanently.
 
 **Garbage collection**:
 Removal of chunks that no live version or device pointer references.
-_Avoid_: purge
+_Avoid_: purge (that ends a recovery window)
 
 ## UI vocabulary
 
@@ -131,3 +142,6 @@ UI copy uses player words; code, docs and this glossary keep the domain terms ab
 | session | play session |
 | remove from this PC | untrack |
 | delete everywhere | delete (tombstone) |
+| recently deleted | games and slots in their recovery window |
+| restore (in Recently deleted) | recover |
+| delete now | purge |

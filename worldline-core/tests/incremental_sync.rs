@@ -89,8 +89,8 @@ fn a_newer_timestamp_does_not_hide_a_missing_sticky_tombstone() {
     let mut writer = stamp_fixture();
     let mut reader = writer.clone();
     let at = chrono::Utc::now();
-    writer.meta.deleted_at = Some(at);
-    writer.slots[0].meta.deleted_at = Some(at);
+    writer.meta.deletion.deleted_at = Some(at);
+    writer.slots[0].meta.deletion.deleted_at = Some(at);
     writer.slots[0].meta.seen_versions = writer.slots[0].versions.iter().map(|v| v.uuid).collect();
     reader.meta.updated_at = at + chrono::Duration::days(1);
     reader.slots[0].meta.updated_at = reader.meta.updated_at;
@@ -102,15 +102,99 @@ fn a_newer_timestamp_does_not_hide_a_missing_sticky_tombstone() {
     )
     .unwrap();
     assert!(!stamp.arrived_in(&reader));
-    reader.meta.deleted_at = Some(at);
+    reader.meta.deletion.deleted_at = Some(at);
     assert!(!stamp.arrived_in(&reader));
-    reader.slots[0].meta.deleted_at = Some(at);
+    reader.slots[0].meta.deletion.deleted_at = Some(at);
     assert!(
         !stamp.arrived_in(&reader),
         "the deletion's observed versions must arrive too"
     );
     reader.slots[0].meta.seen_versions = writer.slots[0].meta.seen_versions.clone();
     assert!(stamp.arrived_in(&reader));
+}
+
+#[test]
+fn newer_metadata_does_not_acknowledge_missing_recovery_or_purge_marks() {
+    let mut writer = stamp_fixture();
+    let at = chrono::Utc::now();
+    writer.meta.deletion.delete(at);
+    writer.slots[0].meta.deletion.delete(at);
+    let mut reader = writer.clone();
+    writer
+        .meta
+        .deletion
+        .recover(at + chrono::Duration::seconds(1));
+    writer.slots[0]
+        .meta
+        .deletion
+        .recover(at + chrono::Duration::seconds(1));
+    reader.meta.updated_at = at + chrono::Duration::days(1);
+    reader.slots[0].meta.updated_at = reader.meta.updated_at;
+    let stamp = worldline_core::sync::GameStamp::of(
+        &writer,
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    assert!(!stamp.arrived_in(&reader));
+    reader.meta.deletion = writer.meta.deletion;
+    assert!(
+        !stamp.arrived_in(&reader),
+        "the slot's recovery must arrive too"
+    );
+    reader.slots[0].meta.deletion = writer.slots[0].meta.deletion;
+    assert!(stamp.arrived_in(&reader));
+
+    writer
+        .meta
+        .deletion
+        .purge(at + chrono::Duration::seconds(2));
+    writer.slots[0]
+        .meta
+        .deletion
+        .purge(at + chrono::Duration::seconds(2));
+    let stamp = worldline_core::sync::GameStamp::of(
+        &writer,
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    assert!(!stamp.arrived_in(&reader));
+    reader.meta.deletion = writer.meta.deletion;
+    assert!(
+        !stamp.arrived_in(&reader),
+        "the slot's purge must arrive too"
+    );
+    reader.slots[0].meta.deletion = writer.slots[0].meta.deletion;
+    assert!(stamp.arrived_in(&reader));
+}
+
+#[test]
+fn cached_healing_does_not_reupload_expired_or_purged_history() {
+    use worldline_core::transfer::{Completeness, Heal, Transfer};
+    let device = Device::new();
+    let full = add_game_in(&device, "Cache retention");
+    let source = Store::open_existing(device.core.repository_root()).unwrap();
+    let record = source.game(uuid_of(&full)).unwrap().unwrap();
+    let held = record.versions().map(|version| version.uuid).collect();
+    for mode in 0..4 {
+        let mut game = record.clone();
+        let old =
+            chrono::Utc::now() - worldline_core::store::RECOVERY_WINDOW - chrono::Duration::days(1);
+        match mode {
+            1 => game.meta.deletion.delete(old),
+            2 => game.slots[0].meta.deletion.delete(old),
+            3 => game.meta.deletion.purge(chrono::Utc::now()),
+            _ => {}
+        }
+        let root = tempfile::tempdir().unwrap();
+        let destination = Store::open(root.path()).unwrap();
+        let mut transfer = Transfer::new(&source, &destination, Completeness::Partial);
+        transfer.heal_held(&game, &held, &Default::default(), Heal::All);
+        assert_eq!(destination.chunk_sizes().unwrap().is_empty(), mode != 0);
+    }
 }
 
 thread_local! { static LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; }

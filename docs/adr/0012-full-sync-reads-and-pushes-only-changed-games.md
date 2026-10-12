@@ -22,6 +22,8 @@ A full sync used to read every game's metadata from the remote (every game, slot
 - **Every day, a sync reads everything.** That sync trusts nothing: when the last check is a day old, the cache is emptied, so every game is read and pushed again. Every sync also reads every game while some device publishes no stamps (an older client) or a `state.json` can't be read; what this device pushed is still known, so its pushes keep skipping unchanged games. A cache that is missing, unreadable, from another cache format, or made for another folder or another store (`created_at`) is replaced by an empty one, and the sync reads everything.
 - **The cache is written only after the remote.** Record files are written before `remote.json`, which comes after the device's state is published. A crash between them leaves an older cache, which only makes the next sync do more. While a sync runs it holds the cache. A sync that fails keeps no in-memory copy, so the next sync starts from the copy on disk.
 
+Recovery and purge marks from [ADR 0011](0011-deleted-games-and-slots-stay-recoverable-for-30-days.md) are advertised independently of metadata timestamps. Pending recovery uploads bypass the unchanged-game shortcut and heal all history until verified; pending recovery pulls continue even while a game waits for adoption. Cache healing excludes expired or purged history.
+
 Pointers, protected versions, grace periods, fail-closed garbage collection, the sync lock and guarded live-save writes are unchanged ([ADR 0002](0002-multi-device-remote-gc-by-condemn-and-sweep.md), [ADR 0008](0008-live-saves-change-atomically-or-not-at-all.md)).
 
 ## Considered options

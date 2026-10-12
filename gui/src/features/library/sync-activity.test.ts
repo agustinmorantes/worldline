@@ -1,30 +1,34 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { isFolderUnreachable, setSyncOutcome, useFolderUnreachable } from './sync-activity';
+import { setSyncOutcome, syncBlock, useSyncBlock } from './sync-activity';
 
 const unreachable = { message: 'Sync folder is unavailable: os error 3', kind: 'sync_folder_unreachable' };
+const newer = { message: 'needs a newer version', kind: 'update_required' };
 
-describe('isFolderUnreachable', () => {
-  it('tells the unreachable kind from other failures', () => {
-    expect(isFolderUnreachable(unreachable)).toBe(true);
-    expect(isFolderUnreachable({ message: 'disk full', kind: null })).toBe(false);
-    expect(isFolderUnreachable('Sync folder is unavailable')).toBe(false);
-    expect(isFolderUnreachable(null)).toBe(false);
+describe('syncBlock', () => {
+  it('tells the blocking kinds from other failures', () => {
+    expect(syncBlock(unreachable)).toBe('unreachable');
+    expect(syncBlock(newer)).toBe('update');
+    expect(syncBlock({ message: 'disk full', kind: null })).toBeNull();
+    expect(syncBlock('Sync folder is unavailable')).toBeNull();
+    expect(syncBlock(null)).toBeNull();
   });
 });
 
-describe('useFolderUnreachable', () => {
-  it('follows the latest sync: set by an unreachable folder, cleared by a success or another failure', () => {
-    const { result } = renderHook(() => useFolderUnreachable());
-    expect(result.current).toBe(false);
+describe('useSyncBlock', () => {
+  it('follows the latest sync: set by a blocking failure, cleared by a success or another failure', () => {
+    const { result } = renderHook(() => useSyncBlock());
+    expect(result.current).toBeNull();
 
     act(() => { setSyncOutcome(unreachable); });
-    expect(result.current).toBe(true);
+    expect(result.current).toBe('unreachable');
+    act(() => { setSyncOutcome(newer); });
+    expect(result.current).toBe('update');
     act(() => { setSyncOutcome(null); });
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
 
     act(() => { setSyncOutcome(unreachable); });
     act(() => { setSyncOutcome({ message: 'disk full', kind: null }); });
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
   });
 });

@@ -3,7 +3,9 @@
 
 use crate::error::ErrorKind;
 use crate::index::Pointer;
-use crate::store::{self, GameRecord, RetirementMarker, Store, VersionMeta, read_json, write_json};
+use crate::store::{
+    self, Deletion, GameRecord, RetirementMarker, Store, VersionMeta, read_json, write_json,
+};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -58,6 +60,11 @@ pub struct GameStamp {
     /// Sticky deletion is independent of which metadata timestamp wins.
     #[serde(default)]
     pub deleted: bool,
+    /// Recovery and purge marks must arrive independently of updated_at.
+    #[serde(default)]
+    pub deletion: Deletion,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slot_deletions: BTreeMap<Uuid, Deletion>,
     /// Deleted slots and the versions their deletion observed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deleted_slots: BTreeMap<Uuid, BTreeSet<Uuid>>,
@@ -99,11 +106,17 @@ impl GameStamp {
         Ok(Self {
             digest: store::format_hash(&hasher.finalize()),
             updated_at: game.meta.updated_at,
-            deleted: game.meta.deleted_at.is_some(),
+            deleted: game.meta.deletion.deleted_at.is_some(),
+            deletion: game.meta.deletion,
+            slot_deletions: game
+                .slots
+                .iter()
+                .map(|slot| (slot.meta.uuid, slot.meta.deletion))
+                .collect(),
             deleted_slots: game
                 .slots
                 .iter()
-                .filter(|slot| slot.meta.deleted_at.is_some())
+                .filter(|slot| slot.meta.deletion.deleted_at.is_some())
                 .map(|slot| {
                     (
                         slot.meta.uuid,
@@ -190,11 +203,18 @@ impl GameStamp {
         }
         let versions: HashMap<Uuid, &VersionMeta> = game.versions().map(|v| (v.uuid, v)).collect();
         game.meta.updated_at >= self.updated_at
-            && (!self.deleted || game.meta.deleted_at.is_some())
+            && Deletion::merge(game.meta.deletion, self.deletion) == game.meta.deletion
+            && self.slot_deletions.iter().all(|(uuid, deletion)| {
+                game.slots.iter().any(|slot| {
+                    slot.meta.uuid == *uuid
+                        && Deletion::merge(slot.meta.deletion, *deletion) == slot.meta.deletion
+                })
+            })
+            && (!self.deleted || game.meta.deletion.deleted_at.is_some())
             && self.deleted_slots.iter().all(|(uuid, seen)| {
                 game.slots.iter().any(|slot| {
                     slot.meta.uuid == *uuid
-                        && slot.meta.deleted_at.is_some()
+                        && slot.meta.deletion.deleted_at.is_some()
                         && seen
                             .iter()
                             .all(|version| slot.meta.seen_versions.contains(version))

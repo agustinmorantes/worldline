@@ -499,7 +499,7 @@ fn newer_store_formats_are_not_moved_aside() {
     let data = tempfile::tempdir().unwrap();
     fs::create_dir_all(data.path().join("repository")).unwrap();
     let metadata = data.path().join("repository/metadata.json");
-    let contents = br#"{"format_version":4,"created_at":"2026-01-01T00:00:00Z","app":"worldline"}"#;
+    let contents = br#"{"format_version":5,"created_at":"2026-01-01T00:00:00Z","app":"worldline"}"#;
     fs::write(&metadata, contents).unwrap();
 
     assert!(WorldlineCore::open(data.path(), OpenOptions::default()).is_err());

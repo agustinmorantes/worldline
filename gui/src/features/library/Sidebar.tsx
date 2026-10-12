@@ -1,12 +1,15 @@
-import { type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, useCallback, useMemo, useState } from 'react';
+import { type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { AnimatePresence, motion, type Transition } from 'motion/react';
-import { LoaderCircle, Plus, SlidersHorizontal } from 'lucide-react';
+import { Check, LoaderCircle, Plus, SlidersHorizontal } from 'lucide-react';
+import { ContextMenu } from 'radix-ui';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import { useAddRun } from '@/features/add-games/add-run';
+import { useBulkMenu } from '@/features/game/BulkMenu';
+import { GameContextMenu, type MenuParts } from '@/features/game/GameMenu';
 import { SecondDeviceHint } from '@/features/onboarding/SecondDeviceHint';
 import { formatRelative, type Messages, useLocale, useT } from '@/shared/i18n';
-import { ease, useMotionReduced } from '@/shared/motion/motion';
+import { ease, spring, useMotionReduced } from '@/shared/motion/motion';
 import { accentVars } from '@/shared/tokens/accent';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
@@ -15,6 +18,7 @@ import { fadeLabel, type Fold, useNarrow } from './fold';
 import { GameIcon } from './GameIcon';
 import { type GameStatus, type GameSyncView, gameStatus, matchesTitle, sortLibrary } from './library';
 import { LibrarySearch } from './LibrarySearch';
+import { type Modifiers, noSelection, select, type Selection, selectionModifiers } from './selection';
 import { useGames, useRunningGames, useSyncReport, useSyncSettings } from './queries';
 import { anchorKey, type NavTarget, useShellNav } from './shell-nav';
 import { SyncCard } from './SyncCard';
@@ -30,7 +34,7 @@ export function Sidebar(): ReactElement {
   const { data: report } = useSyncReport();
   const { data: running } = useRunningGames();
   const reduced = useMotionReduced();
-  const { go } = useShellNav();
+  const { go, current } = useShellNav();
   const collapsed = useNarrow();
   // Labels leave the layout only once the rail has finished narrowing.
   const [folded, setFolded] = useState(collapsed);
@@ -61,6 +65,47 @@ export function Sidebar(): ReactElement {
   const fromDevice = rows.find((r) => r.status.kind === 'new-from' || r.status.kind === 'played-too');
   const shown = rows.filter((r) => matchesTitle(r.game.title, query));
   const empty = query !== '' && shown.length === 0;
+  const inCloud = (game: FullGame): boolean => syncOn && report?.remote_games.some((g) => g.uuid === game.uuid) === true;
+
+  // Games picked with Ctrl or Shift. Going anywhere drops them; so does a search hiding them.
+  const [selection, setSelection] = useState<Selection>(noSelection);
+  const at = current === null ? null : anchorKey(current);
+  const [seenAt, setSeenAt] = useState(at);
+  if (seenAt !== at) {
+    setSeenAt(at);
+    setSelection(noSelection);
+  }
+  const order = shown.map((r) => r.game.id);
+  const kept = selection.ids.filter((id) => order.includes(id));
+  const anchor = selection.anchor !== null && order.includes(selection.anchor) ? selection.anchor : null;
+  if (kept.length !== selection.ids.length || anchor !== selection.anchor) setSelection({ ids: kept, anchor });
+  const picked = shown.filter((r) => kept.includes(r.game.id)).map((r) => r.game);
+  const several = picked.length >= 2;
+  // The games a bulk action just took away, to leave one after another.
+  const [leaving, setLeaving] = useState<string[]>([]);
+  const navRef = useRef<HTMLElement>(null);
+  /** Focus on the first `prefer` row listed, else the row after the first `avoid` one, else the list. */
+  const focusLibrary = useCallback((avoid: string[], prefer: string[]) => {
+    requestAnimationFrame(() => {
+      const nav = navRef.current;
+      if (nav === null) return;
+      const links = [...nav.querySelectorAll<HTMLElement>('a[data-game-uuid]')];
+      const uuid = (link: HTMLElement): string => link.dataset.gameUuid ?? '';
+      const staying = links.filter((link) => !avoid.includes(uuid(link)));
+      const first = links.findIndex((link) => avoid.includes(uuid(link)));
+      const next = first === -1 ? undefined : (links.slice(first).find((link) => !avoid.includes(uuid(link))) ?? staying[staying.length - 1]);
+      (staying.find((link) => prefer.includes(uuid(link))) ?? next ?? nav).focus();
+    });
+  }, []);
+  const open = current?.view === 'game' ? (sorted.find((game) => game.id === current.gameId)?.uuid ?? null) : null;
+  const bulk = useBulkMenu(picked, inCloud, open, (left) => {
+    setLeaving(left);
+    setSelection(noSelection);
+  }, focusLibrary);
+  const pick = (id: number, mods: Modifiers): void => {
+    setSelection((sel) => select(sel, id, order, mods, current?.view === 'game' ? current.gameId : null));
+  };
+  const clearSelection = (): void => { if (selection.ids.length > 0) setSelection(noSelection); };
 
   // Typing while focus is in the sidebar starts a search with that key ("/" opens it empty; "?" is help).
   const typeToSearch = (event: KeyboardEvent): void => {
@@ -98,7 +143,19 @@ export function Sidebar(): ReactElement {
           onSubmit={() => { if (shown.length > 0) go({ view: 'game', gameId: shown[0].game.id }); }}
         />
       </div>
-      <nav aria-label={t.shell.library} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 [scrollbar-width:none]">
+      <nav
+        ref={navRef}
+        // Where focus lands when the rows it was on leave.
+        tabIndex={-1}
+        aria-label={t.shell.library}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 outline-none [scrollbar-width:none]"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && selection.ids.length > 0) {
+            event.preventDefault();
+            setSelection(noSelection);
+          }
+        }}
+      >
         {isLoading ? (
           <div className="flex flex-col gap-1">
             {[0, 1, 2].map((i) => (
@@ -121,10 +178,24 @@ export function Sidebar(): ReactElement {
                     layout="position"
                     initial={reduced ? false : { opacity: 0, x: -12 }}
                     animate={{ opacity: 1, x: 0, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.92, transition: { duration: reduced ? 0 : 0.2, ease } }}
+                    // Games a bulk action took leave one after another, in a bounded stagger.
+                    exit={{
+                      opacity: 0,
+                      scale: 0.92,
+                      transition: reduced ? { duration: 0 } : { ...spring, delay: Math.min(Math.max(leaving.indexOf(game.uuid), 0), 6) * 0.04 },
+                    }}
                     transition={{ duration: 0.56, ease }}
                   >
-                    <GameRow game={game} status={status} fold={fold} />
+                    <GameRow
+                      game={game}
+                      status={status}
+                      inCloud={inCloud(game)}
+                      fold={fold}
+                      picked={kept.includes(game.id)}
+                      bulk={several && kept.includes(game.id) ? bulk.items : undefined}
+                      onPick={(mods) => { pick(game.id, mods); }}
+                      onPlain={clearSelection}
+                    />
                   </motion.li>
                 ))}
               </AnimatePresence>
@@ -166,6 +237,8 @@ export function Sidebar(): ReactElement {
         <NavRow target={{ view: 'settings' }} to="/settings" label={t.shell.settings} icon={<SlidersHorizontal size={16} strokeWidth={2.2} />} fold={fold} />
         <SyncCard fold={fold} />
       </div>
+      {bulk.dialogs}
+      <p role="status" className="sr-only">{several ? t.bulk.selectedHint(picked.length) : ''}</p>
       {fromDevice !== undefined && 'device' in fromDevice.status && (
         <SecondDeviceHint anchor={anchorKey({ view: 'game', gameId: fromDevice.game.id })} device={fromDevice.status.device} />
       )}
@@ -187,61 +260,117 @@ function SelectionPill({ hidden }: { hidden: boolean }): ReactElement {
   );
 }
 
+/**
+ * The rail's links navigate in place. Left to the webview, a click with Ctrl, Shift or Alt, or with
+ * the middle button, opens the route in a new window or downloads it, and it loads nowhere else.
+ */
+const keepInPlace = (event: MouseEvent): void => { event.preventDefault(); };
+
 function useNavClick(target: NavTarget): (event: MouseEvent) => void {
   const { go } = useShellNav();
   return (event) => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-    event.preventDefault();
+    keepInPlace(event);
     go(target);
   };
 }
 
-function GameRow({ game, status, fold }: { game: FullGame; status: GameStatus; fold: Fold }): ReactElement {
-  const { current, pending, flying } = useShellNav();
+function GameRow({ game, status, inCloud, fold, picked, bulk, onPick, onPlain }: {
+  game: FullGame;
+  status: GameStatus;
+  inCloud: boolean;
+  fold: Fold;
+  /** Picked with Ctrl or Shift. */
+  picked: boolean;
+  /** The menu for all the picked games, when this is one of several. */
+  bulk?: (Menu: MenuParts) => ReactElement;
+  onPick: (mods: Modifiers) => void;
+  /** A click without Ctrl or Shift, which drops what was picked. */
+  onPlain: () => void;
+}): ReactElement {
+  const t = useT();
+  const { current, pending, flying, go } = useShellNav();
   const target: NavTarget = { view: 'game', gameId: game.id };
-  const onClick = useNavClick(target);
+  // Runs before the router's own handler, which then leaves the click alone.
+  const onClick = (event: MouseEvent): void => {
+    keepInPlace(event);
+    const mods = selectionModifiers(event);
+    if (mods !== null) {
+      onPick(mods);
+      return;
+    }
+    onPlain();
+    go(target);
+  };
   const selected = current?.view === 'game' && current.gameId === game.id;
   // The open game's icon lives in the header; the row keeps an empty socket for it.
   const away = selected || flying.home === game.id || flying.landing.includes(game.id);
 
   return (
-    <Tooltip side="right" content={game.title}>
-      <Link
-        to="/game/$gameId"
-        params={{ gameId: game.id.toString() }}
-        onClick={onClick}
-        aria-current={selected ? 'page' : undefined}
-        className={`group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 transition-colors duration-200 hover:bg-white/[0.04]`}
-      >
-        {selected && <SelectionPill hidden={pending !== null} />}
-        {/* Left-anchored, the icon holds still as the rail narrows, then glides the last 4 px to centre. */}
-        <span className={cn('relative size-9 shrink-0 transition-[translate] duration-[350ms] ease-ez', fold.collapsed && '-translate-x-1')} data-nav-anchor={anchorKey(target)}>
-          {away ? (
-            <span
-              aria-hidden="true"
-              className="absolute inset-0 rounded-[11px] border-[1.5px] border-dashed transition-colors duration-300"
-              style={{ borderColor: accentVars(game.accent_hue)['--acc-line'] }}
-            />
-          ) : (
-            <GameIcon
-              title={game.title}
-              hue={game.accent_hue}
-              iconPath={game.icon_path ?? undefined}
-              iconRevision={game.icon_sha256 ?? undefined}
-              className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
-            />
-          )}
-          {/* The narrow rail hides the status line, so the icon carries the live dot. */}
-          {status.kind === 'recording' && (
-            <span aria-hidden="true" className={cn('absolute -right-0.5 -top-0.5 size-2 rounded-full bg-live transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
-          )}
-        </span>
-        <span className={cn('relative flex min-w-0 flex-col gap-[3px]', fadeLabel(fold))}>
-          <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
-          <StatusLine status={status} />
-        </span>
-      </Link>
-    </Tooltip>
+    <GameContextMenu game={game} inCloud={inCloud} bulk={bulk}>
+      <Tooltip side="right" content={game.title}>
+        <ContextMenu.Trigger asChild>
+          <Link
+            to="/game/$gameId"
+            params={{ gameId: game.id.toString() }}
+            data-game-uuid={game.uuid}
+            onClick={onClick}
+            onAuxClick={keepInPlace}
+            // Right-clicking a game that isn't one of several picked is about that game alone.
+            onContextMenu={() => { if (bulk === undefined) onPlain(); }}
+            aria-current={selected ? 'page' : undefined}
+            className={cn(
+              'group relative flex h-[52px] items-center gap-3 rounded-[14px] px-2.5 outline outline-1 -outline-offset-1 transition-colors duration-200 hover:bg-white/[0.04]',
+              picked ? 'bg-white/[0.06] outline-white/[0.16]' : 'outline-transparent',
+            )}
+          >
+            {selected && <SelectionPill hidden={pending !== null} />}
+            {/* Left-anchored, the icon holds still as the rail narrows, then glides the last 4 px to centre. */}
+            <span className={cn('relative size-9 shrink-0 transition-[translate] duration-[350ms] ease-ez', fold.collapsed && '-translate-x-1')} data-nav-anchor={anchorKey(target)}>
+              {away ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-0 rounded-[11px] border-[1.5px] border-dashed transition-colors duration-300"
+                  style={{ borderColor: accentVars(game.accent_hue)['--acc-line'] }}
+                />
+              ) : (
+                <GameIcon
+                  title={game.title}
+                  hue={game.accent_hue}
+                  iconPath={game.icon_path ?? undefined}
+                  iconRevision={game.icon_sha256 ?? undefined}
+                  className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
+                />
+              )}
+              {/* A check on the icon, so a pick shows in the narrow rail too. */}
+              <AnimatePresence initial={false}>
+                {picked && (
+                  <motion.span
+                    key="picked"
+                    aria-hidden="true"
+                    className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full bg-tx text-bg"
+                    initial={{ scale: 0.4, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.4, opacity: 0 }}
+                    transition={fold.reduced ? { duration: 0 } : spring}
+                  >
+                    <Check size={11} strokeWidth={3.4} />
+                  </motion.span>
+                )}
+              </AnimatePresence>
+              {/* The narrow rail hides the status line, so the icon carries the live dot. */}
+              {status.kind === 'recording' && (
+                <span aria-hidden="true" className={cn('absolute -right-0.5 -top-0.5 size-2 rounded-full bg-live transition-opacity duration-300 [animation:blink_1.4s_ease-in-out_infinite]', !fold.collapsed && 'opacity-0')} />
+              )}
+            </span>
+            <span className={cn('relative flex min-w-0 flex-col gap-[3px]', fadeLabel(fold))}>
+              <span className={cn('truncate text-sm font-semibold', selected ? 'text-tx' : 'text-tx2')}>{game.title}</span>
+              <StatusLine status={status} />
+            </span>
+            {picked && <span className="sr-only">{`, ${t.bulk.rowSelected}`}</span>}
+          </Link>
+        </ContextMenu.Trigger>
+      </Tooltip>
+    </GameContextMenu>
   );
 }
 
@@ -306,6 +435,7 @@ function NavRow({ target, to, label, icon, className, badge, progress, fold }: {
       <Link
         to={to}
         onClick={onClick}
+        onAuxClick={keepInPlace}
         aria-current={selected ? 'page' : undefined}
         className={cn(
           `group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-semibold transition-colors duration-200 hover:bg-white/[0.05] hover:text-tx`,

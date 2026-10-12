@@ -11,7 +11,7 @@ use crate::install_scanner::InstallScannerItem;
 use crate::maintenance::{self, GcReport, RetentionSettings};
 use crate::models::*;
 use crate::restore;
-use crate::store::{self, GameRecord, VersionReason, read_json, write_json};
+use crate::store::{self, Deletion, GameRecord, VersionReason, read_json, write_json};
 use crate::sync::{
     self, DeviceKind, DeviceMetadata, DeviceState, Divergence, GameStamp, Remote, SyncReport,
     SyncSettings,
@@ -79,6 +79,21 @@ struct SyncState {
     /// like new ones however old they are.
     #[serde(default)]
     recent_pulls: HashMap<Uuid, DateTime<Utc>>,
+    /// Games deleted here that another device recovered, pulled with every
+    /// version healed until all of their history arrived: this device may
+    /// have collected it already (ADR 0011).
+    #[serde(default)]
+    reviving: HashSet<Uuid>,
+    /// Games recovered here, pushed with every version healed until the sync
+    /// folder holds all of their history: another device may have collected
+    /// it already (ADR 0011).
+    #[serde(default)]
+    uploading: HashSet<Uuid>,
+}
+
+/// Whether `remote` brings back a game or slot deleted in `local`.
+fn revived(local: Deletion, remote: Deletion) -> bool {
+    local.is_deleted() && !Deletion::merge(local, remote).is_deleted()
 }
 
 /// One install a scan found: where it is, and where its icon comes from.
@@ -336,6 +351,38 @@ pub struct WorldlineCore {
     moved_old_data: Option<PathBuf>,
     /// Writes to live saves a crash interrupted, rolled back on this start.
     recovered_restores: usize,
+}
+
+/// A game a batch action was asked about, read before anything changes.
+struct Requested {
+    uuid: Uuid,
+    /// Its library entry, when this device lists it.
+    game: Option<FullGame>,
+    /// Its metadata, deleted or not, when the store has it.
+    meta: Option<store::GameMeta>,
+}
+
+impl Requested {
+    fn result(&self, outcome: GameOutcome) -> GameResult {
+        GameResult {
+            uuid: self.uuid,
+            game_id: self.game.as_ref().map(|game| game.game.id),
+            title: match (&self.game, &self.meta) {
+                (Some(game), _) => game.game.title.clone(),
+                (None, Some(meta)) => meta.title.clone(),
+                (None, None) => String::new(),
+            },
+            outcome,
+        }
+    }
+}
+
+/// What a push did.
+struct Pushed {
+    /// Per-game problems, for the log.
+    problems: Vec<String>,
+    /// Games some of whose history didn't reach the sync folder.
+    incomplete: HashSet<Uuid>,
 }
 
 impl WorldlineCore {
@@ -675,11 +722,240 @@ impl WorldlineCore {
         })
     }
 
-    /// Deletes a game everywhere: the tombstone reaches every device.
+    /// Deletes a game everywhere. It stays recoverable for 30 days (ADR 0011).
     pub fn delete_game(&self, id: i32) -> Result<()> {
         self.history().delete_game(id)?;
         self.reload_watcher();
         Ok(())
+    }
+
+    /// Games and slots deleted everywhere that can still be recovered.
+    pub fn recently_deleted(&self) -> Result<Vec<DeletedItem>> {
+        self.history().recently_deleted(Utc::now())
+    }
+
+    /// Brings a deleted game back with its history, without touching live
+    /// saves: the next checkpoint records what is on disk. Returns whether it
+    /// is back in this device's library; a game this device doesn't track
+    /// stays in the cloud list.
+    pub fn recover_game(&self, uuid: Uuid) -> Result<bool> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.upload_all([uuid])?;
+        self.exclusive(|| self.history().recover_game(uuid, Utc::now()))
+    }
+
+    /// Brings a deleted slot back into its game, inactive.
+    pub fn recover_slot(&self, uuid: Uuid) -> Result<()> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((game, _)) = self.history().find_slot(uuid)? {
+            self.upload_all([game.uuid])?;
+        }
+        self.exclusive(|| self.history().recover_slot(uuid, Utc::now()))
+    }
+
+    /// Has the next pushes heal every version of `games` until one completes.
+    /// Recorded before the recovery, so neither a failed push nor a restart
+    /// loses it. Callers hold `sync_lock`.
+    fn upload_all(&self, games: impl IntoIterator<Item = Uuid>) -> Result<()> {
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        let mut changed = false;
+        for game in games {
+            changed |= state.uploading.insert(game);
+        }
+        if changed {
+            write_json(&state_path, &state)?;
+        }
+        Ok(())
+    }
+
+    /// The games `uuids` name, each once, in the order asked, read before
+    /// anything changes.
+    fn requested_games(&self, uuids: &[Uuid]) -> Result<Vec<Requested>> {
+        let mut seen = HashSet::new();
+        let mut requested = Vec::new();
+        for &uuid in uuids.iter().filter(|uuid| seen.insert(**uuid)) {
+            let id = self.history().index.game_id(uuid)?;
+            let game = id.map(|id| self.get_game(id)).transpose()?;
+            let meta = self.history().store.find_game(uuid)?;
+            requested.push(Requested { uuid, game, meta });
+        }
+        Ok(requested)
+    }
+
+    /// After a batch wrote some games' files but couldn't project them into
+    /// the index (`stale`, positions in `results`), rebuilds the index from
+    /// the files as every start does, then runs `again` for each. Callers
+    /// hold the repository lock, so this happens before the watcher resumes.
+    /// What still fails is reported `Applied`: the change is written, and the
+    /// next start projects it.
+    fn reproject(
+        &self,
+        results: &mut [GameResult],
+        stale: Vec<usize>,
+        again: impl Fn(usize) -> Result<()>,
+    ) {
+        if stale.is_empty() {
+            return;
+        }
+        let rebuilt = self.history().reindex();
+        for at in stale {
+            let projected = match &rebuilt {
+                Ok(()) => again(at),
+                Err(error) => Err(anyhow!("{error:#}")),
+            };
+            if let Err(error) = projected {
+                results[at].outcome = GameOutcome::Applied {
+                    warning: (&error).into(),
+                };
+            }
+        }
+    }
+
+    /// Publishes what a batch changed in one push. The change itself is
+    /// already done here, so a failed push is only logged: the next sync
+    /// publishes it. Callers hold `sync_lock`.
+    fn push_batch(&self, remote: Result<Option<Remote>>, games: &HashSet<Uuid>) {
+        if games.is_empty() {
+            return;
+        }
+        let problems = match remote {
+            Ok(Some(remote)) => self
+                .push_locked(&remote, Some(games))
+                .unwrap_or_else(|error| vec![format!("{error:#}")]),
+            Ok(None) => Vec::new(),
+            Err(error) => vec![format!("{error:#}")],
+        };
+        for problem in problems {
+            eprintln!("Sync: {problem}");
+        }
+    }
+
+    /// Deletes several games everywhere at once; each stays recoverable for
+    /// 30 days (ADR 0011). One lock, one watcher reload and one push cover
+    /// them all. Results follow `uuids`, each game once. A game whose
+    /// deletion couldn't be written is `Failed` and left as it was; one
+    /// already deleted is `AlreadyDone` and not written again, so a retry
+    /// keeps its window and saved pointers.
+    pub fn delete_games(&self, uuids: &[Uuid]) -> Result<Vec<GameResult>> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let requested = self.requested_games(uuids)?;
+        let mut deleted = HashSet::new();
+        let results = self.exclusive(|| {
+            let mut stale = Vec::new();
+            let mut results: Vec<GameResult> = requested
+                .iter()
+                .enumerate()
+                .map(|(at, request)| {
+                    let outcome = match (&request.meta, &request.game) {
+                        (Some(meta), _) if meta.deletion.is_deleted() => {
+                            deleted.insert(request.uuid);
+                            // Still listed when an earlier try couldn't
+                            // project its deletion.
+                            if request.game.is_some()
+                                && self.history().refresh_game(request.uuid).is_err()
+                            {
+                                stale.push(at);
+                            }
+                            GameOutcome::AlreadyDone
+                        }
+                        (_, Some(game)) => match self.history().write_deletion(game.game.id) {
+                            Ok(uuid) => {
+                                deleted.insert(uuid);
+                                if self.history().refresh_game(uuid).is_err() {
+                                    stale.push(at);
+                                }
+                                GameOutcome::Done
+                            }
+                            Err(error) => GameOutcome::failed(&error),
+                        },
+                        (_, None) => GameOutcome::NotFound,
+                    };
+                    request.result(outcome)
+                })
+                .collect();
+            self.reproject(&mut results, stale, |_| Ok(()));
+            Ok(results)
+        })?;
+        self.push_batch(self.remote(), &deleted);
+        Ok(results)
+    }
+
+    /// Recovers several deleted games at once, as `recover_game` does each,
+    /// then publishes them in one push. A game that is no longer deleted is
+    /// `AlreadyDone` and not written again, so retrying a batch that partly
+    /// failed only redoes the failures. Only games still in their window
+    /// are queued for the upload heal; a purged or expired one fails.
+    pub fn recover_games(&self, uuids: &[Uuid]) -> Result<Vec<GameResult>> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Utc::now();
+        let requested = self.requested_games(uuids)?;
+        self.upload_all(
+            requested
+                .iter()
+                .filter(|request| {
+                    request
+                        .meta
+                        .as_ref()
+                        .is_some_and(|meta| meta.deletion.is_recoverable(now))
+                })
+                .map(|request| request.uuid),
+        )?;
+        let mut recovered = HashSet::new();
+        let results = self.exclusive(|| {
+            let mut stale = Vec::new();
+            let mut recoveries = HashMap::new();
+            let mut results: Vec<GameResult> = requested
+                .iter()
+                .enumerate()
+                .map(|(at, request)| {
+                    let outcome = match &request.meta {
+                        None => GameOutcome::NotFound,
+                        Some(meta) if !meta.deletion.is_deleted() => GameOutcome::AlreadyDone,
+                        Some(_) => match self.history().write_recovery(request.uuid, now) {
+                            Ok(recovery) => {
+                                recovered.insert(request.uuid);
+                                if self
+                                    .history()
+                                    .project_recovery(request.uuid, &recovery)
+                                    .is_err()
+                                {
+                                    stale.push(at);
+                                }
+                                let outcome = if recovery.here {
+                                    GameOutcome::Done
+                                } else {
+                                    GameOutcome::InCloud
+                                };
+                                recoveries.insert(at, recovery);
+                                outcome
+                            }
+                            Err(error) => GameOutcome::failed(&error),
+                        },
+                    };
+                    request.result(outcome)
+                })
+                .collect();
+            self.reproject(&mut results, stale, |at| {
+                self.history()
+                    .resume_recovery(requested[at].uuid, &recoveries[&at])
+            });
+            // Recovered games come back under new library ids.
+            for result in &mut results {
+                result.game_id = self.history().index.game_id(result.uuid)?;
+            }
+            Ok(results)
+        })?;
+        self.push_batch(self.remote(), &recovered);
+        Ok(results)
+    }
+
+    /// Ends a deleted game's or slot's recovery window now; the next cleanup
+    /// collects its history.
+    pub fn purge_deleted(&self, uuid: Uuid) -> Result<()> {
+        store::with_lock(self.repository_root(), || {
+            self.history().purge_deleted(uuid, Utc::now())
+        })
     }
 
     /// Stops tracking a game on this device only (ADR 0006). Pending changes
@@ -703,20 +979,156 @@ impl WorldlineCore {
                 game.game.title
             );
         }
-        self.exclusive(|| {
-            if !game.tracked_dirs.is_empty() {
-                self.inner
-                    .checkpoint(&self.get_game(id)?, VersionReason::Watcher, false)
-                    .context("Failed to checkpoint the current saves first")?;
-            }
-            self.history().set_untracked(uuid, true)?;
-            self.history().refresh_game(uuid)
-        })?;
+        self.exclusive(|| self.untrack_locked(&game))?;
         // Publishes the captured progress, and pointers without the game.
         for problem in self.push_locked(&remote, None)? {
             eprintln!("Sync: {problem}");
         }
         Ok(())
+    }
+
+    /// Captures `game`'s pending changes and stops tracking it here; the
+    /// caller holds the repository lock and has checked it is in the cloud.
+    fn untrack_locked(&self, game: &FullGame) -> Result<()> {
+        self.write_untrack(game)?;
+        self.history().refresh_game(game_uuid(&game.game)?)
+    }
+
+    /// The part of `untrack_locked` that decides it: the capture, then the
+    /// game recorded as untracked here.
+    fn write_untrack(&self, game: &FullGame) -> Result<()> {
+        let uuid = game_uuid(&game.game)?;
+        if !game.tracked_dirs.is_empty() {
+            self.inner
+                .checkpoint(&self.get_game(game.game.id)?, VersionReason::Watcher, false)
+                .context("Failed to checkpoint the current saves first")?;
+        }
+        self.history().set_untracked(uuid, true)
+    }
+
+    /// Stops tracking several games on this device at once, as
+    /// `untrack_game` does each. Only a game whose copy in the sync folder is
+    /// live (not deleted, purged or expired) can leave; the rest are
+    /// `NotInCloud` and left alone. One lock, one watcher reload and one push
+    /// cover them all; the push checks every version and chunk of the games
+    /// leaving, and one whose history didn't all arrive is tracked again and
+    /// reported `Failed`. Results follow `uuids`, each game once.
+    pub fn untrack_games(&self, uuids: &[Uuid]) -> Result<Vec<GameResult>> {
+        let remote = self.remote()?;
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let requested = self.requested_games(uuids)?;
+        let already = self.history().untracked()?;
+        let mut live = HashSet::new();
+        if let Some(remote) = &remote {
+            for request in requested.iter().filter(|request| request.game.is_some()) {
+                if remote
+                    .store
+                    .find_game(request.uuid)?
+                    .is_some_and(|meta| !meta.deletion.is_deleted())
+                {
+                    live.insert(request.uuid);
+                }
+            }
+        }
+        // A full heal for the games that can leave, queued before any of
+        // them does: if it can't be, all of them stay. Every version and
+        // chunk is checked.
+        self.upload_all(live.iter().copied())?;
+        let mut untracked = HashSet::new();
+        let mut results = self.exclusive(|| {
+            let mut stale = Vec::new();
+            let mut results: Vec<GameResult> = requested
+                .iter()
+                .enumerate()
+                .map(|(at, request)| {
+                    let outcome = match &request.game {
+                        None if request.meta.is_some() && already.contains(&request.uuid) => {
+                            GameOutcome::AlreadyDone
+                        }
+                        None => GameOutcome::NotFound,
+                        Some(_) if !live.contains(&request.uuid) => GameOutcome::NotInCloud,
+                        Some(game) => match self.write_untrack(game) {
+                            Ok(()) => {
+                                untracked.insert(request.uuid);
+                                if self.history().refresh_game(request.uuid).is_err() {
+                                    stale.push(at);
+                                }
+                                GameOutcome::Done
+                            }
+                            Err(error) => GameOutcome::failed(&error),
+                        },
+                    };
+                    request.result(outcome)
+                })
+                .collect();
+            self.reproject(&mut results, stale, |_| Ok(()));
+            Ok(results)
+        })?;
+        let Some(remote) = remote.filter(|_| !untracked.is_empty()) else {
+            return Ok(results);
+        };
+        let incomplete = match self.push_games_locked(&remote, Some(&untracked)) {
+            Ok(pushed) => {
+                for problem in pushed.problems {
+                    eprintln!("Sync: {problem}");
+                }
+                pushed.incomplete
+            }
+            Err(error) => {
+                eprintln!("Sync: {error:#}");
+                untracked
+            }
+        };
+        if incomplete.is_empty() {
+            return Ok(results);
+        }
+        self.exclusive(|| {
+            let mut unlisted = Vec::new();
+            for (at, result) in results
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, result)| incomplete.contains(&result.uuid))
+            {
+                result.outcome = match self.history().set_untracked(result.uuid, false) {
+                    Ok(()) => {
+                        if self.history().refresh_game(result.uuid).is_err() {
+                            unlisted.push(at);
+                        }
+                        GameOutcome::failed(&anyhow!(
+                            "Not all of '{}' reached the sync folder, so it stays on this device",
+                            result.title
+                        ))
+                    }
+                    // Off this device, with its history still here; the
+                    // upload heal stays queued until a push completes it.
+                    Err(error) => GameOutcome::Applied {
+                        warning: (&error.context(format!(
+                            "Not all of '{}' reached the sync folder yet; the next sync uploads the rest",
+                            result.title
+                        )))
+                            .into(),
+                    },
+                };
+            }
+            // Tracked again, but the library couldn't show it: rebuild it,
+            // as every start does.
+            if !unlisted.is_empty() && self.history().reindex().is_err() {
+                for at in unlisted {
+                    results[at].outcome = GameOutcome::failed(&anyhow!(
+                        "Not all of '{}' reached the sync folder, so it stays on this device; your library shows it again by the next start",
+                        results[at].title
+                    ));
+                }
+            }
+            for result in results
+                .iter_mut()
+                .filter(|result| incomplete.contains(&result.uuid))
+            {
+                result.game_id = self.history().index.game_id(result.uuid)?;
+            }
+            Ok(())
+        })?;
+        Ok(results)
     }
 
     /// Under the repository lock, like `keep`, so a keep can't overwrite the name.
@@ -816,19 +1228,28 @@ impl WorldlineCore {
         restoring: Option<&FullVersion>,
         apply: impl FnOnce(&FullGame) -> Result<T>,
     ) -> Result<T> {
-        self.exclusive(|| {
-            let game = self.covering(self.get_game(game_id)?, restoring)?;
-            if sync::game_is_running(game.game.install_dir.as_deref()) == Some(true) {
-                return Err(anyhow::Error::new(ErrorKind::GameRunning)
-                    .context("Nothing was changed. Close the game and try again"));
-            }
-            if !game.tracked_dirs.is_empty() {
-                self.inner
-                    .checkpoint(&game, reason, false)
-                    .context("Failed to checkpoint the current saves first")?;
-            }
-            apply(&self.get_game(game_id)?)
-        })
+        self.exclusive(|| self.guarded_locked(game_id, reason, restoring, apply))
+    }
+
+    /// `guarded`, for a caller already inside `exclusive`.
+    fn guarded_locked<T>(
+        &self,
+        game_id: i32,
+        reason: VersionReason,
+        restoring: Option<&FullVersion>,
+        apply: impl FnOnce(&FullGame) -> Result<T>,
+    ) -> Result<T> {
+        let game = self.covering(self.get_game(game_id)?, restoring)?;
+        if sync::game_is_running(game.game.install_dir.as_deref()) == Some(true) {
+            return Err(anyhow::Error::new(ErrorKind::GameRunning)
+                .context("Nothing was changed. Close the game and try again"));
+        }
+        if !game.tracked_dirs.is_empty() {
+            self.inner
+                .checkpoint(&game, reason, false)
+                .context("Failed to checkpoint the current saves first")?;
+        }
+        apply(&self.get_game(game_id)?)
     }
 
     /// Runs `apply` with capture suppressed and the repository lock held.
@@ -974,45 +1395,54 @@ impl WorldlineCore {
         self.get_game(slot.game_id)
     }
 
-    /// Deletes a slot. The last slot can't be deleted, and deleting the active
-    /// one first switches to `replacement_slot_id`.
+    /// Deletes a slot everywhere; it stays recoverable (ADR 0011). The last
+    /// slot can't be deleted. Deleting the active one first switches to
+    /// `replacement_slot_id` like `switch_slot`, so the running-game gate
+    /// applies and the outgoing progress is checkpointed into the slot being
+    /// deleted; a failed switch deletes nothing. The checks, the switch and
+    /// the delete hold one repository lock, so the active slot can't change
+    /// in between.
     pub fn delete_slot(&self, slot_id: i32, replacement_slot_id: Option<i32>) -> Result<FullGame> {
-        let slot = self.get_slot(slot_id)?.slot;
-        let game = self.get_game(slot.game_id)?;
-        if game.slots.len() <= 1 {
-            bail!(
-                "Cannot delete '{}': a game must keep at least one slot",
-                slot.name
-            );
-        }
-        if game
-            .active_slot
-            .as_ref()
-            .is_some_and(|active| active.id == slot_id)
-        {
-            let replacement = replacement_slot_id.context(
-                "Deleting the active slot requires a replacement slot to switch to first",
-            )?;
-            if replacement == slot_id {
-                bail!("The replacement slot must not be the slot being deleted");
-            }
-            if !game
+        let game_id = self.get_slot(slot_id)?.slot.game_id;
+        self.exclusive(|| {
+            let game = self.get_game(game_id)?;
+            let slot = game
                 .slots
                 .iter()
-                .any(|candidate| candidate.id == replacement)
-            {
-                bail!("Replacement slot {replacement} does not belong to this game");
+                .find(|slot| slot.id == slot_id)
+                .context("The slot was already deleted")?;
+            if game.slots.len() <= 1 {
+                bail!(
+                    "Cannot delete '{}': a game must keep at least one slot",
+                    slot.name
+                );
             }
-            let target = self.slot_target(&game, replacement)?;
-            self.guarded(
-                game.game.id,
-                VersionReason::PreSwitch,
-                target.as_ref(),
-                |game| self.activate_slot(game, replacement),
-            )?;
-        }
-        self.history().delete_slot(slot_id)?;
-        self.get_game(game.game.id)
+            if game
+                .active_slot
+                .as_ref()
+                .is_some_and(|active| active.id == slot_id)
+            {
+                let replacement = replacement_slot_id.context(
+                    "Deleting the active slot requires a replacement slot to switch to first",
+                )?;
+                if replacement == slot_id {
+                    bail!("The replacement slot must not be the slot being deleted");
+                }
+                if !game
+                    .slots
+                    .iter()
+                    .any(|candidate| candidate.id == replacement)
+                {
+                    bail!("Replacement slot {replacement} does not belong to this game");
+                }
+                let target = self.slot_target(&game, replacement)?;
+                self.guarded_locked(game_id, VersionReason::PreSwitch, target.as_ref(), |game| {
+                    self.activate_slot(game, replacement)
+                })?;
+            }
+            self.history().delete_slot(slot_id)?;
+            self.get_game(game_id)
+        })
     }
 
     /// Stores an image (or an executable's icon) the user picked as the
@@ -1110,6 +1540,17 @@ impl WorldlineCore {
     ) -> Result<HistoryTransferReport> {
         store::with_lock(self.repository_root(), || {
             crate::bundle::export(self.history(), game_id, destination)
+        })
+    }
+
+    /// Exports a deleted game still in its recovery window, as a live game.
+    pub fn export_deleted_game(
+        &self,
+        uuid: Uuid,
+        destination: &Path,
+    ) -> Result<HistoryTransferReport> {
+        store::with_lock(self.repository_root(), || {
+            crate::bundle::export_deleted(self.history(), uuid, destination)
         })
     }
 
@@ -1584,7 +2025,7 @@ impl WorldlineCore {
         let size = crate::icon::dimensions(png)?;
         let takes = history.store.game_meta(&slug)?.is_some_and(|meta| {
             meta.uuid == game.uuid
-                && meta.deleted_at.is_none()
+                && !meta.deletion.is_deleted()
                 && store::normalize_display_name(&meta.title) == game.title_normalized
                 && history.takes_auto_icon(&meta, size)
         });
@@ -1755,10 +2196,15 @@ impl WorldlineCore {
     /// only those changed since their last verified push are copied; the
     /// others are only healed (ADR 0012). Returns the per-game problems.
     fn push_locked(&self, remote: &Remote, games: Option<&HashSet<Uuid>>) -> Result<Vec<String>> {
+        Ok(self.push_games_locked(remote, games)?.problems)
+    }
+
+    /// `push_locked`, also naming the games not all of whose history arrived.
+    fn push_games_locked(&self, remote: &Remote, games: Option<&HashSet<Uuid>>) -> Result<Pushed> {
         let mut phases = sync::Phases::start("Sync push");
         let history = self.history();
         let state_path = self.data_dir.join("sync_state.json");
-        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        let state: SyncState = read_json(&state_path).unwrap_or_default();
         let now = Utc::now();
         // A full heal is left to pushes of every game.
         let full = games.is_none()
@@ -1811,36 +2257,51 @@ impl WorldlineCore {
         phases.lap("prepare");
         let mut problems = Vec::new();
         let mut unchanged = 0;
+        let mut uploaded = Vec::new();
+        let mut incomplete = HashSet::new();
         for game in catalog {
+            let uuid = game.meta.uuid;
+            let uploading = state.uploading.contains(&uuid);
+            let heal = if uploading { Heal::All } else { heal };
             let shots = match screenshots {
                 true => history.store.screenshot_versions(&game),
                 false => BTreeSet::new(),
             };
             let stamp = GameStamp::of(&game, &local_markers, &shots, &markers)?;
             if games.is_none()
-                && let Some(held) = cache.unchanged(&stamp, game.meta.uuid)
+                && !uploading
+                && let Some(held) = cache.unchanged(&stamp, uuid)
             {
                 transfer.heal_held(&game, &held, &markers, heal);
-                stamps.insert(game.meta.uuid, stamp);
+                stamps.insert(uuid, stamp);
                 unchanged += 1;
                 continue;
             }
             let missing = transfer.report.not_arrived.len();
-            let pushed = transfer
-                .copy_game(&game, &markers, heal)
-                .and_then(|_| remote.store.game_by_slug(&game.meta.folder_slug));
+            #[cfg(test)]
+            let copied = crate::history::faults::check("push_game", Some(uuid))
+                .and_then(|()| transfer.copy_game(&game, &markers, heal));
+            #[cfg(not(test))]
+            let copied = transfer.copy_game(&game, &markers, heal);
+            let pushed = copied.and_then(|_| remote.store.game_by_slug(&game.meta.folder_slug));
             match pushed {
-                // Read back, so the stamp only ever describes what arrived.
                 Ok(Some(record))
                     if transfer.report.not_arrived.len() == missing
                         && stamp.arrived_in(&record) =>
                 {
                     cache.pushed(device.device_uuid, record, &stamp);
-                    stamps.insert(game.meta.uuid, stamp);
+                    stamps.insert(uuid, stamp);
+                    if uploading {
+                        uploaded.push(uuid);
+                    }
                 }
-                Ok(_) => cache.not_pushed(game.meta.uuid),
+                Ok(_) => {
+                    cache.not_pushed(uuid);
+                    incomplete.insert(uuid);
+                }
                 Err(error) => {
-                    cache.not_pushed(game.meta.uuid);
+                    cache.not_pushed(uuid);
+                    incomplete.insert(uuid);
                     problems.push(format!("{}: {error:#}", game.meta.title));
                 }
             }
@@ -1859,26 +2320,67 @@ impl WorldlineCore {
         // never be published.
         self.put_remote_cache(cache);
         phases.lap("pointers");
-        if full && problems.is_empty() {
-            state.last_full_heal = Some(now);
+        if (full && problems.is_empty()) || !uploaded.is_empty() {
+            let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+            if full && problems.is_empty() {
+                state.last_full_heal = Some(now);
+            }
+            for uuid in &uploaded {
+                state.uploading.remove(uuid);
+            }
             write_json(&state_path, &state)?;
         }
-        Ok(problems)
+        Ok(Pushed {
+            problems,
+            incomplete,
+        })
     }
 
     /// Pulls one game; `markers` are the remote's retirement markers.
+    /// `adopting` is set when the user (or an install) asks for the game
+    /// here; otherwise a game deleted here that another device recovered
+    /// goes to the cloud list rather than back into the library.
     fn pull_game(
         &self,
         remote: &Remote,
         game: &GameRecord,
         markers: &HashMap<Uuid, store::RetirementMarker>,
+        adopting: bool,
     ) -> Result<Vec<Uuid>> {
         let history = self.history();
+        let uuid = game.meta.uuid;
         let screenshots = self.get_monitoring_settings()?.sync_screenshots;
+        let local = history.store.game(uuid)?;
+        let game_revived = local
+            .as_ref()
+            .is_some_and(|local| revived(local.meta.deletion, game.meta.deletion));
+        let slot_revived = local.iter().flat_map(|local| &local.slots).any(|slot| {
+            game.slots
+                .iter()
+                .find(|remote| remote.meta.uuid == slot.meta.uuid)
+                .is_some_and(|remote| revived(slot.meta.deletion, remote.meta.deletion))
+        });
+        // Recorded before copying, so a pull cut short still heals next time.
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        if (game_revived || slot_revived) && state.reviving.insert(uuid) {
+            write_json(&state_path, &state)?;
+        }
+        let reviving = state.reviving.contains(&uuid);
+        let heal = if reviving { Heal::All } else { Heal::None };
+        // A game this device plays, deleted elsewhere: its pointers are kept
+        // before the deletion lands here, so recovering it resumes here.
+        if let Some(local) = &local
+            && !local.meta.deletion.is_deleted()
+            && Deletion::merge(local.meta.deletion, game.meta.deletion).is_deleted()
+            && history.index.game_id(uuid)?.is_some()
+        {
+            history.keep_pointers(uuid)?;
+        }
         let copy = || {
             let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial)
                 .screenshots(screenshots);
-            transfer.copy_game(game, markers, Heal::None)?;
+            transfer.copy_game(game, markers, heal)?;
             Ok(transfer.report)
         };
         let deleted_active = match history.index.game_id(game.meta.uuid)? {
@@ -1888,7 +2390,8 @@ impl WorldlineCore {
                 game.slots
                     .iter()
                     .any(|slot| {
-                        slot.meta.deleted_at.is_some() && active == Some(slot.meta.uuid.to_string())
+                        slot.meta.deletion.is_deleted()
+                            && active == Some(slot.meta.uuid.to_string())
                     })
                     .then_some(id)
             }
@@ -1905,10 +2408,22 @@ impl WorldlineCore {
             None => {
                 let report = store::with_lock(history.root(), copy)?;
                 self.record_pulls(&report.copied_versions)?;
-                history.refresh_game(game.meta.uuid)?;
+                if game_revived && !adopting {
+                    history.set_untracked(uuid, true)?;
+                }
+                history.refresh_game(uuid)?;
                 report
             }
         };
+        if reviving
+            && report.not_arrived.is_empty()
+            && self.icon_arrived(&game.meta.folder_slug)
+            && self.screenshots_arrived(remote, uuid, markers)
+        {
+            let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+            state.reviving.remove(&uuid);
+            write_json(&state_path, &state)?;
+        }
         Ok(report.not_arrived)
     }
 
@@ -1931,7 +2446,7 @@ impl WorldlineCore {
                 .slots
                 .into_iter()
                 .find(|slot| slot.meta.uuid.to_string() == active.uuid)
-                .filter(|slot| slot.meta.deleted_at.is_some())
+                .filter(|slot| slot.meta.deletion.is_deleted())
         });
         history.refresh_game(uuid)?;
         let (Some(deleted), Some(id)) = (deleted, history.index.game_id(uuid)?) else {
@@ -2092,9 +2607,9 @@ impl WorldlineCore {
             .collect())
     }
 
-    /// Pulls `remote_games`. Returns the problems and the games pulled with
-    /// something still missing: versions, the icon their metadata names, or
-    /// screenshots their stamps say were pushed.
+    /// Pulls selected games, including pending recovery heals in the cloud
+    /// list. Returns problems and games whose history or advertised assets
+    /// have not fully arrived.
     fn pull_locked(
         &self,
         remote: &Remote,
@@ -2104,7 +2619,7 @@ impl WorldlineCore {
         let mut problems = Vec::new();
         let mut incomplete = HashSet::new();
         for remote_game in remote_games {
-            match self.pull_game(remote, remote_game, markers) {
+            match self.pull_game(remote, remote_game, markers, false) {
                 Ok(not_arrived) if !not_arrived.is_empty() => problems.push(format!(
                     "{}: {} version(s) have not fully arrived yet",
                     remote_game.meta.title,
@@ -2154,7 +2669,7 @@ impl WorldlineCore {
     fn icon_arrived(&self, slug: &str) -> bool {
         let store = &self.history().store;
         match store.game_meta(slug) {
-            Ok(Some(meta)) if meta.deleted_at.is_none() => {
+            Ok(Some(meta)) if !meta.deletion.is_deleted() => {
                 meta.icon_sha256.as_ref().is_none_or(|wanted| {
                     store
                         .read_icon(slug)
@@ -2225,14 +2740,21 @@ impl WorldlineCore {
         // Only an explicit adoption brings an untracked game back.
         let untracked = self.history().untracked()?;
 
-        // Link games tracked on both devices before sync was enabled.
-        for remote_game in remote_games.iter().filter(|g| g.meta.deleted_at.is_none()) {
-            if untracked.contains(&remote_game.meta.uuid)
-                || self
-                    .history()
-                    .index
-                    .game_id(remote_game.meta.uuid)?
-                    .is_some()
+        // Link games tracked on both devices before sync was enabled. A game
+        // this device already has, even deleted, is pulled instead: one
+        // recovered elsewhere must not be linked into another game.
+        let known: HashSet<Uuid> = self
+            .history()
+            .store
+            .game_metas()?
+            .iter()
+            .map(|g| g.uuid)
+            .collect();
+        for remote_game in remote_games
+            .iter()
+            .filter(|g| !g.meta.deletion.is_deleted())
+        {
+            if untracked.contains(&remote_game.meta.uuid) || known.contains(&remote_game.meta.uuid)
             {
                 continue;
             }
@@ -2251,14 +2773,17 @@ impl WorldlineCore {
         phases.lap("link");
         let local_uuids = self.local_game_uuids(&untracked)?;
         // Games read again, given new markers, or not completely pulled yet.
+        let state: SyncState =
+            read_json(&self.data_dir.join("sync_state.json")).unwrap_or_default();
         let pulls: Vec<&GameRecord> = remote_games
             .iter()
             .filter(|g| {
                 let uuid = g.meta.uuid;
-                local_uuids.contains(&uuid)
-                    && (observed.read.contains(&uuid)
-                        || observed.marked.contains(&uuid)
-                        || !cache.pulled(uuid))
+                state.reviving.contains(&uuid)
+                    || (local_uuids.contains(&uuid)
+                        && (observed.read.contains(&uuid)
+                            || observed.marked.contains(&uuid)
+                            || !cache.pulled(uuid)))
             })
             .collect();
         let (pull_problems, incomplete) = self.pull_locked(&remote, &pulls, &markers);
@@ -2273,7 +2798,7 @@ impl WorldlineCore {
         // must know whether the game is running.
         let unknown: Vec<&GameRecord> = remote_games
             .iter()
-            .filter(|g| g.meta.deleted_at.is_none() && !local_uuids.contains(&g.meta.uuid))
+            .filter(|g| !g.meta.deletion.is_deleted() && !local_uuids.contains(&g.meta.uuid))
             .collect();
         let scan_roots = self.get_scan_roots()?;
         let installs = std::cell::OnceCell::new();
@@ -2452,7 +2977,7 @@ impl WorldlineCore {
         let remote = self.require_remote()?;
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
         let game = remote.store.game(uuid)?.context("Remote game not found")?;
-        if game.meta.deleted_at.is_some() {
+        if game.meta.deletion.is_deleted() {
             bail!("This game was deleted on another device");
         }
         let found = self.match_local_game(&game)?;
@@ -2466,7 +2991,7 @@ impl WorldlineCore {
             }
             LocalMatch::Same(local) => {
                 self.link_game(&local, &game)?;
-                self.pull_game(&remote, &game, &remote.store.markers()?)?;
+                self.pull_game(&remote, &game, &remote.store.markers()?, true)?;
             }
             LocalMatch::Collision(kind, reason) => {
                 return Err(anyhow::Error::new(kind).context(reason));
@@ -2570,7 +3095,7 @@ impl WorldlineCore {
         let remote_slots: Vec<_> = remote_game
             .slots
             .iter()
-            .filter(|slot| slot.meta.deleted_at.is_none() && !slot.versions.is_empty())
+            .filter(|slot| !slot.meta.deletion.is_deleted() && !slot.versions.is_empty())
             .collect();
         let dir_map: HashMap<Uuid, Uuid> = old
             .tracked_dirs
@@ -2688,13 +3213,15 @@ impl WorldlineCore {
             }
             // The old identity may already be on the remote: keep a tombstone
             // so no device resurrects it, and drop its now-duplicated history.
+            // It is purged: its history lives on in the new identity, so
+            // there is nothing to recover.
             history.store.drop_game_history(&old.meta.folder_slug)?;
             let now = Utc::now();
-            history.store.write_game(&store::GameMeta {
-                deleted_at: Some(now),
-                updated_at: now,
-                ..old.meta.clone()
-            })?;
+            let mut meta = old.meta.clone();
+            meta.deletion.delete(now);
+            meta.deletion.purge(now);
+            meta.updated_at = now;
+            history.store.write_game(&meta)?;
             Ok(())
         })?;
         history.index.remove_game(old.meta.uuid)?;
@@ -2732,7 +3259,7 @@ impl WorldlineCore {
         remote_game: &GameRecord,
         markers: &HashMap<Uuid, store::RetirementMarker>,
     ) -> Result<bool> {
-        self.pull_game(remote, remote_game, markers)?;
+        self.pull_game(remote, remote_game, markers, true)?;
         let history = self.history();
         let game_id = history
             .index
@@ -3036,7 +3563,7 @@ impl WorldlineCore {
             games: statuses,
             remote_games: catalog
                 .iter()
-                .filter(|g| g.meta.deleted_at.is_none())
+                .filter(|g| !g.meta.deletion.is_deleted())
                 .map(|g| sync::RemoteGameSummary {
                     uuid: g.meta.uuid,
                     title: g.meta.title.clone(),
@@ -3162,9 +3689,31 @@ impl WorldlineCore {
 
     /// What pruning with `settings` (saved or not) would do. Writes nothing.
     pub fn preview_pruning(&self, settings: &RetentionSettings) -> Result<PruningPreview> {
+        self.preview_pruning_untagged(settings, None)
+    }
+
+    /// `preview_pruning` as if version `untag` had no name, to tell whether
+    /// removing it would let cleanup retire the version. Writes nothing: the
+    /// name is cleared only in the planner's inputs.
+    pub fn preview_pruning_untagged(
+        &self,
+        settings: &RetentionSettings,
+        untag: Option<Uuid>,
+    ) -> Result<PruningPreview> {
         validate_retention(settings)?;
         let remote = self.remote()?;
-        let inputs = self.retention_inputs(remote.as_ref())?;
+        let mut inputs = self.retention_inputs(remote.as_ref())?;
+        if let Some(untag) = untag {
+            for version in inputs
+                .games
+                .iter_mut()
+                .flat_map(|g| g.slots.iter_mut())
+                .flat_map(|s| s.versions.iter_mut())
+                .filter(|v| v.uuid == untag)
+            {
+                version.tag = None;
+            }
+        }
         let plan = maintenance::plan(&maintenance::PlanInput {
             games: &inputs.games,
             retired: &inputs.retired,
@@ -3178,7 +3727,11 @@ impl WorldlineCore {
             live_bytes_before: plan.live_bytes_before,
             live_bytes_after: plan.live_bytes_after,
             budget_unreachable: plan.budget_unreachable,
-            local_gc: maintenance::gc_preview(&self.history().store, &inputs.local_pointed)?,
+            local_gc: maintenance::gc_preview(
+                &self.history().store,
+                &inputs.local_pointed,
+                planning_now(),
+            )?,
         })
     }
 
@@ -3242,7 +3795,7 @@ impl WorldlineCore {
             if let Some(remote) = &remote {
                 maintenance::apply(&remote.store, &plan, now)?;
             }
-            let local_gc = maintenance::gc_local(&history.store, &inputs.local_pointed)?;
+            let local_gc = maintenance::gc_local(&history.store, &inputs.local_pointed, now)?;
             (
                 plan.retire.iter().map(|(_, _, v)| *v).collect::<Vec<_>>(),
                 plan.budget_unreachable,
@@ -3434,13 +3987,14 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
     let old_repository = if metadata.exists() {
         let meta: store::StoreMeta = read_json(&metadata)?;
         if meta.format_version > store::FORMAT_VERSION {
-            bail!(
+            return Err(anyhow::Error::new(ErrorKind::UpdateRequired).context(format!(
                 "Store format {} is unsupported by this build (expected {}); data was left unchanged",
                 meta.format_version,
                 store::FORMAT_VERSION
-            );
+            )));
         }
-        meta.format_version < store::FORMAT_VERSION
+        // Format 3 is upgraded in place when the store opens.
+        meta.format_version < 3
     } else {
         false
     };
@@ -3847,7 +4401,7 @@ mod tests {
                 assert_eq!(meta.icon_sha256, None, "{change}");
             }
             if change == "a deletion" {
-                assert!(meta.deleted_at.is_some(), "not brought back");
+                assert!(meta.deletion.is_deleted(), "not brought back");
                 assert_eq!(history.index.game_id(meta.uuid).unwrap(), None);
             }
         }
@@ -3868,10 +4422,10 @@ mod tests {
     const HASH_A: &str = "3eec57d783c54036166564e195039b20f600a52f";
     const HASH_B: &str = "e2cae122ca4663db2108808148d2793eef2f3e0f";
 
-    #[test]
-    fn startup_requests_share_one_sync_and_due_pruning_reuses_its_push() {
-        use std::cell::Cell;
-        thread_local! { static PUSHES: Cell<usize> = const { Cell::new(0) }; }
+    thread_local! { static PUSHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+    /// Pushes run on this thread so far, counted from the push timing log.
+    fn pushes() -> usize {
         struct PushLog;
         impl log::Log for PushLog {
             fn enabled(&self, _: &log::Metadata<'_>) -> bool {
@@ -3885,8 +4439,17 @@ mod tests {
             fn flush(&self) {}
         }
         static LOGGER: PushLog = PushLog;
-        log::set_logger(&LOGGER).unwrap();
-        log::set_max_level(log::LevelFilter::Info);
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            log::set_logger(&LOGGER).unwrap();
+            log::set_max_level(log::LevelFilter::Info);
+        });
+        PUSHES.get()
+    }
+
+    #[test]
+    fn startup_requests_share_one_sync_and_due_pruning_reuses_its_push() {
+        pushes();
         let (core, _, _data, _saves) = steam_games(&["Shared"], &[]);
         let remote = tempfile::tempdir().unwrap();
         core.update_sync_settings(SyncSettings {
@@ -3917,6 +4480,332 @@ mod tests {
         assert_eq!(PUSHES.get(), 1, "explicit refresh still syncs again");
         core.run_pruning().unwrap();
         assert_eq!(PUSHES.get(), 2, "standalone pruning still publishes first");
+    }
+
+    #[test]
+    fn a_batch_of_games_costs_one_push_where_single_actions_cost_one_each() {
+        let (core, ids, _data, _saves) = steam_games(&["A", "B", "C", "D", "E", "F"], &[]);
+        let remote = tempfile::tempdir().unwrap();
+        core.update_sync_settings(SyncSettings {
+            remote_path: Some(remote.path().to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        core.push_sync().unwrap();
+        let done = |results: Vec<GameResult>| {
+            results
+                .iter()
+                .filter(|result| result.outcome == GameOutcome::Done)
+                .count()
+        };
+
+        let games = uuids(&core, &ids);
+        let before = pushes();
+        assert_eq!(done(core.untrack_games(&games[..3]).unwrap()), 3);
+        assert_eq!(pushes() - before, 1, "removing three games pushes once");
+
+        let before = pushes();
+        let deleted = core.delete_games(&games[3..]).unwrap();
+        assert_eq!(pushes() - before, 1, "deleting three games pushes once");
+        let deleted: Vec<Uuid> = deleted.iter().map(|result| result.uuid).collect();
+        let on_remote = |uuid: &Uuid| {
+            crate::store::Store::open_existing(remote.path())
+                .unwrap()
+                .game(*uuid)
+                .unwrap()
+                .unwrap()
+                .meta
+                .deletion
+                .is_deleted()
+        };
+        assert!(
+            deleted.iter().all(on_remote),
+            "the push published every deletion"
+        );
+
+        let before = pushes();
+        let recovered = core.recover_games(&deleted).unwrap();
+        assert_eq!(pushes() - before, 1, "the batch undo pushes once");
+        // Back in the library under new local ids.
+        let back: Vec<i32> = recovered.iter().filter_map(|r| r.game_id).collect();
+        assert_eq!(done(recovered), 3);
+        assert!(
+            !deleted.iter().any(on_remote),
+            "and published every recovery"
+        );
+
+        // Asking again changes nothing, so nothing is pushed.
+        let before = pushes();
+        let again = core.recover_games(&deleted).unwrap();
+        assert!(again.iter().all(|r| r.outcome == GameOutcome::AlreadyDone));
+        assert_eq!(pushes(), before);
+
+        // One at a time, the same work costs a push per game.
+        let before = pushes();
+        for id in &back {
+            core.untrack_game(*id).unwrap();
+        }
+        assert_eq!(pushes() - before, 3);
+    }
+
+    fn uuids(core: &WorldlineCore, ids: &[i32]) -> Vec<Uuid> {
+        ids.iter()
+            .map(|id| game_uuid(&core.get_game(*id).unwrap().game).unwrap())
+            .collect()
+    }
+
+    /// The games in the library.
+    fn listed(core: &WorldlineCore) -> Vec<Uuid> {
+        core.get_games()
+            .unwrap()
+            .iter()
+            .map(|game| game_uuid(&game.game).unwrap())
+            .collect()
+    }
+
+    /// `steam_games` syncing to a folder and pushed once: the core, its
+    /// games, and its data, saves and sync folders.
+    fn synced_games(titles: &[&str]) -> (WorldlineCore, Vec<Uuid>, [tempfile::TempDir; 3]) {
+        let (core, ids, data, saves) = steam_games(titles, &[]);
+        let remote = tempfile::tempdir().unwrap();
+        core.update_sync_settings(SyncSettings {
+            remote_path: Some(remote.path().to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        core.push_sync().unwrap();
+        let games = uuids(&core, &ids);
+        (core, games, [data, saves, remote])
+    }
+
+    fn deletion(store: &Path, uuid: Uuid) -> Deletion {
+        crate::store::Store::open_existing(store)
+            .unwrap()
+            .find_game(uuid)
+            .unwrap()
+            .unwrap()
+            .deletion
+    }
+
+    #[test]
+    fn a_deletion_written_but_not_projected_is_reported_pushed_and_undone_with_the_rest() {
+        let (core, games, dirs) = synced_games(&["A", "B", "C"]);
+        let [data, _, remote] = &dirs;
+        // B's deletion is written, but projecting it fails, and so does the
+        // rebuild that would repair it.
+        crate::history::faults::fail("refresh_game", Some(games[1]));
+        crate::history::faults::fail("reindex", None);
+        let before = pushes();
+        let results = core.delete_games(&games).unwrap();
+        assert_eq!(pushes() - before, 1, "one push for the batch");
+        assert_eq!(results[0].outcome, GameOutcome::Done);
+        assert!(
+            matches!(&results[1].outcome, GameOutcome::Applied { .. }),
+            "{:?}",
+            results[1]
+        );
+        assert_eq!(results[1].uuid, games[1]);
+        assert_eq!(results[1].title, "B");
+        assert_eq!(results[2].outcome, GameOutcome::Done);
+        let local = core.repository_root();
+        assert!(deletion(local, games[1]).is_deleted(), "written");
+        assert!(
+            deletion(remote.path(), games[1]).is_deleted(),
+            "and pushed with the others"
+        );
+        assert!(
+            core.recently_deleted()
+                .unwrap()
+                .iter()
+                .any(|item| item.uuid == games[1]),
+            "and recoverable"
+        );
+
+        // Retrying doesn't delete it again: the same window, the same saved
+        // pointers. It does project it.
+        crate::history::faults::clear();
+        let window = deletion(local, games[1]);
+        let pointers_path = data.path().join("deleted_pointers.json");
+        let pointers = std::fs::read(&pointers_path).unwrap();
+        let retry = core.delete_games(&games[1..2]).unwrap();
+        assert_eq!(retry[0].outcome, GameOutcome::AlreadyDone);
+        assert_eq!(deletion(local, games[1]), window);
+        assert_eq!(std::fs::read(&pointers_path).unwrap(), pointers);
+        assert!(listed(&core).is_empty());
+
+        // One Undo brings all three back.
+        let undo = core.recover_games(&games).unwrap();
+        assert!(
+            undo.iter()
+                .all(|result| result.outcome == GameOutcome::Done),
+            "{undo:?}"
+        );
+        assert_eq!(listed(&core).len(), 3);
+    }
+
+    #[test]
+    fn a_batch_repairs_the_library_when_projecting_one_game_fails() {
+        let (core, games, _dirs) = synced_games(&["A", "B"]);
+        // Every action writes B, then can't project it; rebuilding the
+        // library from the files puts it right before the watcher resumes.
+        crate::history::faults::fail("refresh_game", Some(games[1]));
+        let done = |results: &[GameResult]| {
+            results
+                .iter()
+                .all(|result| result.outcome == GameOutcome::Done)
+        };
+
+        let deleted = core.delete_games(&games).unwrap();
+        assert!(done(&deleted), "{deleted:?}");
+        assert!(listed(&core).is_empty());
+
+        let recovered = core.recover_games(&games).unwrap();
+        assert!(done(&recovered), "{recovered:?}");
+        assert_eq!(listed(&core).len(), 2);
+        assert_eq!(
+            recovered[1].game_id,
+            core.history().index.game_id(games[1]).unwrap(),
+            "reported under its new library id"
+        );
+        assert!(recovered[1].game_id.is_some());
+
+        let removed = core.untrack_games(&games).unwrap();
+        assert!(done(&removed), "{removed:?}");
+        assert!(listed(&core).is_empty());
+        assert!(core.history().untracked().unwrap().contains(&games[1]));
+        crate::history::faults::clear();
+    }
+
+    #[test]
+    fn a_recovery_the_library_cannot_show_yet_is_applied_and_shows_after_a_rebuild() {
+        let (core, games, _dirs) = synced_games(&["A", "B"]);
+        core.delete_games(&games).unwrap();
+        crate::history::faults::fail("refresh_game", Some(games[1]));
+        crate::history::faults::fail("reindex", None);
+        let results = core.recover_games(&games).unwrap();
+        assert_eq!(results[0].outcome, GameOutcome::Done);
+        assert!(
+            matches!(&results[1].outcome, GameOutcome::Applied { .. }),
+            "{:?}",
+            results[1]
+        );
+        assert!(!deletion(core.repository_root(), games[1]).is_deleted());
+
+        // What every start does.
+        crate::history::faults::clear();
+        core.reindex().unwrap();
+        assert_eq!(listed(&core).len(), 2);
+        let retry = core.recover_games(&games[1..]).unwrap();
+        assert_eq!(retry[0].outcome, GameOutcome::AlreadyDone);
+    }
+
+    #[test]
+    fn a_game_whose_history_does_not_all_reach_the_cloud_stays_on_this_pc() {
+        let (core, games, _dirs) = synced_games(&["A", "B", "C"]);
+        crate::history::faults::fail("push_game", Some(games[1]));
+        let before = pushes();
+        let results = core.untrack_games(&games).unwrap();
+        assert_eq!(pushes() - before, 1, "one push for the batch");
+        assert_eq!(results[0].outcome, GameOutcome::Done);
+        assert!(
+            matches!(&results[1].outcome, GameOutcome::Failed { failure } if failure.message.contains("stays on this device")),
+            "{:?}",
+            results[1]
+        );
+        assert_eq!(results[2].outcome, GameOutcome::Done);
+        assert_eq!(listed(&core), vec![games[1]], "B is tracked again");
+        assert_eq!(
+            results[1].game_id,
+            core.history().index.game_id(games[1]).unwrap()
+        );
+        assert!(!core.history().untracked().unwrap().contains(&games[1]));
+
+        // Once the folder takes it, retrying the batch removes only B.
+        crate::history::faults::clear();
+        let retry = core.untrack_games(&games).unwrap();
+        let outcomes: Vec<_> = retry.into_iter().map(|result| result.outcome).collect();
+        assert_eq!(
+            outcomes,
+            vec![
+                GameOutcome::AlreadyDone,
+                GameOutcome::Done,
+                GameOutcome::AlreadyDone
+            ]
+        );
+        assert!(listed(&core).is_empty());
+    }
+
+    #[test]
+    fn games_stay_on_this_pc_when_their_upload_check_cannot_be_queued() {
+        let (core, games, dirs) = synced_games(&["A", "B"]);
+        // Nothing can be written where the sync state lives.
+        let state = dirs[0].path().join("sync_state.json");
+        let _ = std::fs::remove_file(&state);
+        std::fs::create_dir(&state).unwrap();
+        let before = pushes();
+        assert!(core.untrack_games(&games).is_err());
+        assert_eq!(pushes(), before, "nothing pushed");
+        assert_eq!(listed(&core), games, "both still here");
+        assert!(core.history().untracked().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_game_tracked_again_that_the_library_cannot_show_yet_is_not_reported_removed() {
+        let (core, games, _dirs) = synced_games(&["A", "B"]);
+        // B's history doesn't all arrive, and neither projecting it back
+        // nor rebuilding the library works.
+        crate::history::faults::fail("push_game", Some(games[1]));
+        crate::history::faults::fail("refresh_game", Some(games[1]));
+        crate::history::faults::fail("reindex", None);
+        let results = core.untrack_games(&games).unwrap();
+        assert_eq!(results[0].outcome, GameOutcome::Done);
+        assert!(
+            matches!(&results[1].outcome, GameOutcome::Failed { failure } if failure.message.contains("stays on this device; your library shows it again")),
+            "{:?}",
+            results[1]
+        );
+        assert!(!core.history().untracked().unwrap().contains(&games[1]));
+
+        // What every start does.
+        crate::history::faults::clear();
+        core.reindex().unwrap();
+        assert_eq!(listed(&core), vec![games[1]]);
+    }
+
+    #[test]
+    fn recovering_queues_the_upload_heal_only_for_games_still_recoverable() {
+        let (core, games, dirs) = synced_games(&["A", "B"]);
+        core.delete_games(&games).unwrap();
+        core.purge_deleted(games[0]).unwrap();
+        let unknown = Uuid::new_v4();
+        let results = core.recover_games(&[games[0], games[1], unknown]).unwrap();
+        assert!(
+            matches!(&results[0].outcome, GameOutcome::Failed { failure } if failure.message.contains("can no longer be restored")),
+            "{:?}",
+            results[0]
+        );
+        assert_eq!(results[1].outcome, GameOutcome::Done);
+        assert_eq!(results[2].outcome, GameOutcome::NotFound);
+        let state: SyncState = read_json(&dirs[0].path().join("sync_state.json")).unwrap();
+        assert!(
+            !state.uploading.contains(&games[0]) && !state.uploading.contains(&unknown),
+            "{:?}",
+            state.uploading
+        );
+    }
+
+    #[test]
+    fn retrying_after_the_library_renumbered_acts_on_the_same_game() {
+        let (core, games, _dirs) = synced_games(&["A", "B"]);
+        let b_id = core.history().index.game_id(games[1]).unwrap().unwrap();
+        // B leaves and comes back under a new id; its old id is gone.
+        core.delete_games(&games[1..]).unwrap();
+        core.recover_games(&games[1..]).unwrap();
+        assert_ne!(core.history().index.game_id(games[1]).unwrap(), Some(b_id));
+
+        let results = core.delete_games(&[games[1], Uuid::new_v4()]).unwrap();
+        assert_eq!(results[0].outcome, GameOutcome::Done);
+        assert_eq!(results[0].title, "B");
+        assert_eq!(results[1].outcome, GameOutcome::NotFound);
+        assert_eq!(listed(&core), vec![games[0]], "A was left alone");
     }
 
     /// A core tracking `titles`, none installed, with a manifest naming
@@ -4718,7 +5607,7 @@ mod tests {
                 _ => assert_eq!(meta.icon_sha256, small, "{change}"),
             }
             if change == "a deletion" {
-                assert!(meta.deleted_at.is_some(), "not brought back");
+                assert!(meta.deletion.is_deleted(), "not brought back");
             }
         }
     }

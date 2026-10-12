@@ -165,3 +165,73 @@ impl Default for MonitoringSettings {
         }
     }
 }
+
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum DeletedKind {
+    Game,
+    Slot,
+}
+
+/// What a batch action did with one of the games it was asked about.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct GameResult {
+    /// The game the request named.
+    pub uuid: uuid::Uuid,
+    /// Its library id after the action, when this device lists it.
+    pub game_id: Option<i32>,
+    /// Empty when the game wasn't found.
+    pub title: String,
+    pub outcome: GameOutcome,
+}
+
+impl GameOutcome {
+    pub fn failed(error: &anyhow::Error) -> Self {
+        Self::Failed {
+            failure: error.into(),
+        }
+    }
+}
+
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum GameOutcome {
+    Done,
+    /// Recovered for the other devices; this one doesn't track it, so it
+    /// waits in the cloud list.
+    InCloud,
+    /// Left alone: only a game already in the sync folder can be removed
+    /// from this device.
+    NotInCloud,
+    /// Not in the library (or, to recover, not in the store).
+    NotFound,
+    /// Already so (deleted, removed from this device, or recovered), so
+    /// nothing was written again.
+    AlreadyDone,
+    /// Done, but this device's library is still catching up with it; it
+    /// does so on its own by the next start.
+    Applied {
+        warning: crate::error::Failure,
+    },
+    /// Nothing changed for this game.
+    Failed {
+        failure: crate::error::Failure,
+    },
+}
+
+/// A game or slot deleted everywhere and still in its recovery window (ADR 0011).
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DeletedItem {
+    pub kind: DeletedKind,
+    pub uuid: uuid::Uuid,
+    /// The game's title, or the slot's name.
+    pub title: String,
+    /// The game a slot belongs to; the game's own title for a game.
+    pub game_title: String,
+    pub deleted_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}

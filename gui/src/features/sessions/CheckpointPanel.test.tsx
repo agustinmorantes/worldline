@@ -1,11 +1,15 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeGame, makeVersion } from '@/ipc/builders';
 import { CheckpointPanel, ScreenshotSlot, zoomBox } from './CheckpointPanel';
 
 vi.mock('./queries', () => ({
   useScreenshot: vi.fn(),
+  useCleanupWouldRemove: vi.fn(),
 }));
+
+vi.mock('@/ipc/commands', () => ({ tagVersion: vi.fn(() => Promise.resolve()) }));
+vi.mock('@/shared/errors/report', () => ({ reportError: vi.fn() }));
 
 // Holding is a timed pointer gesture; a click stands for a completed hold.
 vi.mock('@/shared/ui/HoldButton', () => ({
@@ -14,7 +18,10 @@ vi.mock('@/shared/ui/HoldButton', () => ({
   ),
 }));
 
-import { useScreenshot } from './queries';
+import { useCleanupWouldRemove, useScreenshot } from './queries';
+import { tagVersion } from '@/ipc/commands';
+import { nameCheckpoint } from './name-checkpoint';
+import { reportError } from '@/shared/errors/report';
 
 function setup(path: string | null | undefined): void {
   vi.mocked(useScreenshot).mockReturnValue({ data: path } as unknown as ReturnType<typeof useScreenshot>);
@@ -23,6 +30,7 @@ function setup(path: string | null | undefined): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(useCleanupWouldRemove).mockReturnValue({ isPending: true } as ReturnType<typeof useCleanupWouldRemove>);
 });
 
 afterEach(() => {
@@ -144,5 +152,162 @@ describe('zoomBox', () => {
     expect(zoomBox({ width: 1280, height: 720 }, { width: 2560, height: 1440 })).toEqual({
       left: 640, top: 360, width: 1280, height: 720,
     });
+  });
+});
+
+
+describe('CheckpointPanel name', () => {
+  const version = makeVersion({ id: 3, parent_id: 2, tag: 'Before the boss' });
+  type Removal = Partial<ReturnType<typeof useCleanupWouldRemove>>;
+
+  // Wired to the IPC the way the game screen wires it.
+  function setup(tag: string | null, removal: Removal = { isPending: false, isError: false, data: false }): void {
+    vi.mocked(useScreenshot).mockReturnValue({ data: null } as unknown as ReturnType<typeof useScreenshot>);
+    vi.mocked(useCleanupWouldRemove).mockReturnValue(removal as ReturnType<typeof useCleanupWouldRemove>);
+    const shown = { ...version, tag };
+    render(
+      <CheckpointPanel
+        game={makeGame({ id: 1, title: 'Hades' })}
+        version={shown}
+        active={shown}
+        unrecorded={null}
+        onLine
+        device={{ here: true, name: null, kind: 'desktop' }}
+        lessPlayMs={0}
+        aheadDevice={null}
+        busy={false}
+        running={false}
+        onName={(next) => nameCheckpoint(1, shown.id, next, 'Couldn’t name the checkpoint.')}
+        onRewind={vi.fn()}
+        now={new Date(Date.UTC(2026, 9, 10, 12, 0))}
+      />,
+    );
+  }
+
+  const field = (): HTMLElement => screen.getByRole('textbox', { name: 'Name this checkpoint' });
+  const removeButton = (): HTMLElement => screen.getByRole('button', { name: 'Remove name' });
+  const dialog = (): HTMLElement => screen.getByRole('dialog', { name: 'Remove the name “Before the boss”?' });
+
+  // Enter blurs the field, and leaving it saves: a blur stands for both.
+  function clearByHand(): void {
+    fireEvent.change(field(), { target: { value: '  ' } });
+    fireEvent.blur(field());
+  }
+
+  it('offers to remove a name only when there is one', () => {
+    setup(null);
+    expect(screen.queryByRole('button', { name: 'Remove name' })).not.toBeInTheDocument();
+  });
+
+  it('removes the name with an empty tag once confirmed, then focuses the field', async () => {
+    setup('Before the boss');
+    fireEvent.click(removeButton());
+    expect(dialog()).toHaveTextContent('cleanup can remove it like any other checkpoint');
+    expect(tagVersion).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Remove name' }));
+    expect(tagVersion).toHaveBeenCalledExactlyOnceWith(3, '');
+    await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+    expect(field()).toHaveFocus();
+  });
+
+  it('keeps the name and sends nothing when cancelled, focus back on the button', async () => {
+    setup('Before the boss');
+    fireEvent.click(removeButton());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+    expect(removeButton()).toHaveFocus();
+    expect(tagVersion).not.toHaveBeenCalled();
+  });
+
+  it('keeps the name on Escape, focus back on the button', async () => {
+    setup('Before the boss');
+    fireEvent.click(removeButton());
+    fireEvent.keyDown(dialog(), { key: 'Escape' });
+    await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+    expect(removeButton()).toHaveFocus();
+    expect(tagVersion).not.toHaveBeenCalled();
+  });
+
+  it('asks before a name cleared by hand goes, and puts it back when cancelled', async () => {
+    setup('Before the boss');
+    clearByHand();
+    expect(dialog()).toBeInTheDocument();
+    expect(tagVersion).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+    expect(field()).toHaveValue('Before the boss');
+    expect(field()).toHaveFocus();
+    fireEvent.blur(field());
+    expect(tagVersion).not.toHaveBeenCalled();
+  });
+
+  it('removes a name cleared by hand once, when confirmed', async () => {
+    let land = (): void => undefined;
+    vi.mocked(tagVersion).mockReturnValueOnce(new Promise((resolve) => { land = () => { resolve(makeVersion({ id: 3, tag: null })); }; }));
+    setup('Before the boss');
+    clearByHand();
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Remove name' }));
+    await waitFor(() => { expect(field()).toHaveFocus(); });
+    // Leaving the still-empty field while the removal is on its way neither asks nor saves again.
+    fireEvent.blur(field());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    land();
+    await waitFor(() => { expect(tagVersion).toHaveBeenCalledExactlyOnceWith(3, ''); });
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it('shows the name again when removing it fails, and asks again next time', async () => {
+    vi.mocked(tagVersion).mockRejectedValueOnce(new Error('locked'));
+    setup('Before the boss');
+    clearByHand();
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Remove name' }));
+    await waitFor(() => { expect(reportError).toHaveBeenCalledWith('Couldn’t name the checkpoint.', expect.any(Error)); });
+    await waitFor(() => { expect(field()).toHaveValue('Before the boss'); });
+
+    clearByHand();
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Remove name' }));
+    await waitFor(() => { expect(tagVersion).toHaveBeenCalledTimes(2); });
+    expect(tagVersion).toHaveBeenLastCalledWith(3, '');
+  });
+
+  it('saves a new name at once', () => {
+    setup('Before the boss');
+    fireEvent.change(field(), { target: { value: 'After the boss' } });
+    fireEvent.blur(field());
+    expect(tagVersion).toHaveBeenCalledExactlyOnceWith(3, 'After the boss');
+  });
+
+  it('asks about the next cleanup only while the dialog is open, afresh each time, for this checkpoint', async () => {
+    setup('Before the boss');
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 0, false);
+    fireEvent.click(removeButton());
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 1, true);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 1, false);
+    fireEvent.click(removeButton());
+    expect(useCleanupWouldRemove).toHaveBeenLastCalledWith(version.uuid, 2, true);
+  });
+
+  it('warns when the next cleanup would remove it', () => {
+    setup('Before the boss', { isPending: false, isError: false, data: true });
+    fireEvent.click(removeButton());
+    expect(dialog()).toHaveTextContent('The next cleanup will remove it, and it can’t be brought back after that.');
+  });
+
+  it('adds no warning when the next cleanup would keep it', () => {
+    setup('Before the boss', { isPending: false, isError: false, data: false });
+    fireEvent.click(removeButton());
+    expect(dialog()).not.toHaveTextContent('next cleanup');
+  });
+
+  it('says so while it checks, and when it couldn’t check', () => {
+    setup('Before the boss', { isPending: true, isError: false, data: undefined });
+    fireEvent.click(removeButton());
+    expect(dialog()).toHaveTextContent('Checking the next cleanup…');
+    cleanup();
+    setup('Before the boss', { isPending: false, isError: true, data: undefined });
+    fireEvent.click(removeButton());
+    expect(dialog()).toHaveTextContent('Couldn’t check whether the next cleanup would remove it.');
   });
 });
