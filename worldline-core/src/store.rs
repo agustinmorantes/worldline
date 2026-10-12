@@ -2,6 +2,7 @@
 //! and export bundles. Repository files are the source of truth (ADR 0001);
 //! this module owns their layout, their types and every validator.
 
+use crate::error::ErrorKind;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
@@ -12,7 +13,10 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-pub const FORMAT_VERSION: u32 = 3;
+/// 4 added recoverable deletes (ADR 0011); a format 3 store is upgraded in place.
+pub const FORMAT_VERSION: u32 = 4;
+/// How long a deleted game or slot can be recovered (ADR 0011).
+pub const RECOVERY_WINDOW: chrono::Duration = chrono::Duration::days(30);
 const METADATA: &str = "metadata.json";
 /// The game's icon, normalized to 256 px PNG (ADR 0005).
 const ICON: &str = "icon.png";
@@ -38,8 +42,8 @@ pub struct GameMeta {
     pub folder_slug: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    #[serde(default)]
-    pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    pub deletion: Deletion,
     /// Hash of the game folder's `icon.png`; `None` when the game has no icon.
     #[serde(default)]
     pub icon_sha256: Option<String>,
@@ -63,6 +67,75 @@ pub enum IconSource {
     Auto,
     #[default]
     User,
+}
+
+/// Whether a game or slot is deleted, and whether it can still be recovered
+/// (ADR 0011). Each mark merges on its own, so deleting again after a
+/// recovery and recovering again after a delete both work whatever
+/// `updated_at` says, and a purge is final.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Deletion {
+    #[serde(default)]
+    pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purged_at: Option<DateTime<Utc>>,
+}
+
+impl Deletion {
+    /// Purged, or deleted after its last recovery (`None` is earliest).
+    pub fn is_deleted(&self) -> bool {
+        self.purged_at.is_some() || self.deleted_at > self.recovered_at
+    }
+
+    /// When the recovery window of a deleted, unpurged item ends.
+    pub fn expires_at(&self) -> Option<DateTime<Utc>> {
+        self.deleted_at
+            .filter(|_| self.is_deleted() && self.purged_at.is_none())
+            .map(|at| at + RECOVERY_WINDOW)
+    }
+
+    pub fn is_recoverable(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at().is_some_and(|end| now < end)
+    }
+
+    /// Live, or deleted but still recoverable: its history is kept.
+    pub fn keeps_history(&self, now: DateTime<Utc>) -> bool {
+        !self.is_deleted() || self.is_recoverable(now)
+    }
+
+    /// Lands after the last recovery, even one from a device whose clock ran ahead.
+    pub fn delete(&mut self, now: DateTime<Utc>) {
+        self.deleted_at = Some(after(now, self.recovered_at));
+    }
+
+    /// Lands after the last delete, even one from a device whose clock ran ahead.
+    pub fn recover(&mut self, now: DateTime<Utc>) {
+        self.recovered_at = Some(after(now, self.deleted_at));
+    }
+
+    pub fn purge(&mut self, now: DateTime<Utc>) {
+        self.purged_at = Some(now);
+    }
+
+    /// The later delete and the later recovery win; a purge stays (the earliest).
+    pub fn merge(a: Self, b: Self) -> Self {
+        Self {
+            deleted_at: a.deleted_at.max(b.deleted_at),
+            recovered_at: a.recovered_at.max(b.recovered_at),
+            purged_at: match (a.purged_at, b.purged_at) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            },
+        }
+    }
+}
+
+fn after(now: DateTime<Utc>, other: Option<DateTime<Utc>>) -> DateTime<Utc> {
+    other.map_or(now, |other| {
+        now.max(other + chrono::Duration::milliseconds(1))
+    })
 }
 
 /// Who chose the accent hue: computed from the icon, or picked by the user
@@ -106,8 +179,8 @@ pub struct SlotMeta {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    #[serde(default)]
-    pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    pub deletion: Deletion,
     /// Set by a deletion: the versions the deleting device had, so devices
     /// with progress it never saw keep that progress.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -253,11 +326,31 @@ impl Store {
         })
     }
 
-    /// Opens a store that must already carry a current format marker.
+    /// Opens a store that must already carry a format marker. Format 3 is
+    /// upgraded in place before anything else is read or written (its
+    /// metadata is format 4 without the recovery marks); a newer format
+    /// means this app is too old for it.
     pub fn open_existing(root: &Path) -> Result<Self> {
-        let meta: StoreMeta = read_json(&root.join(METADATA))
+        let path = root.join(METADATA);
+        let meta: StoreMeta = read_json(&path)
             .with_context(|| format!("{} is not a history store", root.display()))?;
-        if meta.format_version != FORMAT_VERSION {
+        if meta.format_version == 3 {
+            write_json(
+                &path,
+                &StoreMeta {
+                    format_version: FORMAT_VERSION,
+                    ..meta
+                },
+            )?;
+        } else if meta.format_version > FORMAT_VERSION {
+            return Err(
+                anyhow::Error::new(ErrorKind::UpdateRequired).context(format!(
+                    "store format {} at {} is newer than this app supports ({FORMAT_VERSION})",
+                    meta.format_version,
+                    root.display()
+                )),
+            );
+        } else if meta.format_version != FORMAT_VERSION {
             bail!(
                 "store format {} at {} is unsupported (expected {FORMAT_VERSION})",
                 meta.format_version,
@@ -267,6 +360,12 @@ impl Store {
         Ok(Self {
             root: root.to_path_buf(),
         })
+    }
+
+    /// Fails unless the marker still names this app's format, so nothing is
+    /// collected under rules a newer app has replaced since this store opened.
+    pub fn check_format(&self) -> Result<()> {
+        Self::open_existing(&self.root).map(drop)
     }
 
     pub fn root(&self) -> &Path {
@@ -393,6 +492,17 @@ impl Store {
             .collect()
     }
 
+    /// A game's slot metadata, without versions.
+    pub fn slot_metas(&self, game: &GameMeta) -> Result<Vec<SlotMeta>> {
+        Ok(
+            entity_dirs(&self.game_dir(&game.folder_slug).join("slots"))?
+                .into_iter()
+                .filter_map(|dir| read_entity::<SlotMeta>(&dir))
+                .filter(|slot| slot_loadable(slot, game))
+                .collect(),
+        )
+    }
+
     pub fn game(&self, uuid: Uuid) -> Result<Option<GameRecord>> {
         self.find_game(uuid)?
             .map(|meta| self.load_game(meta))
@@ -462,7 +572,8 @@ impl Store {
         })
     }
 
-    /// Writes game metadata, merging last-writer-wins with a sticky tombstone.
+    /// Writes game metadata, merging last-writer-wins except for the deletion
+    /// marks, which merge on their own.
     pub fn write_game(&self, meta: &GameMeta) -> Result<()> {
         ensure_slug(&meta.folder_slug)?;
         validate_appearance(meta)?;
@@ -470,7 +581,7 @@ impl Store {
         merge_write(&dir, meta, |existing: &GameMeta, incoming| {
             ensure_same(existing.uuid, incoming.uuid)?;
             let mut merged = newer(existing, incoming, |m| m.updated_at).clone();
-            merged.deleted_at = existing.deleted_at.or(incoming.deleted_at);
+            merged.deletion = Deletion::merge(existing.deletion, incoming.deletion);
             merged.folder_slug = existing.folder_slug.clone();
             merged.created_at = existing.created_at;
             Ok(merged)
@@ -551,7 +662,7 @@ impl Store {
         merge_write(&dir, meta, |existing: &SlotMeta, incoming| {
             ensure_same(existing.uuid, incoming.uuid)?;
             let mut merged = newer(existing, incoming, |m| m.updated_at).clone();
-            merged.deleted_at = existing.deleted_at.or(incoming.deleted_at);
+            merged.deletion = Deletion::merge(existing.deletion, incoming.deletion);
             merged.folder_slug = existing.folder_slug.clone();
             merged.seen_versions = existing
                 .seen_versions
@@ -1141,7 +1252,7 @@ mod tests {
             folder_slug: folder_slug('g', "Game", uuid),
             created_at: at,
             updated_at: at,
-            deleted_at: None,
+            deletion: Default::default(),
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: AccentHueSource::Auto,
@@ -1251,7 +1362,7 @@ mod tests {
         let t0 = Utc::now();
         store.write_game(&game(uuid, "Old", t0)).unwrap();
         let mut deleted = game(uuid, "Old", t0 + chrono::Duration::seconds(1));
-        deleted.deleted_at = Some(t0);
+        deleted.deletion.deleted_at = Some(t0);
         store.write_game(&deleted).unwrap();
         // A later rename from a device that never saw the deletion.
         store
@@ -1259,7 +1370,7 @@ mod tests {
             .unwrap();
         let stored = store.find_game(uuid).unwrap().unwrap();
         assert_eq!(stored.title, "Renamed");
-        assert!(stored.deleted_at.is_some());
+        assert!(stored.deletion.is_deleted());
         // An older write never wins.
         store.write_game(&game(uuid, "Stale", t0)).unwrap();
         assert_eq!(store.find_game(uuid).unwrap().unwrap().title, "Renamed");
@@ -1369,6 +1480,83 @@ mod tests {
         )
         .unwrap();
         assert!(Store::open(root.path()).is_err());
+    }
+
+    #[test]
+    fn format_3_is_upgraded_in_place_and_newer_formats_need_an_update() {
+        let root = tempdir().unwrap();
+        let marker = |format_version| StoreMeta {
+            format_version,
+            app: "worldline".into(),
+            created_at: Utc::now(),
+        };
+        let path = root.path().join(METADATA);
+        write_json(&path, &marker(3)).unwrap();
+        // Format 3 metadata (a bare `deleted_at`) reads as a deletion.
+        let uuid = Uuid::new_v4();
+        let slug = folder_slug('g', "Old", uuid);
+        fs::create_dir_all(root.path().join("games").join(&slug)).unwrap();
+        fs::write(
+            root.path().join("games").join(&slug).join(METADATA),
+            format!(
+                r#"{{"uuid":"{uuid}","title":"Old","folder_slug":"{slug}","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","deleted_at":"2026-01-02T00:00:00Z"}}"#
+            ),
+        )
+        .unwrap();
+        let store = Store::open_existing(root.path()).unwrap();
+        let stored: StoreMeta = read_json(&path).unwrap();
+        assert_eq!(stored.format_version, FORMAT_VERSION);
+        assert!(
+            store
+                .find_game(uuid)
+                .unwrap()
+                .unwrap()
+                .deletion
+                .is_deleted()
+        );
+
+        write_json(&path, &marker(FORMAT_VERSION + 1)).unwrap();
+        let error = Store::open_existing(root.path()).err().unwrap();
+        assert_eq!(
+            crate::error::error_kind(&error),
+            Some(ErrorKind::UpdateRequired)
+        );
+        let untouched: StoreMeta = read_json(&path).unwrap();
+        assert_eq!(untouched.format_version, FORMAT_VERSION + 1);
+    }
+
+    #[test]
+    fn deletion_marks_merge_independently_and_a_purge_is_final() {
+        let t0 = Utc::now();
+        let at = |seconds| t0 + chrono::Duration::seconds(seconds);
+        let mut deleted = Deletion::default();
+        deleted.delete(at(0));
+        let mut recovered = deleted;
+        recovered.recover(at(1));
+        assert!(!recovered.is_deleted());
+        // A recovery beats the delete it saw, whichever side it merges from.
+        assert!(!Deletion::merge(deleted, recovered).is_deleted());
+        assert!(!Deletion::merge(recovered, deleted).is_deleted());
+        // A later delete beats the recovery.
+        let mut again = recovered;
+        again.delete(at(2));
+        assert!(Deletion::merge(recovered, again).is_deleted());
+        // A recovery lands after a delete stamped by a clock running ahead.
+        let mut ahead = Deletion::default();
+        ahead.delete(at(60));
+        ahead.recover(at(0));
+        assert!(!ahead.is_deleted());
+        // A purge wins over a concurrent recovery and ends the window.
+        let mut purged = deleted;
+        purged.purge(at(1));
+        let merged = Deletion::merge(recovered, purged);
+        assert!(merged.is_deleted());
+        assert!(!merged.is_recoverable(at(2)));
+        assert!(!merged.keeps_history(at(2)));
+        // The window is 30 days from the delete.
+        assert!(deleted.is_recoverable(at(0) + RECOVERY_WINDOW - chrono::Duration::seconds(1)));
+        assert!(!deleted.is_recoverable(at(0) + RECOVERY_WINDOW));
+        assert!(Deletion::default().keeps_history(at(0)));
     }
 
     #[test]

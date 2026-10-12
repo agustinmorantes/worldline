@@ -1,7 +1,7 @@
 import { QueryClient, QueryCache, MutationCache } from '@tanstack/react-query'
 import { getT, type Messages } from '@/shared/i18n'
 import { reportError } from '@/shared/errors/report'
-import { isFolderUnreachable } from '@/features/library/sync-activity'
+import { syncBlock } from '@/features/library/sync-activity'
 
 /** Per query/mutation: the localized message shown when it fails. */
 interface ErrorMeta extends Record<string, unknown> {
@@ -20,8 +20,8 @@ declare module '@tanstack/react-query' {
 export const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error, query) => {
-      // An unreachable cloud folder is shown in the sync card and settings, not as a toast.
-      if (isFolderUnreachable(error)) return
+      // A blocked sync is shown in the sync card and settings, not as a toast.
+      if (syncBlock(error) !== null) return
       if (query.meta?.quiet === true) return
       const t = getT()
       reportError(query.meta?.errorMessage?.(t) ?? t.errors.loadFailed, error)

@@ -201,6 +201,49 @@ fn a_running_game_refuses_a_rewind_before_touching_anything() {
     );
 }
 
+/// Deleting the current playthrough switches first, so a running game
+/// refuses it before anything changes; another playthrough is only metadata.
+#[test]
+fn a_running_game_refuses_deleting_its_current_playthrough_but_not_another() {
+    let device = Device::new();
+    let root = install(&device.core);
+    device.core.scan_installed().unwrap();
+    let id = add_game(&device.core, TITLE, &saves(root.path()));
+    let main = device.game(id).active_slot.unwrap();
+    let other = device.core.create_slot(id, "Other").unwrap();
+    let other = other.active_slot.unwrap();
+    device.core.switch_slot(id, main.id).unwrap();
+    let spare = device.core.create_slot(id, "Spare").unwrap();
+    let spare = spare.slots.into_iter().find(|s| s.name == "Spare").unwrap();
+    device.core.switch_slot(id, main.id).unwrap();
+    fs::write(saves(root.path()).join("x"), "unrecorded").unwrap();
+    let versions = device.game(id).versions.len();
+
+    let mut game = run_from(&install_dir(root.path()));
+    let error = device
+        .core
+        .delete_slot(main.id, Some(other.id))
+        .unwrap_err();
+    let renamed = device.core.rename_slot(spare.id, "Renamed");
+    let deleted = device.core.delete_slot(spare.id, None);
+    game.kill().unwrap();
+    game.wait().unwrap();
+
+    assert_eq!(error_kind(&error), Some(ErrorKind::GameRunning));
+    renamed.unwrap();
+    deleted.unwrap();
+    let after = device.game(id);
+    assert_eq!(after.active_slot.unwrap().id, main.id);
+    let mut names: Vec<_> = after.slots.iter().map(|s| s.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["Default Slot", "Other"], "only the other one went");
+    assert_eq!(after.versions.len(), versions, "no checkpoint first");
+    assert_eq!(
+        fs::read_to_string(saves(root.path()).join("x")).unwrap(),
+        "unrecorded"
+    );
+}
+
 /// Sync applies another device's progress by itself only when it sees the
 /// game closed, which needs the install dir.
 #[test]

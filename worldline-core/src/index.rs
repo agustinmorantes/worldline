@@ -68,7 +68,7 @@ impl Index {
         conn.transaction(|conn| {
             let live: Vec<String> = catalog
                 .iter()
-                .filter(|game| game.meta.deleted_at.is_none())
+                .filter(|game| !game.meta.deletion.is_deleted())
                 .map(|game| game.meta.uuid.to_string())
                 .collect();
             diesel::delete(games::table.filter(games::uuid.ne_all(&live))).execute(conn)?;
@@ -413,7 +413,7 @@ fn upsert_game(
     store: &Store,
 ) -> Result<()> {
     let meta = &record.meta;
-    if meta.deleted_at.is_some() {
+    if meta.deletion.is_deleted() {
         diesel::delete(games::table.filter(games::uuid.eq(meta.uuid.to_string()))).execute(conn)?;
         return Ok(());
     }
@@ -512,7 +512,7 @@ fn upsert_game(
     for slot in record
         .slots
         .iter()
-        .filter(|slot| slot.meta.deleted_at.is_none())
+        .filter(|slot| !slot.meta.deletion.is_deleted())
     {
         let meta = &slot.meta;
         let slot_id: i32 = diesel::insert_into(slots::table)

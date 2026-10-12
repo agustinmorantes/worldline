@@ -2,6 +2,7 @@
 // `dialogs.rs`. The only place in the GUI that calls `invoke`. Argument names
 // are camelCase; Tauri maps them to the Rust parameter names.
 import { invoke } from '@tauri-apps/api/core';
+import type { DeletedItem } from './bindings/DeletedItem';
 import type { DeviceKind } from './bindings/DeviceKind';
 import type { DeviceMetadata } from './bindings/DeviceMetadata';
 import type { FullGame } from './bindings/FullGame';
@@ -35,7 +36,7 @@ export const getUnrecordedChanges = (): Promise<[number, string][]> => invoke('g
  */
 export const saveGame = (game: GameForm, dirs: string[] | null, allowLarge = false): Promise<Game> =>
   invoke('save_game', { game, dirs, allowLarge });
-/** Deletes the game everywhere: a tombstone in the remote (ADR 0006). */
+/** Deletes the game everywhere; it stays in Recently deleted for 30 days (ADR 0006, 0011). */
 export const deleteGame = (id: number): Promise<void> => invoke('delete_game', { id });
 /** Stops tracking the game on this device; its history stays in the remote (ADR 0006). */
 export const untrackGame = (id: number): Promise<void> => invoke('untrack_game', { id });
@@ -56,6 +57,16 @@ export const renameSlot = (slotId: number, name: string): Promise<FullGame> =>
   invoke('rename_slot', { slotId, name });
 export const deleteSlot = (slotId: number, replacementSlotId?: number): Promise<FullGame> =>
   invoke('delete_slot', { slotId, replacementSlotId });
+
+// Recently deleted (ADR 0011). Items go by `uuid`: a deleted game or slot has no index id.
+
+export const recentlyDeleted = (): Promise<DeletedItem[]> => invoke('recently_deleted');
+/** Fails with `name_taken` or `folder_taken` when the game no longer fits this library. */
+/** Whether the game is back in this PC's library; one this PC doesn't track stays in the cloud. */
+export const recoverGame = (uuid: string): Promise<boolean> => invoke('recover_game', { uuid });
+export const recoverSlot = (uuid: string): Promise<void> => invoke('recover_slot', { uuid });
+/** Deletes a game or slot for good, ahead of its window. */
+export const purgeDeleted = (uuid: string): Promise<void> => invoke('purge_deleted', { uuid });
 
 export const restoreVersion = (id: number): Promise<void> => invoke('restore_version', { id });
 /** An empty tag clears it. */
@@ -85,9 +96,12 @@ export const screenshotsSupported = (): Promise<boolean> => invoke('screenshots_
 export const getPruningSettings = (): Promise<RetentionSettings> => invoke('get_pruning_settings');
 export const updatePruningSettings = (settings: RetentionSettings): Promise<RetentionSettings> =>
   invoke('update_pruning_settings', { settings });
-/** Previews `settings` before they are saved, or the saved settings when omitted. */
-export const previewPruning = (settings?: RetentionSettings): Promise<PruningPreview> =>
-  invoke('preview_pruning', { settings: settings ?? null });
+/**
+ * Previews `settings` before they are saved, or the saved settings when omitted; with `untag`
+ * (a version UUID), as if that checkpoint had no name.
+ */
+export const previewPruning = (settings?: RetentionSettings, untag?: string): Promise<PruningPreview> =>
+  invoke('preview_pruning', { settings: settings ?? null, untag: untag ?? null });
 export const runPruning = (): Promise<PruningRunReport> => invoke('run_pruning');
 export const getRetiredVersions = (): Promise<string[]> => invoke('get_retired_versions');
 
@@ -153,6 +167,8 @@ export const inspectHistoryBundle = (bundlePath: string): Promise<HistoryBundleS
   invoke('inspect_history_bundle', { bundlePath });
 export const exportGameHistory = (gameId: number, destination: string): Promise<HistoryTransferReport> =>
   invoke('export_game_history', { gameId, destination });
+export const exportDeletedGame = (uuid: string, destination: string): Promise<HistoryTransferReport> =>
+  invoke('export_deleted_game', { uuid, destination });
 /** `mappings`: tracked directory UUID → destination path. */
 export const importGameHistory = (
   bundlePath: string,

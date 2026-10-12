@@ -1,6 +1,7 @@
 // Backend states for the mocked `vite dev` UI (`bun run dev:mock`) and the Playwright
 // screen tests. Pick one with `localStorage['worldline-mock-fixture']`.
 import { makeGame, makeSlot, makeTrackedDir, makeVersion, naive } from '../builders';
+import type { DeletedItem } from '../bindings/DeletedItem';
 import type { DeviceMetadata } from '../bindings/DeviceMetadata';
 import type { Divergence } from '../bindings/Divergence';
 import type { FullGame } from '../bindings/FullGame';
@@ -17,8 +18,11 @@ export interface Fixture {
   syncSettings: SyncSettings;
   monitoringSettings: MonitoringSettings;
   retentionSettings: RetentionSettings;
-  /** What `refresh_sync` answers; `'pending'` never settles, `'unreachable'` can't find the folder. Unset: sync fails. */
-  syncReport?: SyncReport | 'pending' | 'unreachable';
+  /** What `refresh_sync` answers; `'pending'` never settles, `'unreachable'` can't find the folder, `'newer'` finds it
+   *  written by a newer Worldline. Unset: sync fails. */
+  syncReport?: SyncReport | 'pending' | 'unreachable' | 'newer';
+  /** What `recently_deleted` answers; `delete_game` adds to it. */
+  deleted?: DeletedItem[];
   /** What `scan_installed` answers; `'pending'` never settles. */
   scan?: InstallScannerItem[] | 'pending';
   scanRoots?: string[];
@@ -331,6 +335,18 @@ function settings(): Fixture {
   };
 }
 
+/** Settings with a game and a playthrough in Recently deleted. */
+function recentlyDeleted(): Fixture {
+  const days = (n: number): string => new Date(Date.now() + n * 86_400_000).toISOString();
+  return {
+    ...settings(),
+    deleted: [
+      { kind: 'game', uuid: '00000000-0000-4000-8000-0000000de001', title: 'Celeste', game_title: 'Celeste', deleted_at: days(-2), expires_at: days(28) },
+      { kind: 'slot', uuid: '00000000-0000-4000-8000-0000000de002', title: 'Speedrun', game_title: 'Elden Ring', deleted_at: days(-29.5), expires_at: days(0.5) },
+    ],
+  };
+}
+
 /** The README's screenshots: the Sessions view's Hades in a library where each game has its own color. */
 function showcase(): Fixture {
   const state = sessions();
@@ -363,6 +379,8 @@ export const FIXTURES = {
   syncing: () => ({ ...library(), syncReport: 'pending' as const }),
   /** Sync on, but the cloud folder is gone (an unplugged drive, the cloud app closed). */
   offline: () => ({ ...settings(), syncReport: 'unreachable' as const }),
+  /** Sync on, but another device wrote the cloud folder with a newer Worldline. */
+  newer: () => ({ ...settings(), syncReport: 'newer' as const }),
   /** Sync on, but syncing fails for another reason than the folder. */
   syncFailed: () => ({ ...library(), syncReport: undefined }),
   sessions: () => sessions(),
@@ -381,6 +399,7 @@ export const FIXTURES = {
   }))),
   addGamesDone,
   settings,
+  recentlyDeleted,
   /** Sync off; the folder picker answers with a cloud folder. */
   cloudOff: () => ({ ...base([eldenRing(), hollowKnight()]), pickedFolder: 'D:/Dropbox/Worldline' }),
   /** Elden Ring is running; its row and header say "Recording". */

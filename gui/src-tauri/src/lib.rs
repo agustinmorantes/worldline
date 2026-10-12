@@ -73,13 +73,29 @@ fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.asset_protocol_scope()
         .allow_directory(data_dir.join("repository"), true)?;
     app.manage(DataDir(data_dir.clone()));
-    let (core, notifications) = WorldlineCore::open_shared(
+    let opened = WorldlineCore::open_shared(
         &data_dir,
         OpenOptions {
             watch: true,
             debounce_seconds: None,
         },
-    )?;
+    );
+    // A newer Worldline wrote this data; it stays untouched (ADR 0011). Say so instead of
+    // failing to start without a word.
+    #[cfg(windows)]
+    if let Err(error) = &opened {
+        if worldline_core::error::error_kind(error)
+            == Some(worldline_core::error::ErrorKind::UpdateRequired)
+        {
+            use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+            app.dialog()
+                .message("A newer version of Worldline saved your data on this PC. Update Worldline to open it. Your saves are safe and haven't been changed.")
+                .title("Update Worldline")
+                .kind(MessageDialogKind::Info)
+                .blocking_show();
+        }
+    }
+    let (core, notifications) = opened?;
     app.manage(core);
     tray::setup_tray(app)?;
     overlay::setup(app);

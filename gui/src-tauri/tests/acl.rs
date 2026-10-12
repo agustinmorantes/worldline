@@ -13,6 +13,11 @@ fn delete_game(id: i32) -> String {
     format!("deleted {id}")
 }
 
+#[tauri::command]
+fn purge_deleted(uuid: String) -> String {
+    format!("purged {uuid}")
+}
+
 fn invoke(window: &WebviewWindow<MockRuntime>, cmd: &str, body: Value) -> Result<Value, Value> {
     get_ipc_response(
         window,
@@ -47,7 +52,7 @@ fn window(app: &tauri::App<MockRuntime>, label: &str) -> WebviewWindow<MockRunti
 #[test]
 fn only_main_may_call_app_commands() {
     let app = mock_builder()
-        .invoke_handler(tauri::generate_handler![delete_game])
+        .invoke_handler(tauri::generate_handler![delete_game, purge_deleted])
         .build(tauri::generate_context!())
         .unwrap();
     let main = window(&app, "main");
@@ -59,6 +64,10 @@ fn only_main_may_call_app_commands() {
         invoke(&main, "delete_game", json!({ "id": 7 })),
         Ok(json!("deleted 7"))
     );
+    // Ending a recovery window is the one delete that can't be undone.
+    let purge = json!({ "uuid": "u" });
+    assert!(invoke(&overlay, "purge_deleted", purge.clone()).is_err());
+    assert_eq!(invoke(&main, "purge_deleted", purge), Ok(json!("purged u")));
 
     // The overlay's handshake: it listens for popups and says when it's ready and done.
     let listen = json!({ "event": "overlay-show", "target": { "kind": "Any" }, "handler": 2 });

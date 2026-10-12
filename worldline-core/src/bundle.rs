@@ -6,7 +6,7 @@
 use crate::error::ErrorKind;
 use crate::history::{History, overlapping_paths, same_path};
 use crate::store::{
-    GameRecord, Store, normalize_display_name, read_json, rename_no_replace, write_json,
+    Deletion, GameRecord, Store, normalize_display_name, read_json, rename_no_replace, write_json,
 };
 use crate::transfer::{Completeness, Heal, Transfer};
 use anyhow::{Context, Result, bail};
@@ -145,7 +145,7 @@ fn load(root: &Path, path: &Path) -> Result<Bundle> {
     }
     let game = games.remove(0);
     crate::transfer::ensure_acyclic(&game)?;
-    if game.meta.deleted_at.is_some() {
+    if game.meta.deletion.is_deleted() {
         bail!("The bundled game is deleted");
     }
     let retired = store.markers()?;
@@ -212,6 +212,34 @@ pub fn export(
     game_id: i32,
     destination: &Path,
 ) -> Result<HistoryTransferReport> {
+    let game = history.index.get_game(game_id)?;
+    export_record(history, history.record(&game.game)?, destination)
+}
+
+/// Exports a game still in its recovery window (ADR 0011) as a live game, so
+/// importing the bundle brings it back. The caller holds the repository lock.
+pub fn export_deleted(
+    history: &History,
+    uuid: Uuid,
+    destination: &Path,
+) -> Result<HistoryTransferReport> {
+    let mut record = history
+        .store
+        .game(uuid)?
+        .context("This game is no longer in your library")?;
+    let now = Utc::now();
+    if !record.meta.deletion.is_recoverable(now) {
+        bail!("'{}' can no longer be exported", record.meta.title);
+    }
+    record.meta.deletion.recover(now);
+    export_record(history, record, destination)
+}
+
+fn export_record(
+    history: &History,
+    mut record: GameRecord,
+    destination: &Path,
+) -> Result<HistoryTransferReport> {
     if destination.exists() {
         bail!(
             "{} already exists; choose a new file name",
@@ -223,9 +251,7 @@ pub fn export(
         .context("The destination has no parent folder")?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("Failed to create {}", parent.display()))?;
-    let game = history.index.get_game(game_id)?;
-    let mut record = history.record(&game.game)?;
-    record.slots.retain(|slot| slot.meta.deleted_at.is_none());
+    record.slots.retain(|slot| !slot.meta.deletion.is_deleted());
     let markers = history.store.markers()?;
 
     let staging = parent.join(format!(".export-{}", crate::store::short_random()));
@@ -284,10 +310,12 @@ pub fn import(
             other.game.title
         )));
     }
+    // A bundle exported from the recovery window brings the game back,
+    // unless it was deleted again or purged here since.
     if history
         .store
         .find_game(game.meta.uuid)?
-        .is_some_and(|meta| meta.deleted_at.is_some())
+        .is_some_and(|meta| Deletion::merge(meta.deletion, game.meta.deletion).is_deleted())
     {
         bail!(
             "'{}' was deleted on this device and can't be imported again",

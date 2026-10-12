@@ -6,16 +6,19 @@ import { useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { GameHeader, type GameView } from '@/features/game/GameHeader';
 import { checkpointDevice, linkedSlot, pendingRemoteVersion, slotDevice, syncChip } from '@/features/game/game-view';
+import { deletePlaythrough } from '@/features/game/delete-playthrough';
 import { LinkedPlaythroughNotice } from '@/features/game/LinkedPlaythroughNotice';
 import { CheckpointPanel } from '@/features/sessions/CheckpointPanel';
+import { nameCheckpoint } from '@/features/sessions/name-checkpoint';
 import { SessionList } from '@/features/sessions/SessionList';
 import { EmptyGame, formatDuration, GhostRow, TimelineFrame } from '@/features/sessions/Timeline';
 import { GraphView } from '@/features/graph/GraphView';
 import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
 import { useDevice, useMonitoringSettings, useUnrecorded } from '@/features/sessions/queries';
 import { layoutSessions, navOrder, playedMs, sessionGapMs, splitSessions, totalPlayedMs } from '@/features/sessions/sessions';
+import type { Slot } from '@/ipc/bindings/Slot';
 import type { Version } from '@/ipc/bindings/Version';
-import { applyRemoteVersion, createSlot, dismissLinkedSlots, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
+import { applyRemoteVersion, createSlot, dismissLinkedSlots, restoreVersion, switchSlot } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import type { Failure } from '@/ipc/bindings/Failure';
 import { reportError } from '@/shared/errors/report';
@@ -141,15 +144,6 @@ export function GameDetail(): ReactElement {
     }
   }
 
-  async function name(version: Version, tag: string): Promise<void> {
-    try {
-      await tagVersion(version.id, tag);
-      await queryClient.invalidateQueries({ queryKey: ['game', id] });
-    } catch (err) {
-      reportError(t.game.failed.name, err);
-    }
-  }
-
   async function continueHere(): Promise<void> {
     if (pendingId === null) return;
     setBusy(true);
@@ -178,6 +172,22 @@ export function GameDetail(): ReactElement {
       setBusy(false);
     }
   }
+
+  /** Deleting the current playthrough switches the saves first, so it is one of the writes too. */
+  const deleteSlot = async (slot: Slot, replacement: number | undefined): Promise<boolean> => {
+    setBusy(true);
+    try {
+      const done = await deletePlaythrough(game, slot, replacement, gameRunning);
+      if (done && replacement !== undefined) {
+        await refresh();
+        setOpenForks(new Set());
+        select(undefined);
+      }
+      return done;
+    } finally {
+      setBusy(false);
+    }
+  };
 
   function onSyncChip(): void {
     if (chipState.kind === 'played-too') {
@@ -218,11 +228,12 @@ export function GameDetail(): ReactElement {
         sessions={sessions}
         view={search.view ?? 'sessions'}
         onView={(view) => { void navigate({ search: (prev) => ({ ...prev, view: view === 'graph' ? view : undefined }) }); }}
-        busy={busy || gameRunning}
+        busy={busy}
         onSwitchSlot={(slotId) => {
           if (slotId !== game.active_slot?.id) void slotChange(() => switchSlot(game.id, slotId), t.game.failed.switchSlot);
         }}
         onCreateSlot={() => { void slotChange(() => createSlot(game.id, t.game.playthroughName(game.slots.length + 1)), t.game.failed.newSlot); }}
+        onDeleteSlot={deleteSlot}
       />
       {linked !== null && (
         <LinkedPlaythroughNotice
@@ -314,7 +325,7 @@ export function GameDetail(): ReactElement {
               aheadDevice={pendingId === null ? null : (status?.remote_device ?? t.sessions.anotherDevice)}
               busy={busy}
               running={gameRunning}
-              onName={(tag) => { void name(selected, tag); }}
+              onName={(tag) => nameCheckpoint(id, selected.id, tag, t.game.failed.name)}
               onRewind={() => { void rewind(selected); }}
               onClose={() => { select(undefined); }}
               now={now}
