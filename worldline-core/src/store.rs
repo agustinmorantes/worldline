@@ -283,19 +283,22 @@ impl Store {
     }
 
     /// Every stored chunk with its on-disk (compressed) size. Anything that is
-    /// not a well-formed chunk path is ignored.
+    /// not a well-formed chunk path is ignored. Sizes come from the directory
+    /// listing (free on Windows), not a stat per chunk: on a cloud-drive remote
+    /// that is one round trip per shard instead of one per chunk.
     pub fn chunk_sizes(&self) -> Result<HashMap<String, u64>> {
         let mut sizes = HashMap::new();
         for shard in entries(&self.root.join("chunks"))? {
             let Some(prefix) = well_formed_name(&shard, 2) else {
                 continue;
             };
-            for chunk in entries(&shard)? {
-                let Some(rest) = well_formed_name(&chunk, 62) else {
+            for chunk in dir_entries(&shard)? {
+                let Some(rest) = well_formed_name(&chunk.path(), 62) else {
                     continue;
                 };
-                let metadata = fs::symlink_metadata(&chunk)
-                    .with_context(|| format!("failed to read {}", chunk.display()))?;
+                let metadata = chunk
+                    .metadata()
+                    .with_context(|| format!("failed to read {}", chunk.path().display()))?;
                 if metadata.is_file() {
                     sizes.insert(format!("sha256:{prefix}{rest}"), metadata.len());
                 }
@@ -790,23 +793,29 @@ fn read_entity<T: DeserializeOwned>(dir: &Path) -> Option<T> {
 /// Child directories that could be entities: stray files, dot-entries,
 /// staging dirs and cloud-client litter are skipped.
 fn entity_dirs(parent: &Path) -> Result<Vec<PathBuf>> {
-    Ok(entries(parent)?
+    Ok(dir_entries(parent)?
         .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(valid_slug)
-                && fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(valid_slug)
+                // The listing's type, like `symlink_metadata`, doesn't follow links.
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
         })
+        .map(|entry| entry.path())
         .collect())
 }
 
 /// Directory entries, or none when the directory is missing.
 pub(crate) fn entries(parent: &Path) -> Result<Vec<PathBuf>> {
+    Ok(dir_entries(parent)?
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect())
+}
+
+/// `entries` with the type and metadata the listing already carries.
+fn dir_entries(parent: &Path) -> Result<Vec<fs::DirEntry>> {
     match fs::read_dir(parent) {
-        Ok(read) => Ok(read
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .collect()),
+        Ok(read) => Ok(read.filter_map(|entry| entry.ok()).collect()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(error).with_context(|| format!("failed to list {}", parent.display())),
     }

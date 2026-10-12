@@ -51,6 +51,9 @@ pub struct Transfer<'a> {
     screenshots: bool,
     /// Chunks already checked in this run, so each is handled once.
     seen: HashSet<String>,
+    /// The destination's chunks, when listed up front; otherwise each chunk
+    /// is checked on its own.
+    dst_chunks: Option<HashSet<String>>,
     pub report: TransferReport,
 }
 
@@ -62,6 +65,7 @@ impl<'a> Transfer<'a> {
             completeness,
             screenshots: true,
             seen: HashSet::new(),
+            dst_chunks: None,
             report: TransferReport::default(),
         }
     }
@@ -71,6 +75,13 @@ impl<'a> Transfer<'a> {
     pub fn screenshots(mut self, copy: bool) -> Self {
         self.screenshots = copy;
         self
+    }
+
+    /// Lists the destination's chunks once, for runs that check most of them
+    /// (a full heal): one listing per shard instead of a stat per chunk.
+    pub fn list_dst_chunks(&mut self) -> Result<()> {
+        self.dst_chunks = Some(self.dst.chunk_sizes()?.into_keys().collect());
+        Ok(())
     }
 
     /// Copies one game (as read from `src`) and returns the version UUIDs
@@ -263,7 +274,11 @@ impl<'a> Transfer<'a> {
             if self.seen.contains(hash) {
                 continue;
             }
-            if !self.dst.has_chunk(hash) {
+            let present = match &self.dst_chunks {
+                Some(listed) => listed.contains(hash),
+                None => self.dst.has_chunk(hash),
+            };
+            if !present {
                 let compressed = chunks::read_compressed(self.src, hash)?;
                 let valid = zstd::stream::decode_all(compressed.as_slice())
                     .is_ok_and(|raw| format_hash(&Sha256::digest(&raw)) == hash);
@@ -483,6 +498,19 @@ mod tests {
             )
             .unwrap();
         assert!(chunk.exists());
+
+        // A full heal over a listed destination finds the gap the same way.
+        std::fs::remove_file(&chunk).unwrap();
+        let mut transfer = Transfer::new(&src, &dst, Completeness::Partial);
+        transfer.list_dst_chunks().unwrap();
+        transfer
+            .copy_game(&record, &HashMap::new(), Heal::All)
+            .unwrap();
+        assert!(chunk.exists());
+        assert_eq!(
+            transfer.report.chunks_copied, 1,
+            "listed chunks are trusted"
+        );
     }
 
     #[test]

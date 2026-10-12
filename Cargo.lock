@@ -6302,6 +6302,7 @@ dependencies = [
  "image",
  "keyvalues-parser",
  "libsqlite3-sys",
+ "log",
  "mockall",
  "notify-debouncer-full",
  "rustix",

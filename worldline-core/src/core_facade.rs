@@ -1224,6 +1224,7 @@ impl WorldlineCore {
     /// Publishes every game (one game's failure doesn't stop the others) and
     /// this device's pointers. Returns the per-game problems.
     fn push_locked(&self, remote: &Remote) -> Result<Vec<String>> {
+        let mut phases = sync::Phases::start("Sync push");
         let history = self.history();
         let state_path = self.data_dir.join("sync_state.json");
         let mut state: SyncState = read_json(&state_path).unwrap_or_default();
@@ -1251,17 +1252,25 @@ impl WorldlineCore {
         markers.extend(history.store.markers()?);
         let mut transfer = Transfer::new(&history.store, &remote.store, Completeness::Partial)
             .screenshots(self.get_monitoring_settings()?.sync_screenshots);
+        if full {
+            // Healing checks every chunk: one listing per shard beats a stat per chunk.
+            transfer.list_dst_chunks()?;
+        }
+        let catalog = history.store.catalog()?;
+        phases.lap("prepare");
         let mut problems = Vec::new();
-        for game in history.store.catalog()? {
+        for game in catalog {
             if let Err(error) = transfer.copy_game(&game, &markers, heal) {
                 problems.push(format!("{}: {error:#}", game.meta.title));
             }
         }
+        phases.lap(if full { "games (full heal)" } else { "games" });
         let device = self.device_metadata();
         let pointers = DeviceState::from_pointers(device.device_uuid, &history.index.pointers()?);
         let published = remote.publish(&device, &pointers)?;
         sync::save_device(&self.data_dir, &published)?;
         *self.device.write().unwrap_or_else(|e| e.into_inner()) = published;
+        phases.lap("pointers");
         if full && problems.is_empty() {
             state.last_full_heal = Some(now);
             write_json(&state_path, &state)?;
@@ -1269,14 +1278,19 @@ impl WorldlineCore {
         Ok(problems)
     }
 
-    fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
+    /// Pulls one game; `markers` are the remote's retirement markers.
+    fn pull_game(
+        &self,
+        remote: &Remote,
+        game: &GameRecord,
+        markers: &HashMap<Uuid, store::RetirementMarker>,
+    ) -> Result<Vec<Uuid>> {
         let history = self.history();
-        let markers = remote.store.markers()?;
         let screenshots = self.get_monitoring_settings()?.sync_screenshots;
         let copy = || {
             let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial)
                 .screenshots(screenshots);
-            transfer.copy_game(game, &markers, Heal::None)?;
+            transfer.copy_game(game, markers, Heal::None)?;
             Ok(transfer.report)
         };
         let deleted_active = match history.index.game_id(game.meta.uuid)? {
@@ -1485,6 +1499,7 @@ impl WorldlineCore {
         &self,
         remote: &Remote,
         remote_games: &[GameRecord],
+        markers: &HashMap<Uuid, store::RetirementMarker>,
         local_uuids: &HashSet<Uuid>,
     ) -> Vec<String> {
         let mut problems = Vec::new();
@@ -1492,7 +1507,7 @@ impl WorldlineCore {
             .iter()
             .filter(|g| local_uuids.contains(&g.meta.uuid))
         {
-            match self.pull_game(remote, remote_game) {
+            match self.pull_game(remote, remote_game, markers) {
                 Ok(not_arrived) if !not_arrived.is_empty() => problems.push(format!(
                     "{}: {} version(s) have not fully arrived yet",
                     remote_game.meta.title,
@@ -1507,10 +1522,15 @@ impl WorldlineCore {
 
     /// Pull, adopt, fast-forward, push, report.
     pub fn refresh_sync(&self) -> Result<SyncReport> {
+        let mut phases = sync::Phases::start("Full sync");
         let remote = self.require_remote()?;
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        phases.lap("open");
         let mut problems = Vec::new();
+        // Read once: nothing below writes the remote catalog before the push.
         let remote_games = remote.store.catalog()?;
+        let markers = remote.store.markers()?;
+        phases.lap("catalog");
         // Only an explicit adoption brings an untracked game back.
         let untracked = self.history().untracked()?;
 
@@ -1538,8 +1558,10 @@ impl WorldlineCore {
             }
         }
 
+        phases.lap("link");
         let local_uuids = self.local_game_uuids(&untracked)?;
-        problems.extend(self.pull_locked(&remote, &remote_games, &local_uuids));
+        problems.extend(self.pull_locked(&remote, &remote_games, &markers, &local_uuids));
+        phases.lap("pull");
 
         // Adopt remote games installed here. Scanning is slow, so it runs
         // only once something needs it: adoption, or a fast-forward that
@@ -1581,7 +1603,7 @@ impl WorldlineCore {
             if !matches!(self.match_local_game(remote_game)?, LocalMatch::None) {
                 continue;
             }
-            match self.adopt(&remote, remote_game) {
+            match self.adopt(&remote, remote_game, &markers) {
                 Ok(true) => {
                     auto_applied.insert(remote_game.meta.uuid);
                 }
@@ -1589,9 +1611,9 @@ impl WorldlineCore {
                 Err(error) => problems.push(format!("{}: {error:#}", remote_game.meta.title)),
             }
         }
+        phases.lap("adopt");
 
         // Fast-forward slots other devices moved ahead.
-        let remote_games = remote.store.catalog()?;
         for game in self.get_games()? {
             let Some(remote_game) = remote_games
                 .iter()
@@ -1614,7 +1636,9 @@ impl WorldlineCore {
             }
         }
 
+        phases.lap("fast-forward");
         problems.extend(self.push_locked(&remote)?);
+        phases.lap("push");
         self.reload_watcher();
         let remote = self.require_remote()?;
         // Adopted games get their install dir; uninstalled ones lose it.
@@ -1627,7 +1651,10 @@ impl WorldlineCore {
         }
         let installed = installs.get().cloned().unwrap_or_default();
         *self.last_installs.lock().unwrap_or_else(|e| e.into_inner()) = installed.clone();
-        self.sync_report(&remote, &auto_applied, &installed, problems)
+        phases.lap("installs");
+        let report = self.sync_report(&remote, &auto_applied, &installed, problems);
+        phases.lap("report");
+        report
     }
 
     /// The sync state as last published, without pulling or pushing.
@@ -1680,11 +1707,11 @@ impl WorldlineCore {
         }
         match found {
             LocalMatch::None => {
-                self.adopt(&remote, &game)?;
+                self.adopt(&remote, &game, &remote.store.markers()?)?;
             }
             LocalMatch::Same(local) => {
                 self.link_game(&local, &game)?;
-                self.pull_game(&remote, &game)?;
+                self.pull_game(&remote, &game, &remote.store.markers()?)?;
             }
             LocalMatch::Collision(kind, reason) => {
                 return Err(anyhow::Error::new(kind).context(reason));
@@ -1917,8 +1944,13 @@ impl WorldlineCore {
     /// Starts tracking a remote game here. Existing local saves are kept as
     /// a new version; otherwise the newest device's progress is restored.
     /// Returns whether progress was applied.
-    fn adopt(&self, remote: &Remote, remote_game: &GameRecord) -> Result<bool> {
-        self.pull_game(remote, remote_game)?;
+    fn adopt(
+        &self,
+        remote: &Remote,
+        remote_game: &GameRecord,
+        markers: &HashMap<Uuid, store::RetirementMarker>,
+    ) -> Result<bool> {
+        self.pull_game(remote, remote_game, markers)?;
         let history = self.history();
         let game_id = history
             .index
@@ -2297,8 +2329,10 @@ impl WorldlineCore {
     /// `run_pruning` with an explicit clock, for tests of time-based retention.
     #[doc(hidden)]
     pub fn run_pruning_at(&self, now: DateTime<Utc>) -> Result<PruningRunReport> {
+        let mut phases = sync::Phases::start("Pruning");
         let remote = self.remote()?;
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        phases.lap("open");
         if let Some(remote) = &remote {
             if let Some(path) = &remote.unreadable_state {
                 bail!(
@@ -2314,6 +2348,7 @@ impl WorldlineCore {
                 );
             }
         }
+        phases.lap("push");
         let history = self.history();
         let settings =
             maintenance::sync_settings(&self.retention_path(), remote.as_ref().map(|r| &r.store))?;
@@ -2338,6 +2373,7 @@ impl WorldlineCore {
                 local_gc,
             ))
         })?;
+        phases.lap("plan and local cleanup");
         let remote_gc = match &remote {
             Some(remote) => {
                 let mut pointed: HashSet<Uuid> = history
@@ -2356,7 +2392,9 @@ impl WorldlineCore {
             }
             None => None,
         };
+        phases.lap("remote cleanup");
         history.reindex()?;
+        phases.lap("reindex");
         *self.last_prune.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
         Ok(PruningRunReport {
             retired_versions: retired,
