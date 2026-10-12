@@ -3,6 +3,7 @@
 
 mod common;
 
+use chrono::{Duration, Utc};
 use common::Device;
 use std::fs;
 use std::path::PathBuf;
@@ -29,10 +30,10 @@ fn three_games(device: &Device) -> (Vec<FullGame>, Vec<PathBuf>) {
     (games, dirs)
 }
 
-fn outcomes(results: &[GameResult]) -> Vec<(Option<i32>, GameOutcome)> {
+fn outcomes(results: &[GameResult]) -> Vec<(Uuid, GameOutcome)> {
     results
         .iter()
-        .map(|result| (result.game_id, result.outcome.clone()))
+        .map(|result| (result.uuid, result.outcome.clone()))
         .collect()
 }
 
@@ -72,20 +73,21 @@ fn deleting_several_games_reports_each_once_and_keeps_every_one_recoverable() {
     // Progress made since the last checkpoint stays on disk, unrecorded.
     fs::write(dirs[1].join("save.dat"), "Beta unrecorded").unwrap();
 
+    let unknown = Uuid::new_v4();
     let results = device
         .core
-        .delete_games(&[alpha.game.id, beta.game.id, alpha.game.id, 9999])
+        .delete_games(&[uuid_of(alpha), uuid_of(beta), uuid_of(alpha), unknown])
         .unwrap();
     assert_eq!(
         outcomes(&results),
         vec![
-            (Some(alpha.game.id), GameOutcome::Done),
-            (Some(beta.game.id), GameOutcome::Done),
-            (Some(9999), GameOutcome::NotFound),
+            (uuid_of(alpha), GameOutcome::Done),
+            (uuid_of(beta), GameOutcome::Done),
+            (unknown, GameOutcome::NotFound),
         ]
     );
     assert_eq!(results[0].title, "Alpha");
-    assert_eq!(results[0].uuid, Some(uuid_of(alpha)));
+    assert_eq!(results[0].game_id, Some(alpha.game.id));
     assert_eq!(titles(&device), vec!["Gamma"]);
     let deleted: Vec<_> = device
         .core
@@ -135,10 +137,8 @@ fn a_game_that_fails_to_delete_stays_and_the_others_still_go() {
     let (games, _) = three_games(&device);
     let restore = break_game(&device, &games[1]);
 
-    let results = device
-        .core
-        .delete_games(&[games[0].game.id, games[1].game.id, games[2].game.id])
-        .unwrap();
+    let uuids: Vec<Uuid> = games.iter().map(uuid_of).collect();
+    let results = device.core.delete_games(&uuids).unwrap();
     assert_eq!(results[0].outcome, GameOutcome::Done);
     assert!(
         matches!(&results[1].outcome, GameOutcome::Failed { failure } if failure.message.contains("missing")),
@@ -148,18 +148,33 @@ fn a_game_that_fails_to_delete_stays_and_the_others_still_go() {
     assert_eq!(results[2].outcome, GameOutcome::Done);
     assert_eq!(titles(&device), vec!["Beta"]);
 
-    // Retrying only the failure deletes it; the others aren't in the library any more.
+    // Retrying deletes only the failure; the other is already deleted and
+    // not written again.
     restore();
-    let retry = device
-        .core
-        .delete_games(&[games[0].game.id, games[1].game.id])
-        .unwrap();
+    let alpha_deleted = Store::open_existing(device.core.repository_root())
+        .unwrap()
+        .find_game(uuids[0])
+        .unwrap()
+        .unwrap()
+        .deletion;
+    let retry = device.core.delete_games(&uuids[..2]).unwrap();
     assert_eq!(
         outcomes(&retry),
         vec![
-            (Some(games[0].game.id), GameOutcome::NotFound),
-            (Some(games[1].game.id), GameOutcome::Done),
+            (uuids[0], GameOutcome::AlreadyDone),
+            (uuids[1], GameOutcome::Done),
         ]
+    );
+    assert_eq!(retry[0].title, "Alpha", "named even out of the library");
+    assert_eq!(
+        Store::open_existing(device.core.repository_root())
+            .unwrap()
+            .find_game(uuids[0])
+            .unwrap()
+            .unwrap()
+            .deletion,
+        alpha_deleted,
+        "its recovery window is unchanged"
     );
     assert!(titles(&device).is_empty());
     assert_eq!(device.core.recently_deleted().unwrap().len(), 3);
@@ -169,7 +184,7 @@ fn a_game_that_fails_to_delete_stays_and_the_others_still_go() {
 fn recovering_a_batch_reports_failures_truthfully_and_a_retry_redoes_only_them() {
     let device = Device::new();
     let (games, dirs) = three_games(&device);
-    let ids: Vec<i32> = games.iter().map(|game| game.game.id).collect();
+    let ids: Vec<Uuid> = games.iter().map(uuid_of).collect();
     device.core.delete_games(&ids[..2]).unwrap();
     // Another game now tracks Alpha's folder, so Alpha can't come back yet.
     let squatter = device.add_game_at("Squatter", &dirs[0]);
@@ -190,11 +205,14 @@ fn recovering_a_batch_reports_failures_truthfully_and_a_retry_redoes_only_them()
     let beta_recovered = store.find_game(uuids[1]).unwrap().unwrap().deletion;
 
     // Retrying the whole batch recovers Alpha and leaves Beta as it was.
-    device.core.delete_games(&[squatter.game.id]).unwrap();
+    device.core.delete_games(&[uuid_of(&squatter)]).unwrap();
     let retry = device.core.recover_games(&uuids[..2]).unwrap();
-    assert!(
-        retry.iter().all(|r| r.outcome == GameOutcome::Done),
-        "{retry:?}"
+    assert_eq!(
+        outcomes(&retry),
+        vec![
+            (uuids[0], GameOutcome::Done),
+            (uuids[1], GameOutcome::AlreadyDone),
+        ]
     );
     assert_eq!(titles(&device), vec!["Alpha", "Beta", "Gamma"]);
     assert_eq!(
@@ -216,23 +234,24 @@ fn removing_several_games_from_this_pc_skips_those_not_in_the_cloud() {
     // Uncaptured progress is recorded before its game goes.
     fs::write(dirs[0].join("save.dat"), "Alpha 2").unwrap();
 
+    let unknown = Uuid::new_v4();
     let results = device
         .core
         .untrack_games(&[
-            games[0].game.id,
-            local_only.game.id,
-            games[1].game.id,
-            games[0].game.id,
-            9999,
+            uuid_of(&games[0]),
+            uuid_of(&local_only),
+            uuid_of(&games[1]),
+            uuid_of(&games[0]),
+            unknown,
         ])
         .unwrap();
     assert_eq!(
         outcomes(&results),
         vec![
-            (Some(games[0].game.id), GameOutcome::Done),
-            (Some(local_only.game.id), GameOutcome::NotInCloud),
-            (Some(games[1].game.id), GameOutcome::Done),
-            (Some(9999), GameOutcome::NotFound),
+            (uuid_of(&games[0]), GameOutcome::Done),
+            (uuid_of(&local_only), GameOutcome::NotInCloud),
+            (uuid_of(&games[1]), GameOutcome::Done),
+            (unknown, GameOutcome::NotFound),
         ]
     );
     assert_eq!(results[1].title, "Local only");
@@ -272,7 +291,7 @@ fn without_sync_no_game_can_be_removed_from_this_pc() {
     let (games, _) = three_games(&device);
     let results = device
         .core
-        .untrack_games(&[games[0].game.id, games[1].game.id])
+        .untrack_games(&[uuid_of(&games[0]), uuid_of(&games[1])])
         .unwrap();
     assert!(results.iter().all(|r| r.outcome == GameOutcome::NotInCloud));
     assert_eq!(titles(&device).len(), 3);
@@ -290,7 +309,7 @@ fn a_game_that_fails_to_be_removed_stays_tracked_and_the_others_still_go() {
 
     let results = device
         .core
-        .untrack_games(&[games[0].game.id, games[1].game.id])
+        .untrack_games(&[uuid_of(&games[0]), uuid_of(&games[1])])
         .unwrap();
     assert_eq!(results[0].outcome, GameOutcome::Done);
     assert!(
@@ -302,4 +321,53 @@ fn a_game_that_fails_to_be_removed_stays_tracked_and_the_others_still_go() {
     restore();
     device.core.reindex().unwrap();
     assert_eq!(titles(&device), vec!["Beta", "Gamma"]);
+}
+
+#[test]
+fn only_a_game_live_in_the_cloud_can_leave_this_pc() {
+    let remote = tempfile::tempdir().unwrap();
+    let device = Device::synced(remote.path());
+    let (mut games, dirs) = three_games(&device);
+    let delta = device.saves.path().join("Delta");
+    fs::create_dir_all(&delta).unwrap();
+    fs::write(delta.join("save.dat"), "Delta 1").unwrap();
+    games.push(device.add_game_at("Delta", &delta));
+    device.core.push_sync().unwrap();
+    // Another device deleted Beta, purged Gamma and deleted Delta long ago;
+    // this one hasn't pulled any of it yet. Alpha has progress here the
+    // cloud hasn't seen.
+    let cloud = Store::open_existing(remote.path()).unwrap();
+    let now = Utc::now();
+    for (game, deleted_at, purged) in [
+        (&games[1], now, false),
+        (&games[2], now, true),
+        (&games[3], now - Duration::days(31), false),
+    ] {
+        let mut meta = cloud.find_game(uuid_of(game)).unwrap().unwrap();
+        meta.deletion.deleted_at = Some(deleted_at);
+        if purged {
+            meta.deletion.purged_at = Some(now);
+        }
+        meta.updated_at = now;
+        cloud.write_game(&meta).unwrap();
+    }
+    fs::write(dirs[0].join("save.dat"), "Alpha 2").unwrap();
+
+    let uuids: Vec<Uuid> = games.iter().map(uuid_of).collect();
+    let results = device.core.untrack_games(&uuids).unwrap();
+    assert_eq!(
+        outcomes(&results),
+        vec![
+            (uuids[0], GameOutcome::Done),
+            (uuids[1], GameOutcome::NotInCloud),
+            (uuids[2], GameOutcome::NotInCloud),
+            (uuids[3], GameOutcome::NotInCloud),
+        ]
+    );
+    assert_eq!(titles(&device), vec!["Beta", "Delta", "Gamma"]);
+    assert_eq!(
+        cloud.game(uuids[0]).unwrap().unwrap().versions().count(),
+        2,
+        "Alpha's progress reached the cloud before it left"
+    );
 }

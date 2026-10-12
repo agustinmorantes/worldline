@@ -170,6 +170,8 @@ export const en = {
     deleted: (n: number): string => plural('en', n, { one: '# game deleted', other: '# games deleted' }),
     clear: 'Clear selection',
     undoHint: 'They’re still in Settings, under Recently deleted.',
+    missing: (titles: string, n: number): string => `${titles} ${n === 1 ? 'is' : 'are'} no longer in your library.`,
+    catchingUp: 'Your library catches up in a moment.',
     failed: {
       remove: (titles: string): string => `Couldn’t remove ${titles}.`,
       delete: (titles: string): string => `Couldn’t delete ${titles}.`,

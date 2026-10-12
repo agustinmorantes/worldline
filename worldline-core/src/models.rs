@@ -178,33 +178,13 @@ pub enum DeletedKind {
 #[derive(Serialize, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GameResult {
-    /// `None` for a library id this device doesn't know.
-    pub uuid: Option<uuid::Uuid>,
-    /// The library id the request named, if it named one.
+    /// The game the request named.
+    pub uuid: uuid::Uuid,
+    /// Its library id after the action, when this device lists it.
     pub game_id: Option<i32>,
     /// Empty when the game wasn't found.
     pub title: String,
     pub outcome: GameOutcome,
-}
-
-impl GameResult {
-    pub fn of(game: &FullGame, outcome: GameOutcome) -> Self {
-        Self {
-            uuid: uuid::Uuid::parse_str(&game.game.uuid).ok(),
-            game_id: Some(game.game.id),
-            title: game.game.title.clone(),
-            outcome,
-        }
-    }
-
-    pub fn not_found(game_id: i32) -> Self {
-        Self {
-            uuid: None,
-            game_id: Some(game_id),
-            title: String::new(),
-            outcome: GameOutcome::NotFound,
-        }
-    }
 }
 
 impl GameOutcome {
@@ -228,6 +208,14 @@ pub enum GameOutcome {
     NotInCloud,
     /// Not in the library (or, to recover, not in the store).
     NotFound,
+    /// Already so (deleted, removed from this device, or recovered), so
+    /// nothing was written again.
+    AlreadyDone,
+    /// Done, but this device's library is still catching up with it; it
+    /// does so on its own by the next start.
+    Applied {
+        warning: crate::error::Failure,
+    },
     /// Nothing changed for this game.
     Failed {
         failure: crate::error::Failure,

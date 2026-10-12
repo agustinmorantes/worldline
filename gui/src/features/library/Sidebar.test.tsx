@@ -266,6 +266,13 @@ describe('picking several games', () => {
     .sort();
   const result = (game: FullGame, outcome: GameResult['outcome']): GameResult => ({ uuid: game.uuid, game_id: game.id, title: game.title, outcome });
   const done = { outcome: 'done' } as const;
+  const nav = (): HTMLElement => screen.getByRole('navigation', { name: 'Library' });
+  /** Picks `titles` with Ctrl, then opens "Delete N games everywhere" on the last. */
+  function askToDelete(titles: string[]): void {
+    for (const title of titles) fireEvent.click(row(title), { ctrlKey: true });
+    fireEvent.contextMenu(row(titles[titles.length - 1]));
+    fireEvent.click(screen.getByRole('menuitem', { name: `Delete ${titles.length.toString()} games everywhere` }));
+  }
   const failed = { outcome: 'failed', failure: { kind: null, message: 'disk full', details: [] } } as unknown as GameResult['outcome'];
 
   /** The games, with Hades and Ori already in the cloud. */
@@ -350,7 +357,7 @@ describe('picking several games', () => {
     fireEvent.contextMenu(row('Ori'));
     fireEvent.click(screen.getByRole('menuitem', { name: /Remove 2 games from this PC/ }));
     expect(untrackGames).toHaveBeenCalledTimes(1);
-    expect(untrackGames).toHaveBeenCalledWith([2, 3]);
+    expect(untrackGames).toHaveBeenCalledWith(['hades', 'ori']);
     await waitFor(() => {
       expect(toast.success).toHaveBeenCalledWith('2 games are off this PC. Their history is still in your cloud.', { description: 'Celeste stays: not in your cloud yet.' });
     });
@@ -382,7 +389,7 @@ describe('picking several games', () => {
 
     await waitFor(() => { expect(toast.success).toHaveBeenCalledTimes(1); });
     expect(deleteGames).toHaveBeenCalledTimes(1);
-    expect(deleteGames).toHaveBeenCalledWith([2, 3, 4]);
+    expect(deleteGames).toHaveBeenCalledWith(['hades', 'ori', 'tunic']);
     // The open game was among them, so the screen leaves it.
     expect(navigate).toHaveBeenCalledWith({ to: '/' });
     const [message, options] = vi.mocked(toast.success).mock.calls[0] as unknown as [string, { action: { onClick: () => void } }];
@@ -392,7 +399,7 @@ describe('picking several games', () => {
     expect(failure).toBe('Couldn’t delete Ori.');
     vi.mocked(deleteGames).mockResolvedValue([result(ori, done)]);
     retry.onClick();
-    expect(deleteGames).toHaveBeenLastCalledWith([3]);
+    expect(deleteGames).toHaveBeenLastCalledWith(['ori']);
 
     vi.mocked(recoverGames).mockResolvedValue([result(hades, done), result(tunic, failed)]);
     options.action.onClick();
@@ -418,7 +425,88 @@ describe('picking several games', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete 2 games everywhere' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete 2 games' }));
     await waitFor(() => { expect(toast.success).toHaveBeenCalledWith('2 games deleted', expect.anything()); });
-    expect(deleteGames).toHaveBeenCalledWith([2, 4]);
+    expect(deleteGames).toHaveBeenCalledWith(['hades', 'tunic']);
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('retries by uuid, so a game renumbered meanwhile is still the one asked for, and says when one is gone', async () => {
+    setup();
+    const [, hades, ori] = games();
+    vi.mocked(deleteGames).mockResolvedValue([result(hades, done), result(ori, failed)]);
+    askToDelete(['Hades', 'Ori']);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 2 games' }));
+    await waitFor(() => { expect(reportError).toHaveBeenCalledTimes(1); });
+    const retry = vi.mocked(reportError).mock.calls[0][3] as unknown as { onClick: () => void };
+
+    // The library renumbered: Ori is now id 9, and id 3 is another game.
+    mockGames([makeGame({ id: 4, title: 'Tunic', uuid: 'tunic' }), makeGame({ id: 9, title: 'Ori', uuid: 'ori' }), makeGame({ id: 3, title: 'Celeste', uuid: 'celeste' })]);
+    // Another device deleted Ori for good meanwhile: the core no longer knows it, so has no title.
+    vi.mocked(deleteGames).mockResolvedValue([{ uuid: 'ori', game_id: null, title: '', outcome: { outcome: 'not_found' } }]);
+    retry.onClick();
+    expect(deleteGames).toHaveBeenLastCalledWith(['ori']);
+    await waitFor(() => { expect(toast.info).toHaveBeenCalledWith('Ori is no longer in your library.'); });
+    expect(reportError).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a game an earlier try already deleted, or one the library is catching up on, in the one Undo', async () => {
+    setup();
+    const [, hades, ori] = games();
+    const applied = { outcome: 'applied', warning: { kind: null, message: 'index busy', details: [] } } as unknown as GameResult['outcome'];
+    vi.mocked(deleteGames).mockResolvedValue([result(hades, { outcome: 'already_done' }), result(ori, applied)]);
+    askToDelete(['Hades', 'Ori']);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 2 games' }));
+    await waitFor(() => { expect(toast.success).toHaveBeenCalledTimes(1); });
+    const [message, options] = vi.mocked(toast.success).mock.calls[0] as unknown as [string, { description: string; action: { onClick: () => void } }];
+    expect(message).toBe('2 games deleted');
+    expect(options.description).toBe('Your library catches up in a moment.');
+    expect(reportError).not.toHaveBeenCalled();
+    vi.mocked(recoverGames).mockResolvedValue([result(hades, done), result(ori, { outcome: 'already_done' })]);
+    options.action.onClick();
+    expect(recoverGames).toHaveBeenCalledWith(['hades', 'ori']);
+    await waitFor(() => { expect(row('Hades')).toHaveFocus(); });
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it('puts focus back in the library when the confirmation closes, on the row after the deleted ones', async () => {
+    setup();
+    const [, hades, ori] = games();
+    vi.mocked(deleteGames).mockResolvedValue([result(hades, done), result(ori, done)]);
+    askToDelete(['Hades', 'Ori']);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 2 games' }));
+    await waitFor(() => { expect(row('Tunic')).toHaveFocus(); });
+  });
+
+  it('puts focus back on the picked games when the confirmation is cancelled', async () => {
+    setup();
+    askToDelete(['Ori', 'Tunic']);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => { expect(row('Ori')).toHaveFocus(); });
+  });
+
+  it('puts focus on the one that failed, or on the list when Undo couldn’t run', async () => {
+    setup();
+    const [, hades, ori] = games();
+    vi.mocked(deleteGames).mockResolvedValue([result(hades, done), result(ori, failed)]);
+    askToDelete(['Hades', 'Ori']);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 2 games' }));
+    await waitFor(() => { expect(row('Ori')).toHaveFocus(); });
+
+    const [, options] = vi.mocked(toast.success).mock.calls[0] as unknown as [string, { action: { onClick: () => void } }];
+    vi.mocked(recoverGames).mockRejectedValue(new Error('locked'));
+    options.action.onClick();
+    await waitFor(() => { expect(nav()).toHaveFocus(); });
+  });
+
+  it('drops picks a search hides, and Shift no longer runs from one', () => {
+    setup();
+    fireEvent.click(row('Hades'), { ctrlKey: true });
+    fireEvent.click(row('Ori'), { ctrlKey: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Search the library' }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'hades' } });
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' });
+    // Ori was hidden, so it is no longer picked, nor where a Shift run starts.
+    expect(picked()).toEqual(['Hades']);
+    fireEvent.click(row('Tunic'), { shiftKey: true });
+    expect(picked()).toEqual(['Hades', 'Tunic']);
   });
 });

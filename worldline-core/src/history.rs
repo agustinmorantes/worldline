@@ -49,6 +49,14 @@ impl CheckpointOutcome {
     }
 }
 
+/// A recovery written to a game's files, for `project_recovery`.
+pub(crate) struct Recovery {
+    /// Back in this device's library, rather than waiting in the cloud list.
+    pub here: bool,
+    /// This device's pointers from before the deletion.
+    saved: Option<DeviceGameState>,
+}
+
 pub struct History {
     pub store: Store,
     pub index: Index,
@@ -86,6 +94,8 @@ impl History {
     /// Rebuilds the whole index from the repository files. Untracked games
     /// keep their files but stay out of the index.
     pub fn reindex(&self) -> Result<()> {
+        #[cfg(test)]
+        faults::check("reindex", None)?;
         let untracked = self.untracked()?;
         let mut catalog = self.store.catalog()?;
         catalog.retain(|game| !untracked.contains(&game.meta.uuid));
@@ -94,6 +104,8 @@ impl History {
 
     /// Re-projects one game from its files into the index.
     pub fn refresh_game(&self, uuid: Uuid) -> Result<()> {
+        #[cfg(test)]
+        faults::check("refresh_game", Some(uuid))?;
         if self.untracked()?.contains(&uuid) {
             return self.index.remove_game(uuid);
         }
@@ -346,6 +358,14 @@ impl History {
     }
 
     pub fn delete_game(&self, id: i32) -> Result<()> {
+        let uuid = self.write_deletion(id)?;
+        self.refresh_game(uuid)
+    }
+
+    /// The part of `delete_game` that decides it: keeps the pointers, then
+    /// writes the deletion. Once it returns the game is deleted, whether or
+    /// not the index has caught up.
+    pub(crate) fn write_deletion(&self, id: i32) -> Result<Uuid> {
         let game = self.index.get_game(id)?;
         let record = self.record(&game.game)?;
         let mut meta = record.meta;
@@ -354,7 +374,7 @@ impl History {
         meta.deletion.delete(now);
         meta.updated_at = now;
         self.store.write_game(&meta)?;
-        self.refresh_game(meta.uuid)
+        Ok(meta.uuid)
     }
 
     pub fn create_slot(&self, game_id: i32, name: &str) -> Result<Slot> {
@@ -446,6 +466,14 @@ impl History {
     /// devices and stays in the cloud list. Returns whether it is back in
     /// this device's library.
     pub fn recover_game(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<bool> {
+        let recovery = self.write_recovery(uuid, now)?;
+        self.project_recovery(uuid, &recovery)?;
+        Ok(recovery.here)
+    }
+
+    /// The part of `recover_game` that decides it: the checks, then the
+    /// recovery written to the game's files.
+    pub(crate) fn write_recovery(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<Recovery> {
         let record = self
             .store
             .game(uuid)?
@@ -464,11 +492,22 @@ impl History {
         meta.deletion.recover(now);
         meta.updated_at = now;
         self.store.write_game(&meta)?;
+        Ok(Recovery { here, saved })
+    }
+
+    /// Projects a written recovery into the index and, here, resumes the
+    /// pointers. Safe to run again after a failure.
+    pub(crate) fn project_recovery(&self, uuid: Uuid, recovery: &Recovery) -> Result<()> {
         self.refresh_game(uuid)?;
-        if here {
-            self.resume_pointers(uuid, saved)?;
+        self.resume_recovery(uuid, recovery)
+    }
+
+    /// The part of `project_recovery` that runs once the game is indexed.
+    pub(crate) fn resume_recovery(&self, uuid: Uuid, recovery: &Recovery) -> Result<()> {
+        if recovery.here {
+            self.resume_pointers(uuid, recovery.saved.clone())?;
         }
-        Ok(here)
+        Ok(())
     }
 
     /// Refuses a game whose title or one of whose folders another game here
@@ -1059,4 +1098,37 @@ pub fn overlapping_paths(left: &str, right: &str) -> bool {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
     };
     inside(&left, &right) || inside(&right, &left)
+}
+
+/// Failures tests inject into the index, to check what a batch reports when
+/// a game's files changed but the index couldn't follow.
+#[cfg(test)]
+pub(crate) mod faults {
+    use std::cell::RefCell;
+    use uuid::Uuid;
+
+    thread_local! {
+        static FAILING: RefCell<Vec<(&'static str, Option<Uuid>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Makes `point` fail, for `game` only or (`None`) for every game.
+    pub fn fail(point: &'static str, game: Option<Uuid>) {
+        FAILING.with_borrow_mut(|failing| failing.push((point, game)));
+    }
+
+    pub fn clear() {
+        FAILING.with_borrow_mut(Vec::clear);
+    }
+
+    pub fn check(point: &'static str, game: Option<Uuid>) -> anyhow::Result<()> {
+        let failing = FAILING.with_borrow(|failing| {
+            failing
+                .iter()
+                .any(|(at, only)| *at == point && (only.is_none() || *only == game))
+        });
+        if failing {
+            anyhow::bail!("injected failure: {point}");
+        }
+        Ok(())
+    }
 }

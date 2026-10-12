@@ -190,12 +190,15 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'untrack_games': {
       // Each game once, like the core; only games already in the cloud leave this PC.
       const cloud = typeof state.syncReport === 'object' ? state.syncReport.remote_games.map((g) => g.uuid) : [];
-      return [...new Set(args.ids as number[])].map((id): GameResult => {
-        const found = state.games.find((g) => g.id === id);
-        if (found === undefined) return { uuid: null, game_id: id, title: '', outcome: { outcome: 'not_found' } };
-        const result = { uuid: found.uuid, game_id: id, title: found.title };
-        if (cmd === 'untrack_games' && !cloud.includes(found.uuid)) return { ...result, outcome: { outcome: 'not_in_cloud' } };
-        backendCommand(state, cmd === 'delete_games' ? 'delete_game' : 'untrack_game', { id });
+      return [...new Set(args.uuids as string[])].map((uuid): GameResult => {
+        const found = state.games.find((g) => g.uuid === uuid);
+        if (found === undefined) {
+          const gone = cmd === 'delete_games' ? binned.get(uuid) : undefined;
+          return { uuid, game_id: null, title: gone?.title ?? '', outcome: { outcome: gone === undefined ? 'not_found' : 'already_done' } };
+        }
+        const result = { uuid, game_id: found.id, title: found.title };
+        if (cmd === 'untrack_games' && !cloud.includes(uuid)) return { ...result, outcome: { outcome: 'not_in_cloud' } };
+        backendCommand(state, cmd === 'delete_games' ? 'delete_game' : 'untrack_game', { id: found.id });
         return { ...result, outcome: { outcome: 'done' } };
       });
     }
@@ -203,6 +206,7 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       return [...new Set(args.uuids as string[])].map((uuid): GameResult => {
         const title = binned.get(uuid)?.title ?? state.games.find((g) => g.uuid === uuid)?.title;
         if (title === undefined) return { uuid, game_id: null, title: '', outcome: { outcome: 'not_found' } };
+        if (!binned.has(uuid)) return { uuid, game_id: state.games.find((g) => g.uuid === uuid)?.id ?? null, title, outcome: { outcome: 'already_done' } };
         backendCommand(state, 'recover_game', { uuid });
         return { uuid, game_id: state.games.find((g) => g.uuid === uuid)?.id ?? null, title, outcome: { outcome: 'done' } };
       });

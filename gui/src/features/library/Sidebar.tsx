@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, useCallback, useMemo, useState } from 'react';
+import { type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { AnimatePresence, motion, type Transition } from 'motion/react';
 import { Check, LoaderCircle, Plus, SlidersHorizontal } from 'lucide-react';
@@ -76,14 +76,32 @@ export function Sidebar(): ReactElement {
     setSelection(noSelection);
   }
   const order = shown.map((r) => r.game.id);
-  const picked = shown.filter((r) => selection.ids.includes(r.game.id)).map((r) => r.game);
+  const kept = selection.ids.filter((id) => order.includes(id));
+  const anchor = selection.anchor !== null && order.includes(selection.anchor) ? selection.anchor : null;
+  if (kept.length !== selection.ids.length || anchor !== selection.anchor) setSelection({ ids: kept, anchor });
+  const picked = shown.filter((r) => kept.includes(r.game.id)).map((r) => r.game);
   const several = picked.length >= 2;
   // The games a bulk action just took away, to leave one after another.
-  const [leaving, setLeaving] = useState<number[]>([]);
-  const bulk = useBulkMenu(picked, inCloud, (left) => {
+  const [leaving, setLeaving] = useState<string[]>([]);
+  const navRef = useRef<HTMLElement>(null);
+  /** Focus on the first `prefer` row listed, else the row after the first `avoid` one, else the list. */
+  const focusLibrary = useCallback((avoid: string[], prefer: string[]) => {
+    requestAnimationFrame(() => {
+      const nav = navRef.current;
+      if (nav === null) return;
+      const links = [...nav.querySelectorAll<HTMLElement>('a[data-game-uuid]')];
+      const uuid = (link: HTMLElement): string => link.dataset.gameUuid ?? '';
+      const staying = links.filter((link) => !avoid.includes(uuid(link)));
+      const first = links.findIndex((link) => avoid.includes(uuid(link)));
+      const next = first === -1 ? undefined : (links.slice(first).find((link) => !avoid.includes(uuid(link))) ?? staying[staying.length - 1]);
+      (staying.find((link) => prefer.includes(uuid(link))) ?? next ?? nav).focus();
+    });
+  }, []);
+  const open = current?.view === 'game' ? (sorted.find((game) => game.id === current.gameId)?.uuid ?? null) : null;
+  const bulk = useBulkMenu(picked, inCloud, open, (left) => {
     setLeaving(left);
     setSelection(noSelection);
-  });
+  }, focusLibrary);
   const pick = (id: number, mods: Modifiers): void => {
     setSelection((sel) => select(sel, id, order, mods, current?.view === 'game' ? current.gameId : null));
   };
@@ -126,8 +144,11 @@ export function Sidebar(): ReactElement {
         />
       </div>
       <nav
+        ref={navRef}
+        // Where focus lands when the rows it was on leave.
+        tabIndex={-1}
         aria-label={t.shell.library}
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 [scrollbar-width:none]"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 outline-none [scrollbar-width:none]"
         onKeyDown={(event) => {
           if (event.key === 'Escape' && selection.ids.length > 0) {
             event.preventDefault();
@@ -158,7 +179,11 @@ export function Sidebar(): ReactElement {
                     initial={reduced ? false : { opacity: 0, x: -12 }}
                     animate={{ opacity: 1, x: 0, scale: 1 }}
                     // Games a bulk action took leave one after another, in a bounded stagger.
-                    exit={{ opacity: 0, scale: 0.92, transition: { duration: reduced ? 0 : 0.2, ease, delay: reduced ? 0 : Math.min(Math.max(leaving.indexOf(game.id), 0), 6) * 0.04 } }}
+                    exit={{
+                      opacity: 0,
+                      scale: 0.92,
+                      transition: reduced ? { duration: 0 } : { ...spring, delay: Math.min(Math.max(leaving.indexOf(game.uuid), 0), 6) * 0.04 },
+                    }}
                     transition={{ duration: 0.56, ease }}
                   >
                     <GameRow
@@ -166,8 +191,8 @@ export function Sidebar(): ReactElement {
                       status={status}
                       inCloud={inCloud(game)}
                       fold={fold}
-                      picked={selection.ids.includes(game.id)}
-                      bulk={several && selection.ids.includes(game.id) ? bulk.items : undefined}
+                      picked={kept.includes(game.id)}
+                      bulk={several && kept.includes(game.id) ? bulk.items : undefined}
                       onPick={(mods) => { pick(game.id, mods); }}
                       onPlain={clearSelection}
                     />
@@ -287,6 +312,7 @@ function GameRow({ game, status, inCloud, fold, picked, bulk, onPick, onPlain }:
           <Link
             to="/game/$gameId"
             params={{ gameId: game.id.toString() }}
+            data-game-uuid={game.uuid}
             onClick={onClick}
             onAuxClick={keepInPlace}
             // Right-clicking a game that isn't one of several picked is about that game alone.

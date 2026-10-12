@@ -42,9 +42,9 @@ export const deleteGame = (id: number): Promise<void> => invoke('delete_game', {
 /** Stops tracking the game on this device; its history stays in the remote (ADR 0006). */
 export const untrackGame = (id: number): Promise<void> => invoke('untrack_game', { id });
 /** `deleteGame` for several games, with one sync push. A result per game, in order, each once. */
-export const deleteGames = (ids: number[]): Promise<GameResult[]> => invoke('delete_games', { ids });
+export const deleteGames = (uuids: string[]): Promise<GameResult[]> => invoke('delete_games', { uuids });
 /** `untrackGame` for several games, with one sync push; games not in the cloud come back `not_in_cloud`. */
-export const untrackGames = (ids: number[]): Promise<GameResult[]> => invoke('untrack_games', { ids });
+export const untrackGames = (uuids: string[]): Promise<GameResult[]> => invoke('untrack_games', { uuids });
 /** `null` goes back to the hue from the icon. */
 export const setGameAccent = (gameId: number, hue: number | null): Promise<Game> =>
   invoke('set_game_accent', { gameId, hue });

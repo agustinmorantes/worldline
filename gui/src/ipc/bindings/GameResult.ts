@@ -6,11 +6,11 @@ import type { GameOutcome } from "./GameOutcome";
  */
 export type GameResult = { 
 /**
- * `None` for a library id this device doesn't know.
+ * The game the request named.
  */
-uuid: string | null, 
+uuid: string, 
 /**
- * The library id the request named, if it named one.
+ * Its library id after the action, when this device lists it.
  */
 game_id: number | null, 
 /**

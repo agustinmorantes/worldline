@@ -168,6 +168,8 @@ export const es: Messages = {
     deleted: (n) => plural('es', n, { one: '# juego borrado', other: '# juegos borrados' }),
     clear: 'Quitar la selección',
     undoHint: 'Siguen en Configuración, en Borrados recientemente.',
+    missing: (titles, n) => (n === 1 ? `${titles} ya no está en tu biblioteca.` : `${titles} ya no están en tu biblioteca.`),
+    catchingUp: 'Tu biblioteca se pone al día en un momento.',
     failed: {
       remove: (titles) => `No se pudo quitar ${titles}.`,
       delete: (titles) => `No se pudo borrar ${titles}.`,

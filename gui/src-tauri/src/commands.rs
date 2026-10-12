@@ -70,11 +70,11 @@ async fn delete_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(),
 /// Deletes several games everywhere, with one push; a result per game.
 #[tauri::command]
 async fn delete_games(
-    ids: Vec<i32>,
+    uuids: Vec<uuid::Uuid>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<Vec<GameResult>, Failure> {
     let core = Arc::clone(&core);
-    off_main(move || core.delete_games(&ids))
+    off_main(move || core.delete_games(&uuids))
         .await
         .map_err(|e| Failure::from(&e))
 }
@@ -94,11 +94,11 @@ async fn recover_games(
 /// Removes several games from this PC; those not in the cloud are skipped.
 #[tauri::command]
 async fn untrack_games(
-    ids: Vec<i32>,
+    uuids: Vec<uuid::Uuid>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<Vec<GameResult>, Failure> {
     let core = Arc::clone(&core);
-    off_main(move || core.untrack_games(&ids))
+    off_main(move || core.untrack_games(&uuids))
         .await
         .map_err(|e| Failure::from(&e))
 }
