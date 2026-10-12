@@ -12,9 +12,10 @@ use crate::store::{
     VersionMeta, VersionReason, folder_slug, normalize_display_name, read_json, validate_hue,
     write_json,
 };
+use crate::sync::{DeviceGameState, DeviceState};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -54,6 +55,9 @@ pub struct History {
     device: Uuid,
     /// Device-local list of games this device stopped tracking (ADR 0006).
     untracked_path: PathBuf,
+    /// Device-local pointers of deleted games, kept next to the untracked
+    /// list while they can be recovered (ADR 0011).
+    deleted_pointers_path: PathBuf,
 }
 
 impl History {
@@ -63,6 +67,7 @@ impl History {
             index,
             device,
             untracked_path: untracked_path.to_path_buf(),
+            deleted_pointers_path: untracked_path.with_file_name("deleted_pointers.json"),
         };
         // Files are the truth: a crash between publishing files and projecting
         // them leaves a stale index, so every start re-projects.
@@ -87,17 +92,58 @@ impl History {
         self.index.reindex(&catalog, &self.retired()?, &self.store)
     }
 
-    /// Re-projects one game from its files into the index.
+    /// Re-projects one game from its files into the index. A deleted game
+    /// leaving the index keeps this device's pointers, so recovering it here
+    /// resumes where it was.
     pub fn refresh_game(&self, uuid: Uuid) -> Result<()> {
         if self.untracked()?.contains(&uuid) {
             return self.index.remove_game(uuid);
         }
         match self.store.game(uuid)? {
-            Some(record) => self
-                .index
-                .upsert_game(&record, &self.retired()?, &self.store),
+            Some(record) => {
+                if record.meta.deletion.is_deleted() && self.index.game_id(uuid)?.is_some() {
+                    self.keep_pointers(uuid)?;
+                }
+                self.index
+                    .upsert_game(&record, &self.retired()?, &self.store)
+            }
             None => self.index.remove_game(uuid),
         }
+    }
+
+    fn deleted_pointers(&self) -> Result<HashMap<Uuid, DeviceGameState>> {
+        if !self.deleted_pointers_path.exists() {
+            return Ok(HashMap::new());
+        }
+        read_json(&self.deleted_pointers_path)
+            .context("Failed to load the pointers of deleted games")
+    }
+
+    /// Records this device's pointers of a game being deleted, and forgets
+    /// those of games that can no longer be recovered.
+    fn keep_pointers(&self, uuid: Uuid) -> Result<()> {
+        let pointers: Vec<_> = self
+            .index
+            .pointers()?
+            .into_iter()
+            .filter(|pointer| pointer.game == uuid)
+            .collect();
+        let mut kept = self.deleted_pointers()?;
+        let now = Utc::now();
+        kept.retain(|game, _| {
+            self.store
+                .find_game(*game)
+                .ok()
+                .flatten()
+                .is_some_and(|meta| meta.deletion.is_recoverable(now))
+        });
+        if let Some(state) = DeviceState::from_pointers(self.device, &pointers)
+            .games
+            .remove(&uuid)
+        {
+            kept.insert(uuid, state);
+        }
+        write_json(&self.deleted_pointers_path, &kept)
     }
 
     /// Games this device stopped tracking; their history stays in the store.
@@ -356,10 +402,13 @@ impl History {
     }
 
     /// Brings back a deleted game with the history it had, without writing
-    /// live saves: the next checkpoint records whatever is on disk. Refused
-    /// while another game here has its title or one of its folders, since
-    /// both would capture the same saves.
-    pub fn recover_game(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<()> {
+    /// live saves: the next checkpoint records whatever is on disk, on top of
+    /// the version this device was on. Refused while another game here has
+    /// its title or one of its folders, since both would capture the same
+    /// saves. A game this device doesn't track comes back for the other
+    /// devices and stays in the cloud list. Returns whether it is back in
+    /// this device's library.
+    pub fn recover_game(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<bool> {
         let record = self
             .store
             .game(uuid)?
@@ -368,20 +417,24 @@ impl History {
         if !meta.deletion.is_recoverable(now) {
             bail!("'{}' can no longer be restored", meta.title);
         }
-        if !self.untracked()?.contains(&uuid) {
-            self.validate_fits(&record, None)?;
+        let here = !self.untracked()?.contains(&uuid);
+        if here {
+            self.validate_fits(&record)?;
         }
         meta.deletion.recover(now);
         meta.updated_at = now;
         self.store.write_game(&meta)?;
         self.refresh_game(uuid)?;
-        self.point_at_own_newest(&record)
+        if here {
+            self.resume_pointers(uuid)?;
+        }
+        Ok(here)
     }
 
     /// Refuses a game whose title or one of whose folders another game here
     /// already has: both would capture the same saves.
-    fn validate_fits(&self, record: &GameRecord, id: Option<i32>) -> Result<()> {
-        self.validate_title(&record.meta.title, id)?;
+    fn validate_fits(&self, record: &GameRecord) -> Result<()> {
+        self.validate_title(&record.meta.title, None)?;
         let dirs: Vec<String> = record
             .tracked_dirs
             .iter()
@@ -389,51 +442,50 @@ impl History {
             .map(|dir| crate::path_placeholders::expand_path_placeholders(&dir.path))
             .filter(|path| !crate::path_placeholders::is_shared_root(Path::new(path)))
             .collect();
-        self.validate_dirs(id, &dirs)
+        self.validate_dirs(None, &dirs)
     }
 
-    /// Settles a game another device recovered, just indexed again here. If
-    /// another game here took its title or a folder meanwhile, it leaves the
-    /// library for the cloud list, where adoption explains the conflict.
-    pub fn settle_returned_game(&self, uuid: Uuid) -> Result<()> {
-        let Some(id) = self.index.game_id(uuid)? else {
-            return Ok(());
-        };
-        let record = self.store.game(uuid)?.context("Returned game is missing")?;
-        if self.validate_fits(&record, Some(id)).is_err() {
-            self.set_untracked(uuid, true)?;
-            return self.refresh_game(uuid);
-        }
-        self.point_at_own_newest(&record)
-    }
-
-    /// Points a game that came back at the newest version this device
-    /// recorded, so its next checkpoint continues that line. Without one the
-    /// index defaults stand: nothing is active, so nothing is applied.
-    fn point_at_own_newest(&self, record: &GameRecord) -> Result<()> {
+    /// Points a game recovered here where this device was when it was
+    /// deleted: the playthrough it was on and each playthrough's version.
+    /// Without a record it resumes as an adoption does, from the newest
+    /// version of its active playthrough.
+    fn resume_pointers(&self, uuid: Uuid) -> Result<()> {
+        let game_id = self
+            .index
+            .game_id(uuid)?
+            .context("Recovered game is not indexed")?;
         let retired = self.retired()?;
-        let newest = record
-            .slots
-            .iter()
-            .filter(|slot| !slot.meta.deletion.is_deleted())
-            .flat_map(|slot| slot.versions.iter().map(move |version| (slot, version)))
-            .filter(|(_, version)| {
-                version.origin_device == Some(self.device) && !retired.contains(&version.uuid)
-            })
-            .max_by_key(|(_, version)| (version.created_at, version.uuid));
-        let Some((slot, version)) = newest else {
+        let mut kept = self.deleted_pointers()?;
+        let Some(state) = kept.remove(&uuid) else {
+            if let Some(slot) = self.index.get_game(game_id)?.active_slot {
+                let newest = self
+                    .index
+                    .get_slot(slot.id)?
+                    .versions
+                    .into_iter()
+                    .find(|version| !version.retired);
+                self.index
+                    .set_active_version(slot.id, newest.map(|version| version.id))?;
+            }
             return Ok(());
         };
-        let ids = (
-            self.index.game_id(record.meta.uuid)?,
-            self.index.slot_id(slot.meta.uuid)?,
-            self.index.version_id(version.uuid)?,
-        );
-        if let (Some(game_id), Some(slot_id), Some(version_id)) = ids {
-            self.index.set_active_slot(game_id, slot_id)?;
-            self.index.set_active_version(slot_id, Some(version_id))?;
+        for (slot_uuid, slot) in &state.slots {
+            let Some(slot_id) = self.index.slot_id(*slot_uuid)? else {
+                continue;
+            };
+            let version = slot
+                .active_version_uuid
+                .filter(|version| !retired.contains(version));
+            if let Some(version) = version
+                && let Some(version_id) = self.index.version_id(version)?
+            {
+                self.index.set_active_version(slot_id, Some(version_id))?;
+            }
+            if state.active_slot_uuid == Some(*slot_uuid) {
+                self.index.set_active_slot(game_id, slot_id)?;
+            }
         }
-        Ok(())
+        write_json(&self.deleted_pointers_path, &kept)
     }
 
     /// Brings back a deleted slot into its game, as an inactive slot. A name

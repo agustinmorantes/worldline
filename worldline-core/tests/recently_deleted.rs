@@ -66,6 +66,55 @@ fn a_recovered_game_continues_its_history_without_touching_live_saves() {
 }
 
 #[test]
+fn a_recovered_game_resumes_the_playthrough_and_version_it_was_on() {
+    let device = Device::new();
+    device.write("save.dat", "v1");
+    let game = device.add_game("Resumed");
+    let id = game.game.id;
+    let default = game.active_slot.clone().unwrap();
+    let v1 = device.active_version(id);
+    device.write("save.dat", "v2");
+    device.checkpoint(id);
+    device.core.restore_version(v1.id).unwrap();
+    // The newest version this device made is in another playthrough.
+    device.core.create_slot(id, "Second").unwrap();
+    device.write("save.dat", "second");
+    device.checkpoint(id);
+    device.core.switch_slot(id, default.id).unwrap();
+    assert_eq!(device.read("save.dat").as_deref(), Some("v1"));
+
+    device.core.delete_game(id).unwrap();
+    assert!(device.core.recover_game(uuid_of(&game)).unwrap());
+    let back = device.game_by_title("Resumed").unwrap();
+    assert_eq!(back.active_slot.unwrap().uuid, default.uuid);
+    assert_eq!(device.active_version(back.game.id).uuid, v1.uuid);
+    assert_eq!(device.read("save.dat").as_deref(), Some("v1"));
+}
+
+#[test]
+fn recovering_a_game_this_device_does_not_track_leaves_it_in_the_cloud() {
+    let device = Device::new();
+    device.write("save.dat", "v1");
+    let game = device.add_game("Elsewhere");
+    device.core.delete_game(game.game.id).unwrap();
+    fs::write(
+        device.data.path().join("untracked_games.json"),
+        format!("[\"{}\"]", uuid_of(&game)),
+    )
+    .unwrap();
+    device.core.reindex().unwrap();
+
+    assert!(!device.core.recover_game(uuid_of(&game)).unwrap());
+    assert!(device.core.get_games().unwrap().is_empty());
+    assert!(deleted(&device).is_empty());
+    let meta = store_of(&device)
+        .find_game(uuid_of(&game))
+        .unwrap()
+        .unwrap();
+    assert!(!meta.deletion.is_deleted());
+}
+
+#[test]
 fn delete_recover_and_delete_again_converge_on_two_devices() {
     let remote = tempfile::tempdir().unwrap();
     let a = Device::synced(remote.path());
@@ -81,14 +130,28 @@ fn delete_recover_and_delete_again_converge_on_two_devices() {
     assert!(b.core.get_games().unwrap().is_empty());
     assert_eq!(deleted(&b), [(DeletedKind::Game, "Shared".to_string())]);
 
-    b.core.recover_game(uuid_of(&game)).unwrap();
+    assert!(b.core.recover_game(uuid_of(&game)).unwrap());
     b.core.refresh_sync().unwrap();
-    a.core.refresh_sync().unwrap();
-    let on_a = a.game_by_title("Shared").expect("live again on A");
+    a.write("save.dat", "played meanwhile");
+    let report = a.core.refresh_sync().unwrap();
     assert!(b.game_by_title("Shared").is_some());
-    // A continues its own line rather than applying anything.
-    assert_eq!(a.active_version(on_a.game.id).version_number, 1);
+    // Recovered elsewhere, it waits in A's cloud list: nothing here is
+    // watched or written until A adopts it.
+    assert!(a.core.get_games().unwrap().is_empty());
+    assert!(
+        report
+            .remote_games
+            .iter()
+            .any(|g| g.uuid == uuid_of(&game) && !g.adopted)
+    );
     assert!(deleted(&a).is_empty());
+    a.core.refresh_sync().unwrap();
+    assert!(a.core.get_games().unwrap().is_empty(), "still not adopted");
+    assert_eq!(a.read("save.dat").as_deref(), Some("played meanwhile"));
+    let on_a = a.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    // Adopting keeps what is on disk, on top of the recovered history.
+    assert_eq!(a.read("save.dat").as_deref(), Some("played meanwhile"));
+    assert_eq!(a.active_version(on_a.game.id).version_number, 2);
 
     a.core.delete_game(on_a.game.id).unwrap();
     a.core.refresh_sync().unwrap();
@@ -453,4 +516,150 @@ fn a_newer_store_format_needs_an_update_and_is_never_moved_aside() {
         .and_then(|_| device.core.refresh_sync())
         .unwrap_err();
     assert_eq!(error_kind(&error), Some(ErrorKind::UpdateRequired));
+}
+
+/// A game with three versions and a screenshot, synced to B, deleted on A and
+/// recovered on B within the window. Before A pulls the recovery its own
+/// cleanup collects the history at the window's end (its clock runs ahead, or
+/// its pulls failed). Returns A, the game, the screenshot and A's chunk count
+/// before the cleanup.
+fn collected_here_recovered_elsewhere(
+    remote: &std::path::Path,
+) -> (Device, FullGame, std::path::PathBuf, usize) {
+    let a = Device::synced(remote);
+    a.write("save.dat", "v1");
+    let game = a.add_game("Revived");
+    let first = a.active_version(game.game.id);
+    for n in 2..=3 {
+        a.write("save.dat", &format!("v{n}"));
+        a.checkpoint(game.game.id);
+    }
+    let version = a.core.get_version(first.id).unwrap();
+    let store = store_of(&a);
+    store
+        .write_screenshot(
+            &version.game.folder_slug,
+            &version.slot.folder_slug,
+            &version.version.folder_slug,
+            b"jpeg",
+        )
+        .unwrap();
+    let screenshot = store.screenshot_path(
+        &version.game.folder_slug,
+        &version.slot.folder_slug,
+        &version.version.folder_slug,
+    );
+    a.core.refresh_sync().unwrap();
+    let b = Device::synced(remote);
+    b.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    a.core.delete_game(game.game.id).unwrap();
+    a.core.refresh_sync().unwrap();
+    b.core.refresh_sync().unwrap();
+    assert!(b.core.recover_game(uuid_of(&game)).unwrap());
+    b.core.refresh_sync().unwrap();
+
+    let chunks = store.chunk_sizes().unwrap().len();
+    assert!(chunks >= 3);
+    a.core
+        .run_pruning_at(Utc::now() + RECOVERY_WINDOW + Duration::hours(1))
+        .unwrap();
+    assert!(store.chunk_sizes().unwrap().is_empty());
+    assert!(!screenshot.exists());
+    (a, game, screenshot, chunks)
+}
+
+#[test]
+fn history_collected_here_heals_from_the_remote_once_recovered_elsewhere() {
+    let remote = tempfile::tempdir().unwrap();
+    let (a, game, screenshot, chunks) = collected_here_recovered_elsewhere(remote.path());
+    let uuid = uuid_of(&game);
+
+    let report = a.core.refresh_sync().unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert_eq!(store_of(&a).chunk_sizes().unwrap().len(), chunks);
+    assert!(screenshot.exists());
+    assert_eq!(a.read("save.dat").as_deref(), Some("v3"), "no live writes");
+    assert!(a.core.get_games().unwrap().is_empty());
+    assert!(
+        report
+            .remote_games
+            .iter()
+            .any(|g| g.uuid == uuid && !g.adopted)
+    );
+
+    let back = a.core.adopt_remote_game(uuid).unwrap();
+    assert_eq!(a.read("save.dat").as_deref(), Some("v3"));
+    assert_eq!(back.versions.len(), 3);
+    assert!(a.core.check_integrity(true).unwrap().is_ok());
+    let out = tempfile::tempdir().unwrap();
+    let exported = a
+        .core
+        .export_game_history(back.game.id, &out.path().join("revived.zip"))
+        .unwrap();
+    assert_eq!(exported.version_count, 3);
+}
+
+#[test]
+fn history_missing_everywhere_is_reported_until_it_arrives() {
+    let remote = tempfile::tempdir().unwrap();
+    let (a, game, _, chunks) = collected_here_recovered_elsewhere(remote.path());
+    let held = remote.path().join("chunks");
+    let aside = remote.path().join("chunks-aside");
+    fs::rename(&held, &aside).unwrap();
+
+    for _ in 0..2 {
+        let report = a.core.refresh_sync().unwrap();
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.starts_with("Revived:") && p.contains("not fully arrived")),
+            "{:?}",
+            report.problems
+        );
+        assert!(a.core.get_games().unwrap().is_empty());
+    }
+
+    if held.exists() {
+        fs::remove_dir(&held).unwrap();
+    }
+    fs::rename(&aside, &held).unwrap();
+    let report = a.core.refresh_sync().unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert_eq!(store_of(&a).chunk_sizes().unwrap().len(), chunks);
+    a.core.adopt_remote_game(uuid_of(&game)).unwrap();
+    assert!(a.core.check_integrity(true).unwrap().is_ok());
+}
+
+#[test]
+fn versions_reach_a_game_recovered_here_after_the_remote_window_ended() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    a.write("save.dat", "v1");
+    let game = a.add_game("Late");
+    let uuid = uuid_of(&game);
+    a.core.refresh_sync().unwrap();
+    let on_b = b.core.adopt_remote_game(uuid).unwrap();
+    // Both "machines" share one disk in tests: B plays in A's folder.
+    a.write("save.dat", "from b");
+    b.checkpoint(on_b.game.id);
+    b.core.refresh_sync().unwrap();
+
+    // The remote says it was deleted 31 days ago; A, offline, had recovered
+    // it on day 29. B's version is still in the sync folder.
+    let deleted_at = Utc::now() - RECOVERY_WINDOW - Duration::days(1);
+    let remote_store = Store::open_existing(remote.path()).unwrap();
+    let mut meta = remote_store.find_game(uuid).unwrap().unwrap();
+    meta.deletion.deleted_at = Some(deleted_at);
+    remote_store.write_game(&meta).unwrap();
+    let local = store_of(&a);
+    let mut meta = local.find_game(uuid).unwrap().unwrap();
+    meta.deletion.deleted_at = Some(deleted_at);
+    meta.deletion.recovered_at = Some(deleted_at + Duration::days(29));
+    local.write_game(&meta).unwrap();
+
+    a.core.refresh_sync().unwrap();
+    assert_eq!(a.game(game.game.id).versions.len(), 2);
+    assert!(a.core.check_integrity(true).unwrap().is_ok());
 }

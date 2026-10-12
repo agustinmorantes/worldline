@@ -79,7 +79,7 @@ async fn recently_deleted(core: State<'_, Arc<WorldlineCore>>) -> Result<Vec<Del
 async fn recover_game(
     uuid: uuid::Uuid,
     core: State<'_, Arc<WorldlineCore>>,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
     let core = Arc::clone(&core);
     off_main(move || core.recover_game(uuid))
         .await

@@ -11,7 +11,7 @@ use crate::install_scanner::InstallScannerItem;
 use crate::maintenance::{self, GcReport, RetentionSettings};
 use crate::models::*;
 use crate::restore;
-use crate::store::{self, GameRecord, Store, VersionReason, read_json, write_json};
+use crate::store::{self, Deletion, GameRecord, Store, VersionReason, read_json, write_json};
 use crate::sync::{
     self, DeviceKind, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
 };
@@ -77,6 +77,16 @@ struct SyncState {
     /// like new ones however old they are.
     #[serde(default)]
     recent_pulls: HashMap<Uuid, DateTime<Utc>>,
+    /// Games deleted here that another device recovered, pulled with every
+    /// version healed until all of their history arrived: this device may
+    /// have collected it already (ADR 0011).
+    #[serde(default)]
+    reviving: HashSet<Uuid>,
+}
+
+/// Whether `remote` brings back a game or slot deleted in `local`.
+fn revived(local: Deletion, remote: Deletion) -> bool {
+    local.is_deleted() && !Deletion::merge(local, remote).is_deleted()
 }
 
 /// How far back a push heals versions that were created or pulled.
@@ -565,8 +575,10 @@ impl WorldlineCore {
     }
 
     /// Brings a deleted game back with its history, without touching live
-    /// saves: the next checkpoint records what is on disk.
-    pub fn recover_game(&self, uuid: Uuid) -> Result<()> {
+    /// saves: the next checkpoint records what is on disk. Returns whether it
+    /// is back in this device's library; a game this device doesn't track
+    /// stays in the cloud list.
+    pub fn recover_game(&self, uuid: Uuid) -> Result<bool> {
         self.exclusive(|| self.history().recover_game(uuid, Utc::now()))
     }
 
@@ -1304,14 +1316,36 @@ impl WorldlineCore {
         Ok(problems)
     }
 
-    fn pull_game(&self, remote: &Remote, game: &GameRecord) -> Result<Vec<Uuid>> {
+    /// Pulls one game. `adopting` is set when the user (or an install) asks
+    /// for the game here; otherwise a game deleted here that another device
+    /// recovered goes to the cloud list rather than back into the library.
+    fn pull_game(&self, remote: &Remote, game: &GameRecord, adopting: bool) -> Result<Vec<Uuid>> {
         let history = self.history();
+        let uuid = game.meta.uuid;
         let markers = remote.store.markers()?;
         let screenshots = self.get_monitoring_settings()?.sync_screenshots;
+        let local = history.store.game(uuid)?;
+        let game_revived = local
+            .as_ref()
+            .is_some_and(|local| revived(local.meta.deletion, game.meta.deletion));
+        let slot_revived = local.iter().flat_map(|local| &local.slots).any(|slot| {
+            game.slots
+                .iter()
+                .find(|remote| remote.meta.uuid == slot.meta.uuid)
+                .is_some_and(|remote| revived(slot.meta.deletion, remote.meta.deletion))
+        });
+        // Recorded before copying, so a pull cut short still heals next time.
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        if (game_revived || slot_revived) && state.reviving.insert(uuid) {
+            write_json(&state_path, &state)?;
+        }
+        let reviving = state.reviving.contains(&uuid);
+        let heal = if reviving { Heal::All } else { Heal::None };
         let copy = || {
             let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial)
                 .screenshots(screenshots);
-            transfer.copy_game(game, &markers, Heal::None)?;
+            transfer.copy_game(game, &markers, heal)?;
             Ok(transfer.report)
         };
         let deleted_active = match history.index.game_id(game.meta.uuid)? {
@@ -1337,16 +1371,20 @@ impl WorldlineCore {
                 Ok(report)
             })?,
             None => {
-                let returning = history.index.game_id(game.meta.uuid)?.is_none();
                 let report = store::with_lock(history.root(), copy)?;
                 self.record_pulls(&report.copied_versions)?;
-                history.refresh_game(game.meta.uuid)?;
-                if returning {
-                    history.settle_returned_game(game.meta.uuid)?;
+                if game_revived && !adopting {
+                    history.set_untracked(uuid, true)?;
                 }
+                history.refresh_game(uuid)?;
                 report
             }
         };
+        if reviving && report.not_arrived.is_empty() {
+            let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+            state.reviving.remove(&uuid);
+            write_json(&state_path, &state)?;
+        }
         Ok(report.not_arrived)
     }
 
@@ -1521,18 +1559,22 @@ impl WorldlineCore {
             .collect())
     }
 
+    /// Pulls this device's games, and those still healing after another
+    /// device recovered them, even while they wait in the cloud list.
     fn pull_locked(
         &self,
         remote: &Remote,
         remote_games: &[GameRecord],
         local_uuids: &HashSet<Uuid>,
     ) -> Vec<String> {
+        let state: SyncState =
+            read_json(&self.data_dir.join("sync_state.json")).unwrap_or_default();
         let mut problems = Vec::new();
         for remote_game in remote_games
             .iter()
-            .filter(|g| local_uuids.contains(&g.meta.uuid))
+            .filter(|g| local_uuids.contains(&g.meta.uuid) || state.reviving.contains(&g.meta.uuid))
         {
-            match self.pull_game(remote, remote_game) {
+            match self.pull_game(remote, remote_game, false) {
                 Ok(not_arrived) if !not_arrived.is_empty() => problems.push(format!(
                     "{}: {} version(s) have not fully arrived yet",
                     remote_game.meta.title,
@@ -1731,7 +1773,7 @@ impl WorldlineCore {
             }
             LocalMatch::Same(local) => {
                 self.link_game(&local, &game)?;
-                self.pull_game(&remote, &game)?;
+                self.pull_game(&remote, &game, true)?;
             }
             LocalMatch::Collision(kind, reason) => {
                 return Err(anyhow::Error::new(kind).context(reason));
@@ -1967,7 +2009,7 @@ impl WorldlineCore {
     /// a new version; otherwise the newest device's progress is restored.
     /// Returns whether progress was applied.
     fn adopt(&self, remote: &Remote, remote_game: &GameRecord) -> Result<bool> {
-        self.pull_game(remote, remote_game)?;
+        self.pull_game(remote, remote_game, true)?;
         let history = self.history();
         let game_id = history
             .index

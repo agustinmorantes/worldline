@@ -581,8 +581,11 @@ fn main() -> Result<()> {
                 }
             }
             GamesAction::Recover { uuid } => {
-                core.recover_game(uuid)?;
-                println!("Recovered game {uuid}");
+                if core.recover_game(uuid)? {
+                    println!("Recovered game {uuid}");
+                } else {
+                    println!("Recovered game {uuid}; it isn't tracked on this device");
+                }
             }
             GamesAction::Purge { uuid } => {
                 core.purge_deleted(uuid)?;

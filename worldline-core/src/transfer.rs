@@ -137,10 +137,24 @@ impl<'a> Transfer<'a> {
 
         // History past its recovery window (ADR 0011) is collected
         // everywhere: only its metadata travels, so later deletes still reach
-        // every device. Versions it parented count as there.
+        // every device. Versions it parented count as there. The window is
+        // read from the merged marks in `dst`, so a recovery `src` hasn't
+        // seen yet still gets the history.
         let now = Utc::now();
+        let game_deletion = existing
+            .as_ref()
+            .map_or(game.meta.deletion, |record| record.meta.deletion);
+        let slot_deletion: HashMap<Uuid, _> = existing
+            .iter()
+            .flat_map(|record| &record.slots)
+            .map(|slot| (slot.meta.uuid, slot.meta.deletion))
+            .collect();
         let (kept, gone): (Vec<_>, Vec<_>) = game.slots.iter().partition(|slot| {
-            game.meta.deletion.keeps_history(now) && slot.meta.deletion.keeps_history(now)
+            let deletion = slot_deletion
+                .get(&slot.meta.uuid)
+                .copied()
+                .unwrap_or(slot.meta.deletion);
+            game_deletion.keeps_history(now) && deletion.keeps_history(now)
         });
         let gone: HashSet<Uuid> = gone
             .iter()
@@ -175,8 +189,10 @@ impl<'a> Transfer<'a> {
                             error.context(format!("version {} is incomplete", version.uuid))
                         );
                     }
+                    // A version here whose payload can't be healed yet is
+                    // reported too: it is retried on the next run.
+                    self.report.not_arrived.push(version.uuid);
                     if !already {
-                        self.report.not_arrived.push(version.uuid);
                         continue;
                     }
                 }
