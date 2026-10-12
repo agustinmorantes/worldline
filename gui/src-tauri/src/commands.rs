@@ -282,13 +282,19 @@ async fn update_sync_settings(
 
 #[tauri::command]
 async fn refresh_sync(
+    initial: Option<bool>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<worldline_core::sync::SyncReport, Failure> {
     let core = Arc::clone(&core);
-    tauri::async_runtime::spawn_blocking(move || core.refresh_sync())
-        .await
-        .map_err(|e| Failure::from(&anyhow::Error::from(e)))?
-        .map_err(|e| Failure::from(&e))
+    tauri::async_runtime::spawn_blocking(move || {
+        if initial.unwrap_or(false) {
+            core.startup_sync()
+        } else {
+            core.refresh_sync().map_err(|e| Failure::from(&e))
+        }
+    })
+    .await
+    .map_err(|e| Failure::from(&anyhow::Error::from(e)))?
 }
 
 #[tauri::command]

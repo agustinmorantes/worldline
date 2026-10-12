@@ -139,6 +139,7 @@ export const getSyncSettings = (): Promise<SyncSettings> => invoke('get_sync_set
 export const updateSyncSettings = (settings: SyncSettings): Promise<SyncSettings> =>
   invoke('update_sync_settings', { settings });
 export const refreshSync = (): Promise<SyncReport> => invoke('refresh_sync');
+export const initialSync = (): Promise<SyncReport> => invoke('refresh_sync', { initial: true });
 export const adoptRemoteGame = (gameUuid: string): Promise<FullGame> =>
   invoke('adopt_remote_game', { gameUuid });
 export const applyRemoteVersion = (versionId: number): Promise<void> =>

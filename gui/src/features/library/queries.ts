@@ -1,5 +1,6 @@
 import { UseQueryResult, useQuery } from '@tanstack/react-query';
-import { getGame, getGames, getRetiredVersions, getRunningGames, getSyncSettings, refreshSync } from '@/ipc/commands';
+import { getGame, getGames, getRetiredVersions, getRunningGames, getSyncSettings, initialSync, refreshSync } from '@/ipc/commands';
+import { queryClient } from '@/app/query-client';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { SyncReport } from '@/ipc/bindings/SyncReport';
 import type { SyncSettings } from '@/ipc/bindings/SyncSettings';
@@ -25,16 +26,16 @@ export const useSyncSettings = (): UseQueryResult<SyncSettings> => {
 };
 
 /**
- * The last sync report. It syncs once when first needed; after that the
- * cache is fed by the backend's periodic `sync-complete` events, and callers
- * `refetch()` only on explicit user action. Disabled while sync is off.
+ * The last sync report. The first request shares the backend's startup sync;
+ * the cache is then fed by the backend's periodic `sync-complete` events.
+ * Explicit refreshes run a new sync. Disabled while sync is off.
  */
 export const useSyncReport = (): UseQueryResult<SyncReport> => {
   const { data: settings } = useSyncSettings();
   const remote = settings?.remote_path;
   return useQuery({
     queryKey: ['sync-report'],
-    queryFn: () => refreshSync().then(
+    queryFn: () => initialSync().then(
       (report) => { setSyncOutcome(null); return report; },
       (err: unknown) => { setSyncOutcome(err); throw err; },
     ),
@@ -45,6 +46,18 @@ export const useSyncReport = (): UseQueryResult<SyncReport> => {
     refetchOnWindowFocus: false,
   });
 };
+
+/** Explicit sync: update the same query's data, pending state and errors. */
+export const refreshSyncReport = (): Promise<SyncReport> => queryClient.query({
+  queryKey: ['sync-report'],
+  queryFn: () => refreshSync().then(
+    (report) => { setSyncOutcome(null); return report; },
+    (err: unknown) => { setSyncOutcome(err); throw err; },
+  ),
+  staleTime: 0,
+  retry: false,
+  meta: { quiet: true },
+});
 
 export const useRetiredVersions = (): UseQueryResult<string[]> => {
   return useQuery({ queryKey: ['retired-versions'], queryFn: getRetiredVersions });

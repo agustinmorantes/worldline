@@ -12,6 +12,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+// On a cloud mount thousands of individual stats cost more than listing the
+// chunk shards. Keep small pushes lazy, including when recent healing is on.
+const CHUNK_LIST_THRESHOLD: usize = 4096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Completeness {
     /// Sync: a version whose parent or chunks haven't arrived is skipped.
@@ -293,6 +297,19 @@ impl<'a> Transfer<'a> {
     }
 
     fn copy_chunks(&mut self, version: &VersionMeta) -> Result<()> {
+        if self.dst_chunks.is_none() && self.completeness == Completeness::Partial {
+            let mut unchecked = HashSet::new();
+            for hash in version
+                .chunk_hashes()
+                .filter(|hash| !self.seen.contains(*hash))
+            {
+                unchecked.insert(hash);
+                if self.seen.len() + unchecked.len() >= CHUNK_LIST_THRESHOLD {
+                    self.list_dst_chunks()?;
+                    break;
+                }
+            }
+        }
         for hash in version.chunk_hashes() {
             if self.seen.contains(hash) {
                 continue;
@@ -488,6 +505,84 @@ mod tests {
                 .copy_game(&record, &HashMap::new(), Heal::None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn large_recent_healing_lists_chunks_and_still_reuploads_missing_ones() {
+        let (a, b) = (tempdir().unwrap(), tempdir().unwrap());
+        let (src, dst) = (
+            Store::open(a.path()).unwrap(),
+            Store::open(b.path()).unwrap(),
+        );
+        let (mut record, _, _) = fixture(&src);
+        let mut hashes = Vec::new();
+        for n in 0..CHUNK_LIST_THRESHOLD as u32 {
+            let raw = n.to_le_bytes();
+            let hash = format_hash(&Sha256::digest(raw));
+            let compressed = zstd::stream::encode_all(raw.as_slice(), 1).unwrap();
+            for store in [&src, &dst] {
+                let path = store.chunk_path(&hash).unwrap();
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, &compressed).unwrap();
+            }
+            hashes.push(hash);
+        }
+        // Neither version alone reaches the threshold: the transfer must
+        // account for the chunks it checked for previous versions too.
+        let half = hashes.len() / 2;
+        for (version, chunks) in record.slots[0].versions.iter_mut().zip(hashes.chunks(half)) {
+            version.files[0].chunks = chunks.to_vec();
+            version.files[0].size = (chunks.len() * 4) as u64;
+        }
+        Transfer::new(&src, &dst, Completeness::Partial)
+            .copy_game(&record, &HashMap::new(), Heal::None)
+            .unwrap();
+        let missing = &hashes[0];
+        std::fs::remove_file(dst.chunk_path(missing).unwrap()).unwrap();
+        let pulled = HashSet::new();
+        let mut transfer = Transfer::new(&src, &dst, Completeness::Partial);
+        transfer
+            .copy_game(
+                &record,
+                &HashMap::new(),
+                Heal::Recent {
+                    since: Utc::now() - chrono::Duration::hours(1),
+                    pulled: &pulled,
+                },
+            )
+            .unwrap();
+        assert!(
+            transfer.dst_chunks.is_some(),
+            "large recent healing must use listings"
+        );
+        assert_eq!(transfer.report.chunks_copied, 1);
+        assert_eq!(
+            chunks::read_chunk(&dst, missing).unwrap(),
+            0_u32.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn small_recent_healing_keeps_presence_checks_lazy() {
+        let (a, b) = (tempdir().unwrap(), tempdir().unwrap());
+        let (src, dst) = (
+            Store::open(a.path()).unwrap(),
+            Store::open(b.path()).unwrap(),
+        );
+        let (record, _, _) = fixture(&src);
+        let mut transfer = Transfer::new(&src, &dst, Completeness::Partial);
+        transfer
+            .copy_game(
+                &record,
+                &HashMap::new(),
+                Heal::Recent {
+                    since: Utc::now() - chrono::Duration::hours(1),
+                    pulled: &HashSet::new(),
+                },
+            )
+            .unwrap();
+        assert!(transfer.dst_chunks.is_none());
+        assert_eq!(transfer.report.chunks_copied, 1);
     }
 
     #[test]

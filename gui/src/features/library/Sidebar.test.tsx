@@ -11,6 +11,7 @@ vi.mock('@/features/library/queries', () => ({
   useGames: vi.fn(),
   useSyncSettings: vi.fn(),
   useSyncReport: vi.fn(),
+  refreshSyncReport: vi.fn().mockResolvedValue(undefined),
   useRunningGames: vi.fn(() => ({ data: [] })),
 }));
 

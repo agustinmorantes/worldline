@@ -7,7 +7,7 @@ import type { DeviceKind } from '@/ipc/bindings/DeviceKind';
 import type { DeviceMetadata } from '@/ipc/bindings/DeviceMetadata';
 import { confirm, pickFolder, removeSyncDevice, updateDevice, updateSyncSettings } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
-import { useSyncReport, useSyncSettings } from '@/features/library/queries';
+import { refreshSyncReport, useSyncReport, useSyncSettings } from '@/features/library/queries';
 import { isFolderUnreachable, setSyncOutcome, useFolderUnreachable, useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { reportError } from '@/shared/errors/report';
@@ -172,9 +172,12 @@ function CloudOn({ remote, device }: { remote: string; device: DeviceMetadata })
   const others = report.data?.devices.filter((d) => d.device_uuid !== device.device_uuid) ?? [];
 
   const resync = async (failed: string): Promise<void> => {
-    const result = await report.refetch();
-    // An unavailable folder is shown below the path instead.
-    if (result.isError && !isFolderUnreachable(result.error)) reportError(failed, result.error);
+    try {
+      await refreshSyncReport();
+    } catch (error) {
+      // An unavailable folder is shown below the path instead.
+      if (!isFolderUnreachable(error)) reportError(failed, error);
+    }
   };
 
   async function turnOff(): Promise<void> {

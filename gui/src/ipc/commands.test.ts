@@ -28,6 +28,7 @@ describe('ipc commands', () => {
     ['set_game_icon', () => commands.setGameIcon(1, 'C:/icon.png'), { gameId: 1, sourcePath: 'C:/icon.png', source: 'user' }],
     ['set_game_icon', () => commands.setGameIcon(1, 'C:/icon.png', 'auto'), { gameId: 1, sourcePath: 'C:/icon.png', source: 'auto' }],
     ['apply_remote_version', () => commands.applyRemoteVersion(7), { versionId: 7 }],
+    ['refresh_sync', () => commands.initialSync(), { initial: true }],
     ['adopt_remote_game', () => commands.adoptRemoteGame('uuid'), { gameUuid: 'uuid' }],
     [
       'import_game_history',

@@ -62,6 +62,7 @@ fn run(
     }
     let mut next = Trigger::Sync;
     let mut due = Instant::now();
+    let mut initial = true;
     loop {
         // Coalesce whatever queued up while working.
         let Plan { sync, push, stop } = coalesce(
@@ -76,7 +77,7 @@ fn run(
         if stop {
             push_only(&core, &notifications, None);
         } else if sync {
-            full_sync(&core, &notifications);
+            full_sync(&core, &notifications, std::mem::take(&mut initial));
             due = Instant::now() + TICK;
         } else if !push.is_empty() {
             push_only(&core, &notifications, Some(&push));
@@ -100,15 +101,22 @@ fn sync_configured(core: &WorldlineCore) -> bool {
 }
 
 /// Every sync and push that runs is announced, then reported.
-fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notification>) {
+fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notification>, initial: bool) {
     if sync_configured(core) {
         let _ = notifications.send(Notification::SyncStarted);
-        match core.refresh_sync() {
+        let synced = if initial {
+            core.startup_sync()
+        } else {
+            core.refresh_sync_and_prune()
+                .map_err(|error| Failure::from(&error))
+        };
+        match synced {
             Ok(report) => {
                 let _ = notifications.send(Notification::SyncCompleted(report));
+                return; // Due pruning shared this sync's complete push.
             }
             Err(error) => {
-                let _ = notifications.send(Notification::SyncFailed(Failure::from(&error)));
+                let _ = notifications.send(Notification::SyncFailed(error));
             }
         }
     }

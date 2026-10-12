@@ -7,7 +7,7 @@ import { ease, spring } from '@/shared/motion/motion';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
 import { fadeLabel, type Fold } from './fold';
-import { useSyncReport, useSyncSettings } from './queries';
+import { refreshSyncReport, useSyncReport, useSyncSettings } from './queries';
 import { useShellNav } from './shell-nav';
 import { isFolderUnreachable, useFolderUnreachable, useSyncRunning } from './sync-activity';
 import { useNow } from './useNow';
@@ -65,9 +65,9 @@ export function SyncCard({ fold }: { fold: Fold }): ReactElement | null {
 
   const syncNow = (): void => {
     if (syncing) return;
-    void report.refetch().then((result) => {
+    void refreshSyncReport().catch((error: unknown) => {
       // The card itself says when the folder is unavailable.
-      if (result.isError && !isFolderUnreachable(result.error)) reportError(t.sync.failed, result.error);
+      if (!isFolderUnreachable(error)) reportError(t.sync.failed, error);
     });
   };
 

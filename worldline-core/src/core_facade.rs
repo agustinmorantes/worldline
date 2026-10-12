@@ -4,7 +4,7 @@ use crate::detection::{
     BranchFrom, CaptureTarget, Checkpoints, Notification, NotificationReceiver, RunningGames,
     Suppression, Watcher,
 };
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, Failure};
 use crate::history::{CheckpointOutcome, History, Kept, game_uuid};
 use crate::index::{DbPool, Index};
 use crate::install_scanner::InstallScannerItem;
@@ -322,6 +322,8 @@ pub struct WorldlineCore {
     /// The last report's remote, so the report after a game's push re-reads
     /// only that game.
     last_report: Mutex<Option<LastReport>>,
+    /// Shared by the background loop and the GUI's first report request.
+    startup_sync: Mutex<Option<std::result::Result<SyncReport, Failure>>>,
     /// What the last install scan found, by normalized title; `None` until
     /// this process scans.
     scanned_installs: Mutex<Option<HashMap<String, ScannedInstall>>>,
@@ -408,6 +410,7 @@ impl WorldlineCore {
             sync_lock: Mutex::new(()),
             last_installs: Mutex::new(HashMap::new()),
             last_report: Mutex::new(None),
+            startup_sync: Mutex::new(None),
             scanned_installs: Mutex::new(None),
             last_prune: Mutex::new(None),
             moved_old_data,
@@ -1658,6 +1661,10 @@ impl WorldlineCore {
             Remote::open(Path::new(path), &self.data_dir)?;
         }
         sync::save_settings(&self.data_dir.join("sync_settings.json"), &settings)?;
+        // Drop the sync lock before taking the startup lock: a first report
+        // request holds the startup lock while it syncs.
+        drop(_guard);
+        *self.startup_sync.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(settings)
     }
 
@@ -2026,6 +2033,22 @@ impl WorldlineCore {
         self.refresh_sync_with(crate::icon::download, Utc::now())
     }
 
+    /// The background loop and the GUI share one startup operation, including
+    /// its failure. Explicit refreshes still run a new sync.
+    pub fn startup_sync(&self) -> std::result::Result<SyncReport, Failure> {
+        let mut result = self.startup_sync.lock().unwrap_or_else(|e| e.into_inner());
+        result
+            .get_or_insert_with(|| {
+                self.refresh_sync_and_prune()
+                    .map_err(|error| Failure::from(&error))
+            })
+            .clone()
+    }
+
+    pub(crate) fn refresh_sync_and_prune(&self) -> Result<SyncReport> {
+        self.refresh_sync_with_pruning(crate::icon::download, Utc::now(), true)
+    }
+
     /// `refresh_sync` with `fetch` downloading icons and looking them up on
     /// Steam at `now`.
     fn refresh_sync_with(
@@ -2033,10 +2056,20 @@ impl WorldlineCore {
         fetch: impl Fn(&str) -> Result<Vec<u8>>,
         now: DateTime<Utc>,
     ) -> Result<SyncReport> {
+        self.refresh_sync_with_pruning(fetch, now, false)
+    }
+
+    fn refresh_sync_with_pruning(
+        &self,
+        fetch: impl Fn(&str) -> Result<Vec<u8>>,
+        now: DateTime<Utc>,
+        prune: bool,
+    ) -> Result<SyncReport> {
         let mut phases = sync::Phases::start("Full sync");
         let remote = self.require_remote()?;
-        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
         phases.lap("open");
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        phases.lap("wait for sync lock");
         let mut problems = Vec::new();
         // Read once: nothing below writes the remote catalog before the push.
         let remote_games = remote.store.catalog()?;
@@ -2150,8 +2183,30 @@ impl WorldlineCore {
             Err(error) => eprintln!("Icons: {error:#}"),
         }
         phases.lap("icons");
-        problems.extend(self.push_locked(&remote, None)?);
-        phases.lap("push");
+        // A capture cannot land between this push and due cleanup. Manual
+        // pruning still performs its own complete push under the same lock.
+        problems.extend(store::with_lock(self.repository_root(), || {
+            let pushed = self.push_locked(&remote, None)?;
+            if prune {
+                let pruning = (|| {
+                    if !self.pruning_due()? {
+                        return Ok(None);
+                    }
+                    if !pushed.is_empty() {
+                        bail!("Cleanup needs a complete push first: {}", pushed.join("; "));
+                    }
+                    self.run_pruning_locked(Some(&remote), planning_now(), true)
+                        .map(Some)
+                })();
+                self.report_pruning(pruning);
+            }
+            Ok(pushed)
+        })?);
+        phases.lap(if prune {
+            "push and due pruning"
+        } else {
+            "push"
+        });
         self.reload_watcher();
         let remote = self.require_remote()?;
         // Adopted games get their install dir; uninstalled ones lose it.
@@ -2941,36 +2996,50 @@ impl WorldlineCore {
     /// `run_pruning` with an explicit clock, for tests of time-based retention.
     #[doc(hidden)]
     pub fn run_pruning_at(&self, now: DateTime<Utc>) -> Result<PruningRunReport> {
-        let mut phases = sync::Phases::start("Pruning");
         let remote = self.remote()?;
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
-        phases.lap("open");
-        if let Some(remote) = &remote {
+        store::with_lock(self.repository_root(), || {
+            self.run_pruning_locked(remote.as_ref(), now, false)
+        })
+    }
+
+    /// Caller holds both the sync lock and the repository lock. `pushed` is
+    /// true only immediately after a successful full push under those locks.
+    fn run_pruning_locked(
+        &self,
+        remote: Option<&Remote>,
+        now: DateTime<Utc>,
+        pushed: bool,
+    ) -> Result<PruningRunReport> {
+        let mut phases = sync::Phases::start("Pruning");
+        if let Some(remote) = remote {
             if let Some(path) = &remote.unreadable_state {
                 bail!(
                     "{} is missing or unreadable; cleanup is skipped until it is fixed",
                     path.display()
                 );
             }
-            let problems = self.push_locked(remote, None)?;
-            if !problems.is_empty() {
-                bail!(
-                    "Cleanup needs a complete push first: {}",
-                    problems.join("; ")
-                );
+            if !pushed {
+                let problems = self.push_locked(remote, None)?;
+                if !problems.is_empty() {
+                    bail!(
+                        "Cleanup needs a complete push first: {}",
+                        problems.join("; ")
+                    );
+                }
             }
         }
-        phases.lap("push");
+        phases.lap(if pushed { "push reused" } else { "push" });
         let history = self.history();
         let settings =
             maintenance::sync_settings(&self.retention_path(), remote.as_ref().map(|r| &r.store))?;
-        let (retired, budget_unreachable, local_gc) = store::with_lock(history.root(), || {
-            let inputs = self.retention_inputs(remote.as_ref())?;
+        let (retired, budget_unreachable, local_gc) = {
+            let inputs = self.retention_inputs(remote)?;
             let plan = maintenance::plan(&maintenance::PlanInput {
                 games: &inputs.games,
                 retired: &inputs.retired,
                 pointed: &inputs.pointed,
-                chunk_sizes: &self.planning_chunk_sizes(remote.as_ref())?,
+                chunk_sizes: &self.planning_chunk_sizes(remote)?,
                 settings: &settings,
                 now,
             });
@@ -2979,12 +3048,12 @@ impl WorldlineCore {
                 maintenance::apply(&remote.store, &plan, now)?;
             }
             let local_gc = maintenance::gc_local(&history.store, &inputs.local_pointed)?;
-            Ok((
+            (
                 plan.retire.iter().map(|(_, _, v)| *v).collect::<Vec<_>>(),
                 plan.budget_unreachable,
                 local_gc,
-            ))
-        })?;
+            )
+        };
         phases.lap("plan and local cleanup");
         let remote_gc = match &remote {
             Some(remote) => {
@@ -3019,14 +3088,26 @@ impl WorldlineCore {
     /// Runs pruning when automatic retention is on and the last run is older
     /// than the interval. Returns the report when it ran.
     pub fn prune_if_due(&self) -> Result<Option<PruningRunReport>> {
-        if !self.get_pruning_settings()?.automatic {
-            return Ok(None);
-        }
-        let last = *self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
-        if last.is_some_and(|at| Utc::now() - at < PRUNE_INTERVAL) {
+        if !self.pruning_due()? {
             return Ok(None);
         }
         self.run_pruning().map(Some)
+    }
+
+    fn pruning_due(&self) -> Result<bool> {
+        let last = *self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(self.get_pruning_settings()?.automatic
+            && last.is_none_or(|at| Utc::now() - at >= PRUNE_INTERVAL))
+    }
+
+    fn report_pruning(&self, result: Result<Option<PruningRunReport>>) {
+        match result {
+            Ok(Some(report)) if report.changed_history() => {
+                self.notify(Notification::HistoryPruned);
+            }
+            Ok(_) => {}
+            Err(error) => self.notify(Notification::PruningFailed(Failure::from(&error))),
+        }
     }
 }
 
@@ -3591,6 +3672,57 @@ mod tests {
 
     const HASH_A: &str = "3eec57d783c54036166564e195039b20f600a52f";
     const HASH_B: &str = "e2cae122ca4663db2108808148d2793eef2f3e0f";
+
+    #[test]
+    fn startup_requests_share_one_sync_and_due_pruning_reuses_its_push() {
+        use std::cell::Cell;
+        thread_local! { static PUSHES: Cell<usize> = const { Cell::new(0) }; }
+        struct PushLog;
+        impl log::Log for PushLog {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if record.args().to_string().starts_with("Sync push took ") {
+                    PUSHES.set(PUSHES.get() + 1);
+                }
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: PushLog = PushLog;
+        log::set_logger(&LOGGER).unwrap();
+        log::set_max_level(log::LevelFilter::Info);
+        let (core, _, _data, _saves) = steam_games(&["Shared"], &[]);
+        let remote = tempfile::tempdir().unwrap();
+        core.update_sync_settings(SyncSettings {
+            remote_path: Some(remote.path().to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        let (a, b) = std::thread::scope(|scope| {
+            let request = || {
+                barrier.wait();
+                let report = core.startup_sync().unwrap();
+                (report, PUSHES.get())
+            };
+            let a = scope.spawn(request);
+            let b = scope.spawn(request);
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!(
+            a.0.synced_at, b.0.synced_at,
+            "both requests use the same result"
+        );
+        assert_eq!(a.1 + b.1, 1, "one push covers startup and due pruning");
+        assert!(
+            core.prune_if_due().unwrap().is_none(),
+            "startup already pruned"
+        );
+        core.refresh_sync().unwrap();
+        assert_eq!(PUSHES.get(), 1, "explicit refresh still syncs again");
+        core.run_pruning().unwrap();
+        assert_eq!(PUSHES.get(), 2, "standalone pruning still publishes first");
+    }
 
     /// A core tracking `titles`, none installed, with a manifest naming
     /// `appids` by title.
