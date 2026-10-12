@@ -1,5 +1,6 @@
 import { type QueryKey, type UseQueryResult, keepPreviousData, useQuery } from '@tanstack/react-query';
-import { getDevice, getMonitoringSettings, getPruningSettings, previewPruning, screenshotsSupported } from '@/ipc/commands';
+import { getDevice, getMonitoringSettings, getPruningSettings, previewPruning, recentlyDeleted, screenshotsSupported } from '@/ipc/commands';
+import type { DeletedItem } from '@/ipc/bindings/DeletedItem';
 import type { DeviceMetadata } from '@/ipc/bindings/DeviceMetadata';
 import type { MonitoringSettings } from '@/ipc/bindings/MonitoringSettings';
 import type { PruningPreview } from '@/ipc/bindings/PruningPreview';
@@ -25,6 +26,10 @@ export const usePruningPreview = (settings: RetentionSettings | undefined): UseQ
     enabled: settings !== undefined,
     placeholderData: keepPreviousData,
   });
+
+/** Games and playthroughs deleted on any device and still restorable, newest first. */
+export const useRecentlyDeleted = (): UseQueryResult<DeletedItem[]> =>
+  useQuery({ queryKey: ['recently-deleted'], queryFn: recentlyDeleted });
 
 export const useDevice = (): UseQueryResult<DeviceMetadata> =>
   useQuery({ queryKey: ['device'], queryFn: getDevice });

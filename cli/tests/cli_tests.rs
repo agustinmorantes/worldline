@@ -422,3 +422,32 @@ fn watch_captures_changes() {
     }
     assert!(captured, "the watcher never captured a change");
 }
+
+#[test]
+fn deleted_games_are_listed_recovered_and_purged() {
+    let dir = tempdir().unwrap();
+    let saves = tempdir().unwrap();
+    fs::write(saves.path().join("save.dat"), "x").unwrap();
+    let id = add_game(dir.path(), "Comeback", saves.path());
+    stdout(dir.path(), &["games", "delete", &id.to_string()]);
+    let listed = stdout(dir.path(), &["games", "deleted"]);
+    assert!(listed.contains("Comeback — 30 day(s) left"), "{listed}");
+    let uuid = listed.split_whitespace().nth(1).unwrap().to_string();
+    let bundle = dir.path().join("comeback.zip");
+    stdout(
+        dir.path(),
+        &["history", "export", &uuid, bundle.to_str().unwrap()],
+    );
+    assert!(bundle.exists());
+    stdout(dir.path(), &["games", "recover", &uuid]);
+    assert!(stdout(dir.path(), &["games", "list"]).contains("Comeback"));
+    let id = id_on_line(&stdout(dir.path(), &["games", "list"]), "Comeback");
+    stdout(dir.path(), &["games", "delete", &id.to_string()]);
+    stdout(dir.path(), &["games", "purge", &uuid]);
+    assert!(stdout(dir.path(), &["games", "deleted"]).contains("Nothing deleted."));
+    cli(dir.path())
+        .args(["games", "recover", &uuid])
+        .assert()
+        .failure()
+        .stderr(contains("can no longer be restored"));
+}

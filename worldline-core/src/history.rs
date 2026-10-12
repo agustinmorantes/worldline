@@ -8,13 +8,14 @@ use crate::icon;
 use crate::index::Index;
 use crate::models::*;
 use crate::store::{
-    AccentHueSource, FileEntry, GameMeta, GameRecord, IconSource, SlotMeta, Store, TrackedDirMeta,
-    VersionMeta, VersionReason, folder_slug, normalize_display_name, read_json, validate_hue,
-    write_json,
+    AccentHueSource, Deletion, FileEntry, GameMeta, GameRecord, IconSource, SlotMeta, Store,
+    TrackedDirMeta, VersionMeta, VersionReason, folder_slug, normalize_display_name, read_json,
+    validate_hue, write_json,
 };
+use crate::sync::{DeviceGameState, DeviceState};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -54,6 +55,9 @@ pub struct History {
     device: Uuid,
     /// Device-local list of games this device stopped tracking (ADR 0006).
     untracked_path: PathBuf,
+    /// Device-local pointers of deleted games, kept next to the untracked
+    /// list while they can be recovered (ADR 0011).
+    deleted_pointers_path: PathBuf,
 }
 
 impl History {
@@ -63,6 +67,7 @@ impl History {
             index,
             device,
             untracked_path: untracked_path.to_path_buf(),
+            deleted_pointers_path: untracked_path.with_file_name("deleted_pointers.json"),
         };
         // Files are the truth: a crash between publishing files and projecting
         // them leaves a stale index, so every start re-projects.
@@ -98,6 +103,59 @@ impl History {
                 .upsert_game(&record, &self.retired()?, &self.store),
             None => self.index.remove_game(uuid),
         }
+    }
+
+    /// The pointers kept for deleted games. They only help a recovery resume,
+    /// so a damaged file is set aside and starts over empty.
+    fn deleted_pointers(&self) -> Result<HashMap<Uuid, DeviceGameState>> {
+        let path = &self.deleted_pointers_path;
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(HashMap::new());
+            }
+            Err(error) => {
+                return Err(error).context("Failed to load the pointers of deleted games");
+            }
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(kept) => Ok(kept),
+            Err(_) => {
+                let aside = path.with_file_name(format!(
+                    ".deleted_pointers.corrupt-{}.json",
+                    Uuid::new_v4().simple()
+                ));
+                // The next write replaces the file anyway.
+                let _ = std::fs::rename(path, aside);
+                Ok(HashMap::new())
+            }
+        }
+    }
+
+    /// Records this device's pointers of a game about to be deleted, before
+    /// the deletion is written, and forgets those of games that can no longer
+    /// be recovered. One whose files can't be read now is kept.
+    pub(crate) fn keep_pointers(&self, uuid: Uuid) -> Result<()> {
+        let pointers: Vec<_> = self
+            .index
+            .pointers()?
+            .into_iter()
+            .filter(|pointer| pointer.game == uuid)
+            .collect();
+        let mut kept = self.deleted_pointers()?;
+        let now = Utc::now();
+        kept.retain(|game, _| match self.store.find_game(*game) {
+            Ok(meta) => meta.is_some_and(|meta| meta.deletion.is_recoverable(now)),
+            Err(_) => true,
+        });
+        match DeviceState::from_pointers(self.device, &pointers)
+            .games
+            .remove(&uuid)
+        {
+            Some(state) => kept.insert(uuid, state),
+            None => kept.remove(&uuid),
+        };
+        write_json(&self.deleted_pointers_path, &kept)
     }
 
     /// Games this device stopped tracking; their history stays in the store.
@@ -168,7 +226,7 @@ impl History {
             folder_slug: folder_slug('g', &title, uuid),
             created_at: now,
             updated_at: now,
-            deleted_at: None,
+            deletion: Default::default(),
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: AccentHueSource::Auto,
@@ -290,13 +348,13 @@ impl History {
     pub fn delete_game(&self, id: i32) -> Result<()> {
         let game = self.index.get_game(id)?;
         let record = self.record(&game.game)?;
+        let mut meta = record.meta;
+        self.keep_pointers(meta.uuid)?;
         let now = Utc::now();
-        self.store.write_game(&GameMeta {
-            deleted_at: Some(now),
-            updated_at: now,
-            ..record.meta
-        })?;
-        self.refresh_game(record.meta.uuid)
+        meta.deletion.delete(now);
+        meta.updated_at = now;
+        self.store.write_game(&meta)?;
+        self.refresh_game(meta.uuid)
     }
 
     pub fn create_slot(&self, game_id: i32, name: &str) -> Result<Slot> {
@@ -336,11 +394,203 @@ impl History {
             .with_context(|| format!("files for slot '{}' are missing", slot.name))?;
         let mut meta = record.meta;
         let now = Utc::now();
-        meta.deleted_at = Some(now);
+        meta.deletion.delete(now);
         meta.seen_versions = record.versions.iter().map(|version| version.uuid).collect();
         meta.updated_at = now;
         self.store.write_slot(&game.game.folder_slug, &meta)?;
         self.refresh_game(game_uuid(&game.game)?)
+    }
+
+    /// Games and slots deleted everywhere that can still be recovered, newest
+    /// first (ADR 0011). Slots of a deleted or untracked game are left out:
+    /// they can only come back into a game this device shows.
+    pub fn recently_deleted(&self, now: DateTime<Utc>) -> Result<Vec<DeletedItem>> {
+        let untracked = self.untracked()?;
+        let mut items = Vec::new();
+        for game in self.store.game_metas()? {
+            if let Some(expires_at) = recoverable_until(&game.deletion, now) {
+                items.push(DeletedItem {
+                    kind: DeletedKind::Game,
+                    uuid: game.uuid,
+                    title: game.title.clone(),
+                    game_title: game.title.clone(),
+                    deleted_at: game.deletion.deleted_at.unwrap_or_default(),
+                    expires_at,
+                });
+            }
+            if game.deletion.is_deleted() || untracked.contains(&game.uuid) {
+                continue;
+            }
+            for slot in self.store.slot_metas(&game)? {
+                if let Some(expires_at) = recoverable_until(&slot.deletion, now) {
+                    items.push(DeletedItem {
+                        kind: DeletedKind::Slot,
+                        uuid: slot.uuid,
+                        title: slot.name,
+                        game_title: game.title.clone(),
+                        deleted_at: slot.deletion.deleted_at.unwrap_or_default(),
+                        expires_at,
+                    });
+                }
+            }
+        }
+        items.sort_by_key(|item| std::cmp::Reverse(item.deleted_at));
+        Ok(items)
+    }
+
+    /// Brings back a deleted game with the history it had, without writing
+    /// live saves: the next checkpoint records whatever is on disk, on top of
+    /// the version this device was on. Refused while another game here has
+    /// its title or one of its folders, since both would capture the same
+    /// saves. A game this device doesn't track comes back for the other
+    /// devices and stays in the cloud list. Returns whether it is back in
+    /// this device's library.
+    pub fn recover_game(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<bool> {
+        let record = self
+            .store
+            .game(uuid)?
+            .context("This game is no longer in your library")?;
+        let mut meta = record.meta.clone();
+        if !meta.deletion.is_recoverable(now) {
+            bail!("'{}' can no longer be restored", meta.title);
+        }
+        let here = !self.untracked()?.contains(&uuid);
+        if here {
+            self.validate_fits(&record)?;
+        }
+        // Read before anything changes; the entry goes once the game can no
+        // longer be recovered.
+        let saved = self.deleted_pointers()?.remove(&uuid);
+        meta.deletion.recover(now);
+        meta.updated_at = now;
+        self.store.write_game(&meta)?;
+        self.refresh_game(uuid)?;
+        if here {
+            self.resume_pointers(uuid, saved)?;
+        }
+        Ok(here)
+    }
+
+    /// Refuses a game whose title or one of whose folders another game here
+    /// already has: both would capture the same saves.
+    fn validate_fits(&self, record: &GameRecord) -> Result<()> {
+        self.validate_title(&record.meta.title, None)?;
+        let dirs: Vec<String> = record
+            .tracked_dirs
+            .iter()
+            .filter(|dir| dir.retired_at.is_none())
+            .map(|dir| crate::path_placeholders::expand_path_placeholders(&dir.path))
+            .filter(|path| !crate::path_placeholders::is_shared_root(Path::new(path)))
+            .collect();
+        self.validate_dirs(None, &dirs)
+    }
+
+    /// Points a game recovered here where this device was when it was
+    /// deleted: the playthrough it was on and each playthrough's version.
+    /// Without a record it resumes as an adoption does, from the newest
+    /// version of its active playthrough.
+    fn resume_pointers(&self, uuid: Uuid, saved: Option<DeviceGameState>) -> Result<()> {
+        let game_id = self
+            .index
+            .game_id(uuid)?
+            .context("Recovered game is not indexed")?;
+        let retired = self.retired()?;
+        let Some(state) = saved else {
+            if let Some(slot) = self.index.get_game(game_id)?.active_slot {
+                let newest = self
+                    .index
+                    .get_slot(slot.id)?
+                    .versions
+                    .into_iter()
+                    .find(|version| !version.retired);
+                self.index
+                    .set_active_version(slot.id, newest.map(|version| version.id))?;
+            }
+            return Ok(());
+        };
+        for (slot_uuid, slot) in &state.slots {
+            let Some(slot_id) = self.index.slot_id(*slot_uuid)? else {
+                continue;
+            };
+            let version = slot
+                .active_version_uuid
+                .filter(|version| !retired.contains(version));
+            if let Some(version) = version
+                && let Some(version_id) = self.index.version_id(version)?
+            {
+                self.index.set_active_version(slot_id, Some(version_id))?;
+            }
+            if state.active_slot_uuid == Some(*slot_uuid) {
+                self.index.set_active_slot(game_id, slot_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Brings back a deleted slot into its game, as an inactive slot. A name
+    /// taken meanwhile gets a number.
+    pub fn recover_slot(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<()> {
+        let (game, mut meta) = self
+            .find_slot(uuid)?
+            .context("This playthrough is no longer in your library")?;
+        if !meta.deletion.is_recoverable(now) {
+            bail!("'{}' can no longer be restored", meta.name);
+        }
+        let game_id = self
+            .index
+            .game_id(game.uuid)?
+            .filter(|_| !game.deletion.is_deleted())
+            .with_context(|| format!("'{}' isn't in your library", game.title))?;
+        let full = self.index.get_game(game_id)?;
+        let base = meta.name.clone();
+        meta.name = (1..)
+            .map(|n| match n {
+                1 => base.clone(),
+                n => format!("{base} ({n})"),
+            })
+            .find_map(|name| self.validate_slot_name(&full, &name, None).ok())
+            .context("no free playthrough name")?;
+        meta.deletion.recover(now);
+        meta.updated_at = now;
+        self.store.write_slot(&game.folder_slug, &meta)?;
+        self.refresh_game(game.uuid)
+    }
+
+    /// Ends the recovery window of a deleted game or slot now. Its history is
+    /// collected by the next maintenance; the metadata stays so every device
+    /// learns of the purge.
+    pub fn purge_deleted(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<()> {
+        if let Some(mut meta) = self.store.find_game(uuid)? {
+            if !meta.deletion.is_deleted() {
+                bail!("'{}' isn't deleted", meta.title);
+            }
+            meta.deletion.purge(now);
+            meta.updated_at = now;
+            return self.store.write_game(&meta);
+        }
+        let (game, mut meta) = self
+            .find_slot(uuid)?
+            .context("This item is no longer in your library")?;
+        if !meta.deletion.is_deleted() {
+            bail!("'{}' isn't deleted", meta.name);
+        }
+        meta.deletion.purge(now);
+        meta.updated_at = now;
+        self.store.write_slot(&game.folder_slug, &meta)
+    }
+
+    pub(crate) fn find_slot(&self, uuid: Uuid) -> Result<Option<(GameMeta, SlotMeta)>> {
+        for game in self.store.game_metas()? {
+            if let Some(slot) = self
+                .store
+                .slot_metas(&game)?
+                .into_iter()
+                .find(|slot| slot.uuid == uuid)
+            {
+                return Ok(Some((game, slot)));
+            }
+        }
+        Ok(None)
     }
 
     pub fn tag_version(&self, id: i32, tag: Option<String>) -> Result<Version> {
@@ -568,7 +818,7 @@ impl History {
                 name: name.to_string(),
                 created_at: now,
                 updated_at: now,
-                deleted_at: None,
+                deletion: Default::default(),
                 seen_versions: Vec::new(),
             },
         )?;
@@ -713,6 +963,11 @@ fn with_roots<T>(game: &FullGame, walk: impl FnOnce(&[CaptureRoot]) -> Result<T>
         })
         .collect::<Result<Vec<_>>>()?;
     walk(&roots)
+}
+
+/// When the recovery window of a still recoverable item ends.
+fn recoverable_until(deletion: &Deletion, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    deletion.expires_at().filter(|end| now < *end)
 }
 
 pub fn game_uuid(game: &Game) -> Result<Uuid> {

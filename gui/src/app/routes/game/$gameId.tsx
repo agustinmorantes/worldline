@@ -8,6 +8,7 @@ import { GameHeader, type GameView } from '@/features/game/GameHeader';
 import { checkpointDevice, linkedSlot, pendingRemoteVersion, slotDevice, syncChip } from '@/features/game/game-view';
 import { LinkedPlaythroughNotice } from '@/features/game/LinkedPlaythroughNotice';
 import { CheckpointPanel } from '@/features/sessions/CheckpointPanel';
+import { nameCheckpoint } from '@/features/sessions/name-checkpoint';
 import { SessionList } from '@/features/sessions/SessionList';
 import { EmptyGame, formatDuration, GhostRow, TimelineFrame } from '@/features/sessions/Timeline';
 import { GraphView } from '@/features/graph/GraphView';
@@ -15,7 +16,7 @@ import { graphNavOrder, layoutGraph } from '@/features/graph/graph';
 import { useDevice, useMonitoringSettings, useUnrecorded } from '@/features/sessions/queries';
 import { layoutSessions, navOrder, playedMs, sessionGapMs, splitSessions, totalPlayedMs } from '@/features/sessions/sessions';
 import type { Version } from '@/ipc/bindings/Version';
-import { applyRemoteVersion, createSlot, dismissLinkedSlots, restoreVersion, switchSlot, tagVersion } from '@/ipc/commands';
+import { applyRemoteVersion, createSlot, dismissLinkedSlots, restoreVersion, switchSlot } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import type { Failure } from '@/ipc/bindings/Failure';
 import { reportError } from '@/shared/errors/report';
@@ -138,15 +139,6 @@ export function GameDetail(): ReactElement {
     } finally {
       setRewinding(false);
       setBusy(false);
-    }
-  }
-
-  async function name(version: Version, tag: string): Promise<void> {
-    try {
-      await tagVersion(version.id, tag);
-      await queryClient.invalidateQueries({ queryKey: ['game', id] });
-    } catch (err) {
-      reportError(t.game.failed.name, err);
     }
   }
 
@@ -314,7 +306,7 @@ export function GameDetail(): ReactElement {
               aheadDevice={pendingId === null ? null : (status?.remote_device ?? t.sessions.anotherDevice)}
               busy={busy}
               running={gameRunning}
-              onName={(tag) => { void name(selected, tag); }}
+              onName={(tag) => nameCheckpoint(id, selected.id, tag, t.game.failed.name)}
               onRewind={() => { void rewind(selected); }}
               onClose={() => { select(undefined); }}
               now={now}

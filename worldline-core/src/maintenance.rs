@@ -100,12 +100,12 @@ pub fn plan<'a>(input: &PlanInput<'a>) -> Plan {
     for game in input
         .games
         .iter()
-        .filter(|game| game.meta.deleted_at.is_none())
+        .filter(|game| !game.meta.deletion.is_deleted())
     {
         for slot in game
             .slots
             .iter()
-            .filter(|slot| slot.meta.deleted_at.is_none())
+            .filter(|slot| !slot.meta.deletion.is_deleted())
         {
             let versions: HashMap<Uuid, _> = slot.versions.iter().map(|v| (v.uuid, v)).collect();
             let mut children: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
@@ -201,18 +201,19 @@ pub fn plan<'a>(input: &PlanInput<'a>) -> Plan {
     }
     retire.retain(|uuid| !protected.contains(uuid) && !input.retired.contains(uuid));
 
-    // Disk budget over the unique live chunks.
+    // Disk budget over the unique live chunks. Recoverable deleted history
+    // holds its chunks too, but none of it is a candidate.
     let mut refs: HashMap<&'a str, usize> = HashMap::new();
     let mut version_chunks: HashMap<Uuid, HashSet<&'a str>> = HashMap::new();
     for game in input
         .games
         .iter()
-        .filter(|game| game.meta.deleted_at.is_none())
+        .filter(|game| game.meta.deletion.keeps_history(now))
     {
         for slot in game
             .slots
             .iter()
-            .filter(|slot| slot.meta.deleted_at.is_none())
+            .filter(|slot| slot.meta.deletion.keeps_history(now))
         {
             for version in &slot.versions {
                 if input.retired.contains(&version.uuid) {
@@ -390,8 +391,14 @@ pub struct GcReport {
 
 /// Chunks of every live version plus of the `extra` versions (device
 /// pointers), and the screenshots the other versions still have: retirement
-/// keeps a version's metadata as a record, but not its image.
-fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<(HashSet<String>, Vec<PathBuf>)> {
+/// keeps a version's metadata as a record, but not its image. Deleted games
+/// and slots are live until their recovery window ends at `now` (ADR 0011).
+fn live_chunks(
+    store: &Store,
+    extra: &HashSet<Uuid>,
+    now: DateTime<Utc>,
+) -> Result<(HashSet<String>, Vec<PathBuf>)> {
+    store.check_format()?;
     if let Some(path) = store.first_unloadable_metadata()? {
         bail!(
             "{} is unloadable; garbage collection is skipped until it is fixed",
@@ -403,7 +410,8 @@ fn live_chunks(store: &Store, extra: &HashSet<Uuid>) -> Result<(HashSet<String>,
     let mut dead_screenshots = Vec::new();
     for game in store.catalog()? {
         for slot in &game.slots {
-            let slot_live = game.meta.deleted_at.is_none() && slot.meta.deleted_at.is_none();
+            let slot_live =
+                game.meta.deletion.keeps_history(now) && slot.meta.deletion.keeps_history(now);
             for version in &slot.versions {
                 if (slot_live && !retired.contains_key(&version.uuid))
                     || extra.contains(&version.uuid)
@@ -439,8 +447,8 @@ fn delete_screenshots(paths: &[PathBuf]) {
 }
 
 /// Deletes every unreferenced chunk. The caller must hold the repository lock.
-pub fn gc_local(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
-    let (live, dead_screenshots) = live_chunks(store, pointed)?;
+pub fn gc_local(store: &Store, pointed: &HashSet<Uuid>, now: DateTime<Utc>) -> Result<GcReport> {
+    let (live, dead_screenshots) = live_chunks(store, pointed, now)?;
     delete_screenshots(&dead_screenshots);
     let mut report = GcReport::default();
     for (hash, size) in store.chunk_sizes()? {
@@ -456,8 +464,8 @@ pub fn gc_local(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
 }
 
 /// Bytes a local GC would reclaim now.
-pub fn gc_preview(store: &Store, pointed: &HashSet<Uuid>) -> Result<GcReport> {
-    let (live, _) = live_chunks(store, pointed)?;
+pub fn gc_preview(store: &Store, pointed: &HashSet<Uuid>, now: DateTime<Utc>) -> Result<GcReport> {
+    let (live, _) = live_chunks(store, pointed, now)?;
     let mut report = GcReport::default();
     for (hash, size) in store.chunk_sizes()? {
         if !live.contains(&hash) {
@@ -484,7 +492,7 @@ pub fn gc_remote(
     device: Uuid,
     now: DateTime<Utc>,
 ) -> Result<GcReport> {
-    let (live, dead_screenshots) = live_chunks(store, pointed)?;
+    let (live, dead_screenshots) = live_chunks(store, pointed, now)?;
     delete_screenshots(&dead_screenshots);
     let sizes = store.chunk_sizes()?;
     let dir = store.root().join("gc").join("condemned");
@@ -564,7 +572,7 @@ mod tests {
                         folder_slug: "g__g_1".into(),
                         created_at: t,
                         updated_at: t,
-                        deleted_at: None,
+                        deletion: Default::default(),
                         icon_sha256: None,
                         accent_hue: None,
                         accent_hue_source: Default::default(),
@@ -579,7 +587,7 @@ mod tests {
                             name: "S".into(),
                             created_at: t,
                             updated_at: t,
-                            deleted_at: None,
+                            deletion: Default::default(),
                             seen_versions: Vec::new(),
                         },
                         versions: vec![],
@@ -785,7 +793,7 @@ mod tests {
             folder_slug: "g__g_1".into(),
             created_at: now,
             updated_at: now,
-            deleted_at: None,
+            deletion: Default::default(),
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: Default::default(),
@@ -798,7 +806,7 @@ mod tests {
             name: "S".into(),
             created_at: now,
             updated_at: now,
-            deleted_at: None,
+            deletion: Default::default(),
             seen_versions: Vec::new(),
         };
         store.write_game(&game).unwrap();
@@ -834,7 +842,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, text.replacen(&chunk, "sha256:bad", 1)).unwrap();
         assert_eq!(store.first_unloadable_metadata().unwrap(), Some(path));
-        assert!(gc_local(&store, &HashSet::new()).is_err());
+        assert!(gc_local(&store, &HashSet::new(), Utc::now()).is_err());
         assert!(store.has_chunk(&chunk), "the only chunk must survive");
     }
 }

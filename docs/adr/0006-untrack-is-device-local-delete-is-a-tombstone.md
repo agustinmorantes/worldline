@@ -10,7 +10,7 @@ date: 2026-10-07
 There are now two operations:
 
 - **Untrack** (UI: "Remove from this PC"): this device stops tracking the game and drops it from its index. The history stays in the store and on the remote. The game shows up again among the remote games not on this device, and can be adopted again. Untracking is the inverse of adoption. It needs a device-local record so automatic adoption of installed remote games does not bring the game straight back.
-- **Delete** (UI: "Delete everywhere"): the existing tombstone. The GUI requires a hold to confirm.
+- **Delete** (UI: "Delete everywhere"): the existing tombstone. The GUI requires a hold to confirm. _Amended by ADR 0011: a deleted game stays recoverable for 30 days, and the hold moves to "Delete now"._
 
 ## Considered options
 

@@ -54,6 +54,9 @@ function previewOf(settings: RetentionSettings): PruningPreview {
   };
 }
 
+/** Games deleted in this session, by `uuid`, for `recover_game` to bring back. */
+const binned = new Map<string, FullGame>();
+
 function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
   const game = (id: unknown): Fixture['games'][number] => {
     const found = state.games.find((g) => g.id === id);
@@ -103,6 +106,14 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       target.linked_slot_ids = [];
       return target;
     }
+    case 'rename_slot': {
+      const target = state.games.find((g) => g.slots.some((s) => s.id === args.slotId));
+      const slot = target?.slots.find((s) => s.id === args.slotId);
+      if (target === undefined || slot === undefined) throw new Error(`Slot ${String(args.slotId)} not found`);
+      slot.name = args.name as string;
+      if (target.active_slot?.id === slot.id) target.active_slot.name = slot.name;
+      return structuredClone(target);
+    }
     case 'create_slot': {
       const target = game(args.gameId);
       const id = Math.max(0, ...state.games.flatMap((g) => g.slots.map((s) => s.id))) + 1;
@@ -139,9 +150,33 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       target.accent_hue_source = hue === null ? 'auto' : 'user';
       return structuredClone(target);
     }
-    case 'delete_game':
+    case 'delete_game': {
+      const deleted = game(args.id);
+      binned.set(deleted.uuid, deleted);
+      const now = Date.now();
+      state.deleted = [
+        { kind: 'game', uuid: deleted.uuid, title: deleted.title, game_title: deleted.title, deleted_at: new Date(now).toISOString(), expires_at: new Date(now + 30 * 86_400_000).toISOString() },
+        ...state.deleted ?? [],
+      ];
+      state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
+    }
     case 'untrack_game':
       state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
+    case 'recently_deleted':
+      return structuredClone(state.deleted ?? []);
+    case 'recover_game': {
+      const back = binned.get(args.uuid as string);
+      if (back !== undefined) state.games.push(back);
+      binned.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
+      return true;
+    }
+    case 'recover_slot':
+    case 'purge_deleted':
+      binned.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
       return null;
     case 'adopt_remote_game': {
       const report = state.syncReport;
@@ -188,6 +223,11 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
         // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
         return Promise.reject(failure);
       }
+      if (state.syncReport === 'newer') {
+        const failure: Failure = { message: 'The sync folder needs a newer version of Worldline', kind: 'update_required' };
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject(failure);
+      }
       if (state.syncReport === undefined) throw new Error('Sync is not configured');
       return state.syncReport;
     case 'get_retired_versions':
@@ -226,8 +266,14 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'update_pruning_settings':
       state.retentionSettings = args.settings as RetentionSettings;
       return state.retentionSettings;
-    case 'preview_pruning':
-      return previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+    case 'preview_pruning': {
+      const preview = previewOf((args.settings as RetentionSettings | null) ?? state.retentionSettings);
+      // Without its name, a checkpoint goes in the next cleanup unless it is a root or the latest.
+      const latest = new Set(state.games.map((g) => g.last_version?.uuid));
+      const retires = state.games.flatMap((g) => g.versions).filter((v) => v.uuid === args.untag && v.parent_id !== null && !latest.has(v.uuid));
+      preview.retire_versions.push(...retires.map((v) => v.uuid));
+      return preview;
+    }
     case 'run_pruning': {
       const preview = previewOf(state.retentionSettings);
       return {

@@ -15,6 +15,7 @@ vi.mock('@/features/library/queries', () => ({
 }));
 
 vi.mock('@tanstack/react-router', () => ({
+  useRouter: () => ({ navigate: vi.fn() }),
   Link: ({ children, to: _to, params: _params, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { to?: string; params?: unknown }) =>
     <a href="#" {...props}>{children}</a>,
 }));
@@ -84,6 +85,16 @@ describe('Sidebar', () => {
     expect(go).toHaveBeenCalledWith({ view: 'game', gameId: 7 });
   });
 
+  it('opens the game’s menu on right-click, without navigating', () => {
+    mockGames([makeGame({ id: 7, title: 'Hades' })]);
+    const go = vi.fn();
+    renderSidebar({ go });
+    fireEvent.contextMenu(screen.getByRole('link', { name: /hades/i }));
+    expect(screen.getByRole('menuitem', { name: 'Rename game' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Delete everywhere' })).toBeInTheDocument();
+    expect(go).not.toHaveBeenCalled();
+  });
+
   it('shows Add games and Settings, and offers to turn on cloud when sync is off', () => {
     mockGames([]);
     const go = vi.fn();
@@ -146,6 +157,18 @@ describe('the sync card', () => {
     expect(card).toHaveAttribute('data-state', 'unavailable');
     expect(card).toHaveAccessibleName(/cloud folder not available/i);
     expect(card.querySelector('svg.lucide-cloud-off')).not.toBeNull();
+  });
+
+  it('asks for an update when another device synced with a newer Worldline', async () => {
+    mockGames([]);
+    mockReport({ isError: true });
+    setSyncOutcome({ kind: 'update_required', message: 'newer' });
+    renderSidebar();
+    const card = screen.getByRole('button', { name: /sync now/i });
+    expect(card).toHaveAttribute('data-state', 'update');
+    expect(card).toHaveAccessibleName(/update worldline to sync/i);
+    fireEvent.pointerMove(card);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Update Worldline on this PC to keep syncing.');
   });
 
   it('hints at retrying when a sync failed', async () => {

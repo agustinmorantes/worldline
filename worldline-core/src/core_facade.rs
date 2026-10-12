@@ -4,14 +4,14 @@ use crate::detection::{
     BranchFrom, CaptureTarget, Checkpoints, Notification, NotificationReceiver, RunningGames,
     Suppression, Watcher,
 };
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, error_kind};
 use crate::history::{CheckpointOutcome, History, Kept, game_uuid};
 use crate::index::{DbPool, Index};
 use crate::install_scanner::InstallScannerItem;
 use crate::maintenance::{self, GcReport, RetentionSettings};
 use crate::models::*;
 use crate::restore;
-use crate::store::{self, GameRecord, Store, VersionReason, read_json, write_json};
+use crate::store::{self, Deletion, GameRecord, Store, VersionReason, read_json, write_json};
 use crate::sync::{
     self, DeviceKind, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
 };
@@ -77,6 +77,21 @@ struct SyncState {
     /// like new ones however old they are.
     #[serde(default)]
     recent_pulls: HashMap<Uuid, DateTime<Utc>>,
+    /// Games deleted here that another device recovered, pulled with every
+    /// version healed until all of their history arrived: this device may
+    /// have collected it already (ADR 0011).
+    #[serde(default)]
+    reviving: HashSet<Uuid>,
+    /// Games recovered here, pushed with every version healed until the sync
+    /// folder holds all of their history: another device may have collected
+    /// it already (ADR 0011).
+    #[serde(default)]
+    uploading: HashSet<Uuid>,
+}
+
+/// Whether `remote` brings back a game or slot deleted in `local`.
+fn revived(local: Deletion, remote: Deletion) -> bool {
+    local.is_deleted() && !Deletion::merge(local, remote).is_deleted()
 }
 
 /// One install a scan found: where it is, and where its icon comes from.
@@ -666,11 +681,55 @@ impl WorldlineCore {
         })
     }
 
-    /// Deletes a game everywhere: the tombstone reaches every device.
+    /// Deletes a game everywhere. It stays recoverable for 30 days (ADR 0011).
     pub fn delete_game(&self, id: i32) -> Result<()> {
         self.history().delete_game(id)?;
         self.reload_watcher();
         Ok(())
+    }
+
+    /// Games and slots deleted everywhere that can still be recovered.
+    pub fn recently_deleted(&self) -> Result<Vec<DeletedItem>> {
+        self.history().recently_deleted(Utc::now())
+    }
+
+    /// Brings a deleted game back with its history, without touching live
+    /// saves: the next checkpoint records what is on disk. Returns whether it
+    /// is back in this device's library; a game this device doesn't track
+    /// stays in the cloud list.
+    pub fn recover_game(&self, uuid: Uuid) -> Result<bool> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.upload_all(uuid)?;
+        self.exclusive(|| self.history().recover_game(uuid, Utc::now()))
+    }
+
+    /// Brings a deleted slot back into its game, inactive.
+    pub fn recover_slot(&self, uuid: Uuid) -> Result<()> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((game, _)) = self.history().find_slot(uuid)? {
+            self.upload_all(game.uuid)?;
+        }
+        self.exclusive(|| self.history().recover_slot(uuid, Utc::now()))
+    }
+
+    /// Has the next pushes heal every version of `game` until one completes.
+    /// Recorded before the recovery, so neither a failed push nor a restart
+    /// loses it. Callers hold `sync_lock`.
+    fn upload_all(&self, game: Uuid) -> Result<()> {
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        if state.uploading.insert(game) {
+            write_json(&state_path, &state)?;
+        }
+        Ok(())
+    }
+
+    /// Ends a deleted game's or slot's recovery window now; the next cleanup
+    /// collects its history.
+    pub fn purge_deleted(&self, uuid: Uuid) -> Result<()> {
+        store::with_lock(self.repository_root(), || {
+            self.history().purge_deleted(uuid, Utc::now())
+        })
     }
 
     /// Stops tracking a game on this device only (ADR 0006). Pending changes
@@ -1101,6 +1160,17 @@ impl WorldlineCore {
     ) -> Result<HistoryTransferReport> {
         store::with_lock(self.repository_root(), || {
             crate::bundle::export(self.history(), game_id, destination)
+        })
+    }
+
+    /// Exports a deleted game still in its recovery window, as a live game.
+    pub fn export_deleted_game(
+        &self,
+        uuid: Uuid,
+        destination: &Path,
+    ) -> Result<HistoryTransferReport> {
+        store::with_lock(self.repository_root(), || {
+            crate::bundle::export_deleted(self.history(), uuid, destination)
         })
     }
 
@@ -1575,7 +1645,7 @@ impl WorldlineCore {
         let size = crate::icon::dimensions(png)?;
         let takes = history.store.game_meta(&slug)?.is_some_and(|meta| {
             meta.uuid == game.uuid
-                && meta.deleted_at.is_none()
+                && !meta.deletion.is_deleted()
                 && store::normalize_display_name(&meta.title) == game.title_normalized
                 && history.takes_auto_icon(&meta, size)
         });
@@ -1720,7 +1790,7 @@ impl WorldlineCore {
         let mut phases = sync::Phases::start("Sync push");
         let history = self.history();
         let state_path = self.data_dir.join("sync_state.json");
-        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        let state: SyncState = read_json(&state_path).unwrap_or_default();
         let now = Utc::now();
         // A full heal is left to pushes of every game.
         let full = games.is_none()
@@ -1760,9 +1830,18 @@ impl WorldlineCore {
         };
         phases.lap("prepare");
         let mut problems = Vec::new();
+        let mut uploaded = Vec::new();
         for game in catalog {
-            if let Err(error) = transfer.copy_game(&game, &markers, heal) {
-                problems.push(format!("{}: {error:#}", game.meta.title));
+            let uuid = game.meta.uuid;
+            let uploading = state.uploading.contains(&uuid);
+            let heal = if uploading { Heal::All } else { heal };
+            let missing = transfer.report.not_arrived.len();
+            match transfer.copy_game(&game, &markers, heal) {
+                Ok(_) if uploading && transfer.report.not_arrived.len() == missing => {
+                    uploaded.push(uuid);
+                }
+                Ok(_) => {}
+                Err(error) => problems.push(format!("{}: {error:#}", game.meta.title)),
             }
         }
         phases.lap(if full { "games (full heal)" } else { "games" });
@@ -1772,26 +1851,64 @@ impl WorldlineCore {
         sync::save_device(&self.data_dir, &published)?;
         *self.device.write().unwrap_or_else(|e| e.into_inner()) = published;
         phases.lap("pointers");
-        if full && problems.is_empty() {
-            state.last_full_heal = Some(now);
+        if (full && problems.is_empty()) || !uploaded.is_empty() {
+            let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+            if full && problems.is_empty() {
+                state.last_full_heal = Some(now);
+            }
+            for uuid in &uploaded {
+                state.uploading.remove(uuid);
+            }
             write_json(&state_path, &state)?;
         }
         Ok(problems)
     }
 
     /// Pulls one game; `markers` are the remote's retirement markers.
+    /// `adopting` is set when the user (or an install) asks for the game
+    /// here; otherwise a game deleted here that another device recovered
+    /// goes to the cloud list rather than back into the library.
     fn pull_game(
         &self,
         remote: &Remote,
         game: &GameRecord,
         markers: &HashMap<Uuid, store::RetirementMarker>,
+        adopting: bool,
     ) -> Result<Vec<Uuid>> {
         let history = self.history();
+        let uuid = game.meta.uuid;
         let screenshots = self.get_monitoring_settings()?.sync_screenshots;
+        let local = history.store.game(uuid)?;
+        let game_revived = local
+            .as_ref()
+            .is_some_and(|local| revived(local.meta.deletion, game.meta.deletion));
+        let slot_revived = local.iter().flat_map(|local| &local.slots).any(|slot| {
+            game.slots
+                .iter()
+                .find(|remote| remote.meta.uuid == slot.meta.uuid)
+                .is_some_and(|remote| revived(slot.meta.deletion, remote.meta.deletion))
+        });
+        // Recorded before copying, so a pull cut short still heals next time.
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        if (game_revived || slot_revived) && state.reviving.insert(uuid) {
+            write_json(&state_path, &state)?;
+        }
+        let reviving = state.reviving.contains(&uuid);
+        let heal = if reviving { Heal::All } else { Heal::None };
+        // A game this device plays, deleted elsewhere: its pointers are kept
+        // before the deletion lands here, so recovering it resumes here.
+        if let Some(local) = &local
+            && !local.meta.deletion.is_deleted()
+            && Deletion::merge(local.meta.deletion, game.meta.deletion).is_deleted()
+            && history.index.game_id(uuid)?.is_some()
+        {
+            history.keep_pointers(uuid)?;
+        }
         let copy = || {
             let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial)
                 .screenshots(screenshots);
-            transfer.copy_game(game, markers, Heal::None)?;
+            transfer.copy_game(game, markers, heal)?;
             Ok(transfer.report)
         };
         let deleted_active = match history.index.game_id(game.meta.uuid)? {
@@ -1801,7 +1918,8 @@ impl WorldlineCore {
                 game.slots
                     .iter()
                     .any(|slot| {
-                        slot.meta.deleted_at.is_some() && active == Some(slot.meta.uuid.to_string())
+                        slot.meta.deletion.is_deleted()
+                            && active == Some(slot.meta.uuid.to_string())
                     })
                     .then_some(id)
             }
@@ -1818,10 +1936,18 @@ impl WorldlineCore {
             None => {
                 let report = store::with_lock(history.root(), copy)?;
                 self.record_pulls(&report.copied_versions)?;
-                history.refresh_game(game.meta.uuid)?;
+                if game_revived && !adopting {
+                    history.set_untracked(uuid, true)?;
+                }
+                history.refresh_game(uuid)?;
                 report
             }
         };
+        if reviving && report.not_arrived.is_empty() {
+            let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+            state.reviving.remove(&uuid);
+            write_json(&state_path, &state)?;
+        }
         Ok(report.not_arrived)
     }
 
@@ -1844,7 +1970,7 @@ impl WorldlineCore {
                 .slots
                 .into_iter()
                 .find(|slot| slot.meta.uuid.to_string() == active.uuid)
-                .filter(|slot| slot.meta.deleted_at.is_some())
+                .filter(|slot| slot.meta.deletion.is_deleted())
         });
         history.refresh_game(uuid)?;
         let (Some(deleted), Some(id)) = (deleted, history.index.game_id(uuid)?) else {
@@ -1996,6 +2122,8 @@ impl WorldlineCore {
             .collect())
     }
 
+    /// Pulls this device's games, and those still healing after another
+    /// device recovered them, even while they wait in the cloud list.
     fn pull_locked(
         &self,
         remote: &Remote,
@@ -2003,12 +2131,14 @@ impl WorldlineCore {
         markers: &HashMap<Uuid, store::RetirementMarker>,
         local_uuids: &HashSet<Uuid>,
     ) -> Vec<String> {
+        let state: SyncState =
+            read_json(&self.data_dir.join("sync_state.json")).unwrap_or_default();
         let mut problems = Vec::new();
         for remote_game in remote_games
             .iter()
-            .filter(|g| local_uuids.contains(&g.meta.uuid))
+            .filter(|g| local_uuids.contains(&g.meta.uuid) || state.reviving.contains(&g.meta.uuid))
         {
-            match self.pull_game(remote, remote_game, markers) {
+            match self.pull_game(remote, remote_game, markers, false) {
                 Ok(not_arrived) if !not_arrived.is_empty() => problems.push(format!(
                     "{}: {} version(s) have not fully arrived yet",
                     remote_game.meta.title,
@@ -2045,14 +2175,21 @@ impl WorldlineCore {
         // Only an explicit adoption brings an untracked game back.
         let untracked = self.history().untracked()?;
 
-        // Link games tracked on both devices before sync was enabled.
-        for remote_game in remote_games.iter().filter(|g| g.meta.deleted_at.is_none()) {
-            if untracked.contains(&remote_game.meta.uuid)
-                || self
-                    .history()
-                    .index
-                    .game_id(remote_game.meta.uuid)?
-                    .is_some()
+        // Link games tracked on both devices before sync was enabled. A game
+        // this device already has, even deleted, is pulled instead: one
+        // recovered elsewhere must not be linked into another game.
+        let known: HashSet<Uuid> = self
+            .history()
+            .store
+            .game_metas()?
+            .iter()
+            .map(|g| g.uuid)
+            .collect();
+        for remote_game in remote_games
+            .iter()
+            .filter(|g| !g.meta.deletion.is_deleted())
+        {
+            if untracked.contains(&remote_game.meta.uuid) || known.contains(&remote_game.meta.uuid)
             {
                 continue;
             }
@@ -2079,7 +2216,7 @@ impl WorldlineCore {
         // must know whether the game is running.
         let unknown: Vec<&GameRecord> = remote_games
             .iter()
-            .filter(|g| g.meta.deleted_at.is_none() && !local_uuids.contains(&g.meta.uuid))
+            .filter(|g| !g.meta.deletion.is_deleted() && !local_uuids.contains(&g.meta.uuid))
             .collect();
         let scan_roots = self.get_scan_roots()?;
         let installs = std::cell::OnceCell::new();
@@ -2228,7 +2365,7 @@ impl WorldlineCore {
         let remote = self.require_remote()?;
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
         let game = remote.store.game(uuid)?.context("Remote game not found")?;
-        if game.meta.deleted_at.is_some() {
+        if game.meta.deletion.is_deleted() {
             bail!("This game was deleted on another device");
         }
         let found = self.match_local_game(&game)?;
@@ -2242,7 +2379,7 @@ impl WorldlineCore {
             }
             LocalMatch::Same(local) => {
                 self.link_game(&local, &game)?;
-                self.pull_game(&remote, &game, &remote.store.markers()?)?;
+                self.pull_game(&remote, &game, &remote.store.markers()?, true)?;
             }
             LocalMatch::Collision(kind, reason) => {
                 return Err(anyhow::Error::new(kind).context(reason));
@@ -2341,7 +2478,7 @@ impl WorldlineCore {
         let remote_slots: Vec<_> = remote_game
             .slots
             .iter()
-            .filter(|slot| slot.meta.deleted_at.is_none() && !slot.versions.is_empty())
+            .filter(|slot| !slot.meta.deletion.is_deleted() && !slot.versions.is_empty())
             .collect();
         let dir_map: HashMap<Uuid, Uuid> = old
             .tracked_dirs
@@ -2459,13 +2596,15 @@ impl WorldlineCore {
             }
             // The old identity may already be on the remote: keep a tombstone
             // so no device resurrects it, and drop its now-duplicated history.
+            // It is purged: its history lives on in the new identity, so
+            // there is nothing to recover.
             history.store.drop_game_history(&old.meta.folder_slug)?;
             let now = Utc::now();
-            history.store.write_game(&store::GameMeta {
-                deleted_at: Some(now),
-                updated_at: now,
-                ..old.meta.clone()
-            })?;
+            let mut meta = old.meta.clone();
+            meta.deletion.delete(now);
+            meta.deletion.purge(now);
+            meta.updated_at = now;
+            history.store.write_game(&meta)?;
             Ok(())
         })?;
         history.index.remove_game(old.meta.uuid)?;
@@ -2503,7 +2642,7 @@ impl WorldlineCore {
         remote_game: &GameRecord,
         markers: &HashMap<Uuid, store::RetirementMarker>,
     ) -> Result<bool> {
-        self.pull_game(remote, remote_game, markers)?;
+        self.pull_game(remote, remote_game, markers, true)?;
         let history = self.history();
         let game_id = history
             .index
@@ -2786,7 +2925,7 @@ impl WorldlineCore {
             games: statuses,
             remote_games: catalog
                 .iter()
-                .filter(|g| g.meta.deleted_at.is_none())
+                .filter(|g| !g.meta.deletion.is_deleted())
                 .map(|g| sync::RemoteGameSummary {
                     uuid: g.meta.uuid,
                     title: g.meta.title.clone(),
@@ -2912,9 +3051,31 @@ impl WorldlineCore {
 
     /// What pruning with `settings` (saved or not) would do. Writes nothing.
     pub fn preview_pruning(&self, settings: &RetentionSettings) -> Result<PruningPreview> {
+        self.preview_pruning_untagged(settings, None)
+    }
+
+    /// `preview_pruning` as if version `untag` had no name, to tell whether
+    /// removing it would let cleanup retire the version. Writes nothing: the
+    /// name is cleared only in the planner's inputs.
+    pub fn preview_pruning_untagged(
+        &self,
+        settings: &RetentionSettings,
+        untag: Option<Uuid>,
+    ) -> Result<PruningPreview> {
         validate_retention(settings)?;
         let remote = self.remote()?;
-        let inputs = self.retention_inputs(remote.as_ref())?;
+        let mut inputs = self.retention_inputs(remote.as_ref())?;
+        if let Some(untag) = untag {
+            for version in inputs
+                .games
+                .iter_mut()
+                .flat_map(|g| g.slots.iter_mut())
+                .flat_map(|s| s.versions.iter_mut())
+                .filter(|v| v.uuid == untag)
+            {
+                version.tag = None;
+            }
+        }
         let plan = maintenance::plan(&maintenance::PlanInput {
             games: &inputs.games,
             retired: &inputs.retired,
@@ -2928,7 +3089,11 @@ impl WorldlineCore {
             live_bytes_before: plan.live_bytes_before,
             live_bytes_after: plan.live_bytes_after,
             budget_unreachable: plan.budget_unreachable,
-            local_gc: maintenance::gc_preview(&self.history().store, &inputs.local_pointed)?,
+            local_gc: maintenance::gc_preview(
+                &self.history().store,
+                &inputs.local_pointed,
+                planning_now(),
+            )?,
         })
     }
 
@@ -2978,7 +3143,7 @@ impl WorldlineCore {
             if let Some(remote) = &remote {
                 maintenance::apply(&remote.store, &plan, now)?;
             }
-            let local_gc = maintenance::gc_local(&history.store, &inputs.local_pointed)?;
+            let local_gc = maintenance::gc_local(&history.store, &inputs.local_pointed, now)?;
             Ok((
                 plan.retire.iter().map(|(_, _, v)| *v).collect::<Vec<_>>(),
                 plan.budget_unreachable,
@@ -3142,8 +3307,10 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
             .unwrap_or_default();
         applied.iter().any(|row| !known.contains(&row.version))
     };
-    let old_repository =
-        repository.join("metadata.json").exists() && Store::open_existing(&repository).is_err();
+    // A newer format is never moved aside: opening it fails, asking for an update.
+    let old_repository = repository.join("metadata.json").exists()
+        && Store::open_existing(&repository)
+            .is_err_and(|error| error_kind(&error) != Some(ErrorKind::UpdateRequired));
     if !old_db && !old_repository {
         return Ok(None);
     }
@@ -3547,7 +3714,7 @@ mod tests {
                 assert_eq!(meta.icon_sha256, None, "{change}");
             }
             if change == "a deletion" {
-                assert!(meta.deleted_at.is_some(), "not brought back");
+                assert!(meta.deletion.is_deleted(), "not brought back");
                 assert_eq!(history.index.game_id(meta.uuid).unwrap(), None);
             }
         }
@@ -4367,7 +4534,7 @@ mod tests {
                 _ => assert_eq!(meta.icon_sha256, small, "{change}"),
             }
             if change == "a deletion" {
-                assert!(meta.deleted_at.is_some(), "not brought back");
+                assert!(meta.deletion.is_deleted(), "not brought back");
             }
         }
     }

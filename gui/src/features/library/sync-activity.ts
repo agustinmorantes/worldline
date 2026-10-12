@@ -1,11 +1,16 @@
 // Whether the backend is syncing right now, from the `sync-started` / `sync-complete` /
-// `sync-error` events (wired in `app/events.ts`), and whether the latest sync found the
-// cloud folder unreachable (those events plus the sync report query's own runs).
+// `sync-error` events (wired in `app/events.ts`), and what, if anything, blocked the latest
+// sync (those events plus the sync report query's own runs).
 import { useSyncExternalStore } from 'react';
 import type { Failure } from '@/ipc/bindings/Failure';
 
+/** Why syncs can't go on until something outside Worldline changes: the cloud folder is out of
+ *  reach, or another device wrote it with a newer Worldline. Shown in the sync card and
+ *  Settings → Cloud, never as a toast. */
+export type SyncBlock = 'unreachable' | 'update';
+
 let running = false;
-let unreachable = false;
+let blocked: SyncBlock | null = null;
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -18,16 +23,17 @@ export function setSyncRunning(value: boolean): void {
   notify();
 }
 
-/** Whether `error` says the cloud folder is missing or can't be read. */
-export function isFolderUnreachable(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as Partial<Failure>).kind === 'sync_folder_unreachable';
+/** What `error` says blocks syncing, if anything. */
+export function syncBlock(error: unknown): SyncBlock | null {
+  const kind = typeof error === 'object' && error !== null ? (error as Partial<Failure>).kind : undefined;
+  return kind === 'sync_folder_unreachable' ? 'unreachable' : kind === 'update_required' ? 'update' : null;
 }
 
 /** Records how the latest sync ended: `null` for a success, else its error. */
 export function setSyncOutcome(error: unknown): void {
-  const value = isFolderUnreachable(error);
-  if (unreachable === value) return;
-  unreachable = value;
+  const value = syncBlock(error);
+  if (blocked === value) return;
+  blocked = value;
   notify();
 }
 
@@ -40,7 +46,7 @@ export function useSyncRunning(): boolean {
   return useSyncExternalStore(subscribe, () => running);
 }
 
-/** The latest sync couldn't reach the cloud folder; cleared by the next success. */
-export function useFolderUnreachable(): boolean {
-  return useSyncExternalStore(subscribe, () => unreachable);
+/** What blocked the latest sync; cleared by the next success. */
+export function useSyncBlock(): SyncBlock | null {
+  return useSyncExternalStore(subscribe, () => blocked);
 }

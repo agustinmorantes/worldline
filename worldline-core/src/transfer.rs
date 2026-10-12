@@ -4,7 +4,9 @@
 
 use crate::chunks;
 use crate::icon;
-use crate::store::{GameMeta, GameRecord, RetirementMarker, Store, VersionMeta, format_hash};
+use crate::store::{
+    Deletion, GameMeta, GameRecord, RetirementMarker, Store, VersionMeta, format_hash,
+};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -167,15 +169,41 @@ impl<'a> Transfer<'a> {
             .map(|slot| (slot.meta.uuid, slot.meta.folder_slug.as_str()))
             .collect();
 
+        // History past its recovery window (ADR 0011) is collected
+        // everywhere: only its metadata travels, so later deletes still reach
+        // every device. Versions it parented count as there. The window is
+        // read from the merged marks in `dst`, so a recovery `src` hasn't
+        // seen yet still gets the history.
+        let now = Utc::now();
+        let game_deletion = existing.as_ref().map_or(game.meta.deletion, |record| {
+            Deletion::merge(record.meta.deletion, game.meta.deletion)
+        });
+        let slot_deletion: HashMap<Uuid, _> = existing
+            .iter()
+            .flat_map(|record| &record.slots)
+            .map(|slot| (slot.meta.uuid, slot.meta.deletion))
+            .collect();
+        let (kept, gone): (Vec<_>, Vec<_>) = game.slots.iter().partition(|slot| {
+            let deletion = slot_deletion
+                .get(&slot.meta.uuid)
+                .map_or(slot.meta.deletion, |held| {
+                    Deletion::merge(*held, slot.meta.deletion)
+                });
+            game_deletion.keeps_history(now) && deletion.keeps_history(now)
+        });
+        let gone: HashSet<Uuid> = gone
+            .iter()
+            .flat_map(|slot| slot.versions.iter().map(|version| version.uuid))
+            .collect();
         // Parent order: a version is visited once its parent is in `dst`.
-        let mut pending: Vec<&VersionMeta> = game.versions().collect();
+        let mut pending: Vec<&VersionMeta> = kept.iter().flat_map(|slot| &slot.versions).collect();
         loop {
             let before = pending.len();
             let mut deferred = Vec::new();
             for version in pending {
                 if version
                     .parent_uuid
-                    .is_some_and(|parent| !present.contains(&parent))
+                    .is_some_and(|parent| !present.contains(&parent) && !gone.contains(&parent))
                 {
                     deferred.push(version);
                     continue;
@@ -196,8 +224,10 @@ impl<'a> Transfer<'a> {
                             error.context(format!("version {} is incomplete", version.uuid))
                         );
                     }
+                    // A version here whose payload can't be healed yet is
+                    // reported too: it is retried on the next run.
+                    self.report.not_arrived.push(version.uuid);
                     if !already {
-                        self.report.not_arrived.push(version.uuid);
                         continue;
                     }
                 }
@@ -247,10 +277,10 @@ impl<'a> Transfer<'a> {
             .filter(|png| icon::sha256(png) == *wanted))
     }
 
-    /// Gives `dst` the icon `meta` names, when `src` has it. Tombstoned games
-    /// need none.
+    /// Gives `dst` the icon `meta` names, when `src` has it. Games past
+    /// their recovery window need none.
     fn copy_icon(&self, meta: &GameMeta) -> Result<()> {
-        if meta.deleted_at.is_some() {
+        if !meta.deletion.keeps_history(Utc::now()) {
             return Ok(());
         }
         let Some(wanted) = &meta.icon_sha256 else {
@@ -383,7 +413,7 @@ mod tests {
             folder_slug: folder_slug('g', "Game", uuid),
             created_at: now,
             updated_at: now,
-            deleted_at: None,
+            deletion: Default::default(),
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: Default::default(),
@@ -397,7 +427,7 @@ mod tests {
             name: "Main".into(),
             created_at: now,
             updated_at: now,
-            deleted_at: None,
+            deletion: Default::default(),
             seen_versions: Vec::new(),
         };
         let live = tempdir().unwrap();

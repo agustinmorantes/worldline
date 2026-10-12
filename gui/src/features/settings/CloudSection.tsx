@@ -2,13 +2,13 @@
 // where it is stored and the devices using it.
 import { type ReactElement, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { CloudOff, FolderClosed, Pencil, Trash2 } from 'lucide-react';
+import { CloudCog, CloudOff, FolderClosed, Pencil, Trash2 } from 'lucide-react';
 import type { DeviceKind } from '@/ipc/bindings/DeviceKind';
 import type { DeviceMetadata } from '@/ipc/bindings/DeviceMetadata';
 import { confirm, pickFolder, removeSyncDevice, updateDevice, updateSyncSettings } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { useSyncReport, useSyncSettings } from '@/features/library/queries';
-import { isFolderUnreachable, setSyncOutcome, useFolderUnreachable, useSyncRunning } from '@/features/library/sync-activity';
+import { setSyncOutcome, syncBlock, useSyncBlock, useSyncRunning } from '@/features/library/sync-activity';
 import { useNow } from '@/features/library/useNow';
 import { reportError } from '@/shared/errors/report';
 import { formatRelative, useLocale, useT } from '@/shared/i18n';
@@ -168,13 +168,14 @@ function CloudOn({ remote, device }: { remote: string; device: DeviceMetadata })
   const report = useSyncReport();
   const running = useSyncRunning();
   const syncing = running || report.isFetching;
-  const unavailable = useFolderUnreachable() && !syncing;
+  const block = useSyncBlock();
+  const blocked = syncing ? null : block;
   const others = report.data?.devices.filter((d) => d.device_uuid !== device.device_uuid) ?? [];
 
   const resync = async (failed: string): Promise<void> => {
     const result = await report.refetch();
-    // An unavailable folder is shown below the path instead.
-    if (result.isError && !isFolderUnreachable(result.error)) reportError(failed, result.error);
+    // An unavailable or newer folder is shown below the path instead.
+    if (result.isError && syncBlock(result.error) === null) reportError(failed, result.error);
   };
 
   async function turnOff(): Promise<void> {
@@ -223,12 +224,14 @@ function CloudOn({ remote, device }: { remote: string; device: DeviceMetadata })
         path={remote}
         action={<button type="button" className={cn(chip, 'bg-ln')} onClick={() => { void change(); }}>{t.settings.change}</button>}
       />
-      {unavailable && (
+      {blocked !== null && (
         <div role="status" className="mt-2 flex items-start gap-3 rounded-[14px] bg-el px-3.5 py-3">
-          <CloudOff size={18} aria-hidden="true" className="mt-px shrink-0 text-warn" />
+          {blocked === 'update'
+            ? <CloudCog size={18} aria-hidden="true" className="mt-px shrink-0 text-warn" />
+            : <CloudOff size={18} aria-hidden="true" className="mt-px shrink-0 text-warn" />}
           <span className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-[13px] font-semibold text-warn">{t.sync.unavailable}</span>
-            <span className="text-xs text-tx3">{t.sync.unavailableHint}</span>
+            <span className="text-[13px] font-semibold text-warn">{blocked === 'update' ? t.sync.updateRequired : t.sync.unavailable}</span>
+            <span className="text-xs text-tx3">{blocked === 'update' ? t.sync.updateRequiredHint : t.sync.unavailableHint}</span>
           </span>
         </div>
       )}
