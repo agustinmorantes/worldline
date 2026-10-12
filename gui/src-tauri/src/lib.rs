@@ -9,6 +9,7 @@ use worldline_core::{OpenOptions, WorldlineCore};
 pub mod commands;
 mod dialogs;
 mod overlay;
+mod shutdown;
 mod tray;
 mod webview_memory;
 
@@ -38,16 +39,29 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Capture pending changes before the process ends.
-            if let tauri::RunEvent::Exit = event {
-                if let Some(core) = app.try_state::<Arc<WorldlineCore>>() {
-                    core.shutdown();
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                let shutdown = app.state::<shutdown::Shutdown>();
+                if !shutdown.finished() {
+                    api.prevent_exit();
+                    let core = app
+                        .try_state::<Arc<WorldlineCore>>()
+                        .map(|core| core.inner().clone());
+                    let app = app.clone();
+                    shutdown.request(
+                        move || {
+                            if let Some(core) = core {
+                                core.shutdown();
+                            }
+                        },
+                        move || app.exit(code.unwrap_or(0)),
+                    );
                 }
             }
         });
 }
 
 fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    app.manage(shutdown::Shutdown::default());
     let data_dir = app
         .path()
         .app_local_data_dir()
