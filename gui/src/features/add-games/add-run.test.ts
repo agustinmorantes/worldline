@@ -12,7 +12,7 @@ vi.mock('@/app/query-client', () => ({ queryClient: { invalidateQueries: vi.fn()
 vi.mock('@/shared/errors/report', () => ({ reportError: vi.fn() }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn() } }));
 
-import { saveGame } from '@/ipc/commands';
+import { saveGame, setGameIcon } from '@/ipc/commands';
 import { reportError } from '@/shared/errors/report';
 
 const item = (title: string): InstallScannerItem => ({
@@ -81,5 +81,12 @@ describe('addAll', () => {
     stop();
     expect(reportError).toHaveBeenCalledTimes(1);
     expect(added).toHaveBeenCalledWith('Hades', expect.objectContaining({ id: 7 }));
+  });
+
+  it("stores the scan's icon as an automatic one, which a sharper one found later may replace", async () => {
+    vi.mocked(saveGame).mockResolvedValue({ id: 3, title: 'Celeste', icon_path: null } as Game);
+    vi.mocked(setGameIcon).mockResolvedValue('C:/icons/celeste.png');
+    await addAll([{ ...item('Celeste'), icon_path: 'C:/cache/Celeste.png' }]);
+    expect(setGameIcon).toHaveBeenCalledWith(3, 'C:/cache/Celeste.png', 'auto');
   });
 });

@@ -14,7 +14,7 @@ This file provides guidance to coding agents working in `worldline-core/`.
 - `src/index.rs` - SQLite index projected from the files, plus device-local pointers
 - `src/transfer.rs` - store-to-store copy used by sync, export and import
 - `src/sync.rs`, `src/maintenance.rs`, `src/bundle.rs`, `src/integrity.rs`, `src/restore.rs`
-- `src/sync_loop.rs` - background thread started by `open_shared`: an install scan on start when some game has no icon, full sync + due pruning on start and every five minutes, a push after each created version, a final push on `shutdown`
+- `src/sync_loop.rs` - background thread started by `open_shared`: an install scan on start when some game has no icon (or a small automatic one due for a Steam lookup), full sync + due pruning on start and every five minutes, a push after each created version, a final push on `shutdown`
 - `src/detection/` - capture scheduler and screenshot timing (pure, fake-clock tested), the notify watcher adapter, running-game detection, and the screenshot worker thread
 - `src/screenshot.rs` - window capture through Windows.Graphics.Capture (`screenshot_unsupported.rs` on other platforms)
 - `src/core_facade.rs` - `WorldlineCore`, including guarded mutation and the sync refresh flow

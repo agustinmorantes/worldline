@@ -17,6 +17,7 @@ Steam keeps only a 32 px icon per app on disk (`appcache/librarycache/{appid}/<c
 - A download that fails is never an error: core uses the local 32 px icon. HTTP errors are answers (many older apps have no `_full` icon on any Steam CDN host), so the Add Games preview caches them. When there is no answer at all (offline), the scan stops downloading for the rest of that run and doesn't cache the fallback, so a later scan can still upgrade it.
 - A Steam icon wins over the install's `.ico` or exe icon, even when Steam only has 32 px. The "largest exe" heuristic often lands on `UnityCrashHandler64.exe` or similar, whose icon is not the game's.
 - Lookups that found nothing (no appid, no `community_icon`, neither icon size) are kept in the device-local `cache/icon_lookups.json` and not repeated for 7 days. A lookup that failed for now (no manifest downloaded yet, offline, throttled, refused, a server error, an answer that isn't Steam's) is not kept, so the next sync tries again. While offline, that costs one failing call per sync.
+- A game whose `auto` icon is smaller than 256 px (ADR 0005) is looked up the same way, and takes Steam's icon only when it is larger with no smaller side (amended 2026-10-11). Every lookup that got an answer, a sharper icon or not, is kept for 7 days like a miss, so a game whose best Steam icon is 184 px is asked about weekly, not every sync. A game with a 256 px icon, or a `user` one, is never asked about.
 
 ## Considered options
 

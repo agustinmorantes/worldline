@@ -16,11 +16,19 @@ pub const ICON_SIZE: u32 = 256;
 /// Width of one bucket of the hue histogram, in degrees.
 const BUCKET_DEGREES: f32 = 10.0;
 
-/// Scales `image` to fit `ICON_SIZE` and encodes it as PNG.
+/// Encodes `image` as PNG, scaled down to fit `ICON_SIZE` when larger. A
+/// smaller one keeps its size, so a stored icon's size tells how sharp its
+/// source was.
 pub fn normalize(image: &DynamicImage) -> Result<Vec<u8>> {
     let mut png = Vec::new();
+    let fitted;
+    let image = if image.width().max(image.height()) > ICON_SIZE {
+        fitted = image.resize(ICON_SIZE, ICON_SIZE, FilterType::Lanczos3);
+        &fitted
+    } else {
+        image
+    };
     image
-        .resize(ICON_SIZE, ICON_SIZE, FilterType::Lanczos3)
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
         .context("Failed to encode the icon as PNG")?;
     Ok(png)
@@ -28,6 +36,25 @@ pub fn normalize(image: &DynamicImage) -> Result<Vec<u8>> {
 
 pub fn decode(bytes: &[u8]) -> Result<DynamicImage> {
     image::load_from_memory(bytes).context("Failed to decode the icon")
+}
+
+/// The width and height of the image in `bytes`, from its header.
+pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .context("Failed to read the icon")?
+        .into_dimensions()
+        .context("Failed to read the icon's size")
+}
+
+/// Whether an icon of `candidate` size (width, height) is sharper than one
+/// of `current` size: no smaller either way, and larger in area. So an icon
+/// never trades height for width, and the same size is no upgrade.
+pub fn is_sharper(candidate: (u32, u32), current: (u32, u32)) -> bool {
+    candidate.0 >= current.0
+        && candidate.1 >= current.1
+        && u64::from(candidate.0) * u64::from(candidate.1)
+            > u64::from(current.0) * u64::from(current.1)
 }
 
 /// Where an icon comes from.
@@ -817,10 +844,27 @@ mod tests {
     }
 
     #[test]
-    fn normalized_icons_fit_256_pixels() {
+    fn normalized_icons_fit_256_pixels_and_small_ones_keep_their_size() {
         let png = normalize(&solid([0, 0, 255, 255])).unwrap();
-        let decoded = decode(&png).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (256, 256));
-        assert_eq!(dominant_hue(&decoded), Some(240));
+        assert_eq!(dimensions(&png).unwrap(), (64, 64), "not upscaled");
+        assert_eq!(dominant_hue(&decode(&png).unwrap()), Some(240));
+        let small = DynamicImage::ImageRgba8(RgbaImage::from_pixel(32, 32, Rgba([0; 4])));
+        assert_eq!(dimensions(&normalize(&small).unwrap()).unwrap(), (32, 32));
+
+        let wide = DynamicImage::ImageRgba8(RgbaImage::from_pixel(512, 300, Rgba([0; 4])));
+        assert_eq!(dimensions(&normalize(&wide).unwrap()).unwrap(), (256, 150));
+        let exact = DynamicImage::ImageRgba8(RgbaImage::from_pixel(256, 256, Rgba([0; 4])));
+        assert_eq!(dimensions(&normalize(&exact).unwrap()).unwrap(), (256, 256));
+    }
+
+    #[test]
+    fn only_a_larger_icon_without_a_smaller_side_is_sharper() {
+        assert!(is_sharper((184, 184), (32, 32)));
+        assert!(is_sharper((256, 256), (184, 184)));
+        assert!(is_sharper((64, 48), (48, 48)));
+        assert!(!is_sharper((184, 184), (184, 184)), "the same size");
+        assert!(!is_sharper((32, 32), (184, 184)));
+        // Larger in area, but narrower: a wide icon isn't swapped for a tall one.
+        assert!(!is_sharper((100, 256), (256, 64)));
     }
 }

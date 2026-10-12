@@ -568,6 +568,7 @@ mod tests {
                         icon_sha256: None,
                         accent_hue: None,
                         accent_hue_source: Default::default(),
+                        icon_source: Default::default(),
                     },
                     tracked_dirs: vec![],
                     slots: vec![SlotRecord {
@@ -788,6 +789,7 @@ mod tests {
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: Default::default(),
+            icon_source: Default::default(),
         };
         let slot = SlotMeta {
             uuid: Uuid::from_u128(2),

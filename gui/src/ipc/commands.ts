@@ -9,6 +9,7 @@ import type { Game } from './bindings/Game';
 import type { GameForm } from './bindings/GameForm';
 import type { HistoryBundleSummary } from './bindings/HistoryBundleSummary';
 import type { HistoryTransferReport } from './bindings/HistoryTransferReport';
+import type { IconSource } from './bindings/IconSource';
 import type { InstallScannerItem } from './bindings/InstallScannerItem';
 import type { MonitoringSettings } from './bindings/MonitoringSettings';
 import type { PruningPreview } from './bindings/PruningPreview';
@@ -38,8 +39,9 @@ export const untrackGame = (id: number): Promise<void> => invoke('untrack_game',
 /** `null` goes back to the hue from the icon. */
 export const setGameAccent = (gameId: number, hue: number | null): Promise<Game> =>
   invoke('set_game_accent', { gameId, hue });
-export const setGameIcon = (gameId: number, sourcePath: string): Promise<string> =>
-  invoke('set_game_icon', { gameId, sourcePath });
+/** The user's pick by default; an `auto` icon (Add Games' preview) only replaces none or a smaller `auto` one. */
+export const setGameIcon = (gameId: number, sourcePath: string, source: IconSource = 'user'): Promise<string> =>
+  invoke('set_game_icon', { gameId, sourcePath, source });
 
 export const createSlot = (gameId: number, name: string): Promise<FullGame> =>
   invoke('create_slot', { gameId, name });

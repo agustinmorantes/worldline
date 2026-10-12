@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use worldline_core::icon::fallback_hue;
 use worldline_core::models::Game;
-use worldline_core::store::Store;
+use worldline_core::store::{GameMeta, IconSource, Store};
 use worldline_core::{OpenOptions, WorldlineCore};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -67,7 +67,7 @@ fn an_icon_and_its_hue_reach_the_other_device() {
         (0, "auto")
     );
     let png = image::open(on_a.icon_path.as_ref().unwrap()).unwrap();
-    assert_eq!((png.width(), png.height()), (256, 256), "normalized");
+    assert_eq!((png.width(), png.height()), (48, 48), "not upscaled");
     a.core.refresh_sync().unwrap();
     assert!(remote_icon(remote.path(), &on_a).is_file());
 
@@ -178,7 +178,10 @@ fn bundles_carry_the_icon() {
     let a = Device::new();
     a.write("save.dat", "1");
     let id = a.add_game("Bundled").game.id;
-    set_icon(&a, id, BLUE);
+    let picked = image_file(a.saves.path(), BLUE);
+    a.core
+        .set_game_icon_as(id, &picked, IconSource::Auto)
+        .unwrap();
     a.core.set_game_accent(id, Some(42)).unwrap();
     let out = tempfile::tempdir().unwrap();
     let bundle = out.path().join("bundle.zip");
@@ -198,6 +201,7 @@ fn bundles_carry_the_icon() {
         (imported.accent_hue, imported.accent_hue_source.as_str()),
         (42, "user")
     );
+    assert_eq!(meta(&b, &imported.uuid).icon_source, IconSource::Auto);
 
     // A bundle whose icon is missing is incomplete.
     edit_bundle(&bundle, |dir| {
@@ -282,6 +286,31 @@ fn an_icon_that_has_not_arrived_does_not_block_sync_and_is_healed() {
 
 const INSTALLED: &str = "Ember Trail";
 
+/// Puts a solid `color` `.ico` of `size` px in `INSTALLED`'s install folder.
+fn install_icon(root: &tempfile::TempDir, color: [u8; 4], size: u32) {
+    // Some `.ico` files are really PNGs; they decode all the same.
+    RgbaImage::from_pixel(size, size, Rgba(color))
+        .save_with_format(
+            root.path().join(INSTALLED).join("game.ico"),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+}
+
+/// The game's stored metadata, as sync and bundles carry it.
+fn meta(device: &Device, uuid: &str) -> GameMeta {
+    Store::open_existing(device.core.repository_root())
+        .unwrap()
+        .find_game(Uuid::parse_str(uuid).unwrap())
+        .unwrap()
+        .expect("stored")
+}
+
+fn icon_size(device: &Device, uuid: &str) -> (u32, u32) {
+    let png = image::open(game(device, uuid).icon_path.expect("an icon")).unwrap();
+    (png.width(), png.height())
+}
+
 /// Makes the install scan find `INSTALLED` under a new scan root, with its
 /// saves in `<install>/saves` and a solid `color` `.ico` in its folder.
 fn install(device: &Device, color: [u8; 4]) -> tempfile::TempDir {
@@ -294,10 +323,7 @@ fn install(device: &Device, color: [u8; 4]) -> tempfile::TempDir {
     let dir = root.path().join(INSTALLED);
     fs::create_dir_all(dir.join("saves")).unwrap();
     fs::write(dir.join("saves").join("x"), "x").unwrap();
-    // Some `.ico` files are really PNGs; they decode all the same.
-    RgbaImage::from_pixel(48, 48, Rgba(color))
-        .save_with_format(dir.join("game.ico"), image::ImageFormat::Png)
-        .unwrap();
+    install_icon(&root, color, 48);
     device
         .core
         .add_scan_root(&root.path().to_string_lossy())
@@ -312,7 +338,7 @@ fn install_saves(root: &tempfile::TempDir) -> PathBuf {
 /// The color of the game's stored icon, `None` without one.
 fn icon_color(device: &Device, uuid: &str) -> Option<[u8; 4]> {
     let path = game(device, uuid).icon_path?;
-    Some(image::open(path).unwrap().to_rgba8().get_pixel(128, 128).0)
+    Some(image::open(path).unwrap().to_rgba8().get_pixel(0, 0).0)
 }
 
 #[test]
@@ -453,4 +479,41 @@ fn a_fresh_cli_sync_fills_an_installed_games_icon() {
     device.core.refresh_sync().unwrap();
     assert_eq!(icon_color(&device, &game.uuid), Some(RED));
     assert!(remote_icon(remote.path(), &game).is_file(), "pushed");
+}
+
+/// An install's icon is automatic; when the install later has a sharper one,
+/// it replaces the old one and reaches the other device. The same icon again
+/// rewrites nothing.
+#[test]
+fn a_sharper_install_icon_replaces_an_automatic_one_on_every_device() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let b = Device::synced(remote.path());
+    let root = install(&b, RED);
+    install_icon(&root, RED, 32);
+    let uuid = a.add_game_at(INSTALLED, &install_saves(&root)).game.uuid;
+    a.core.refresh_sync().unwrap();
+    b.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&b, &uuid), Some(RED));
+    assert_eq!(icon_size(&b, &uuid), (32, 32), "not upscaled");
+    assert_eq!(meta(&b, &uuid).icon_source, IconSource::Auto);
+    a.core.refresh_sync().unwrap();
+    assert_eq!(meta(&a, &uuid).icon_source, IconSource::Auto);
+
+    let before = meta(&b, &uuid);
+    b.core.refresh_sync().unwrap();
+    assert_eq!(meta(&b, &uuid), before, "the same icon writes nothing");
+
+    // A game update brings a sharper icon, and B's preview of the old one is
+    // past its window.
+    install_icon(&root, GREEN, 128);
+    fs::remove_dir_all(b.core.data_dir.join("cache").join("icon_cache_v2")).unwrap();
+    b.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&b, &uuid), Some(GREEN));
+    assert_eq!(icon_size(&b, &uuid), (128, 128));
+    assert_eq!(meta(&b, &uuid).icon_source, IconSource::Auto);
+
+    a.core.refresh_sync().unwrap();
+    assert_eq!(icon_color(&a, &uuid), Some(GREEN));
+    assert_eq!(meta(&a, &uuid), meta(&b, &uuid));
 }
