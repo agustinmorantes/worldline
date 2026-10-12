@@ -11,7 +11,7 @@ use crate::install_scanner::InstallScannerItem;
 use crate::maintenance::{self, GcReport, RetentionSettings};
 use crate::models::*;
 use crate::restore;
-use crate::store::{self, GameRecord, Store, VersionReason, read_json, write_json};
+use crate::store::{self, GameRecord, VersionReason, read_json, write_json};
 use crate::sync::{
     self, DeviceKind, DeviceMetadata, DeviceState, Divergence, Remote, SyncReport, SyncSettings,
 };
@@ -3114,8 +3114,9 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error> fo
     }
 }
 
-/// Pre-release data (an older schema or store format) is moved into
-/// `backup-pre-fase3-<timestamp>/`, never deleted, and the app starts fresh.
+/// Pre-release data (a schema predating the current migration series or an
+/// older store format) is moved aside. Unknown current/newer schemas and
+/// unreadable/newer store metadata stop startup without moving any data.
 // Clippy 1.99 flags `QueryableByName`'s expansion of `Row` below.
 #[allow(clippy::redundant_field_names)]
 fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
@@ -3140,10 +3141,33 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
         let applied: Vec<Row> = diesel::sql_query("SELECT version FROM __diesel_schema_migrations")
             .load(&mut conn)
             .unwrap_or_default();
-        applied.iter().any(|row| !known.contains(&row.version))
+        let mut old = false;
+        for row in applied.iter().filter(|row| !known.contains(&row.version)) {
+            if known.iter().all(|version| row.version < *version) {
+                old = true;
+            } else {
+                bail!(
+                    "Database migration {} is unsupported by this build; data was left unchanged",
+                    row.version
+                );
+            }
+        }
+        old
     };
-    let old_repository =
-        repository.join("metadata.json").exists() && Store::open_existing(&repository).is_err();
+    let metadata = repository.join("metadata.json");
+    let old_repository = if metadata.exists() {
+        let meta: store::StoreMeta = read_json(&metadata)?;
+        if meta.format_version > store::FORMAT_VERSION {
+            bail!(
+                "Store format {} is unsupported by this build (expected {}); data was left unchanged",
+                meta.format_version,
+                store::FORMAT_VERSION
+            );
+        }
+        meta.format_version < store::FORMAT_VERSION
+    } else {
+        false
+    };
     if !old_db && !old_repository {
         return Ok(None);
     }

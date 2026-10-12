@@ -455,6 +455,59 @@ fn pre_release_data_is_moved_aside_never_deleted() {
 }
 
 #[test]
+fn unknown_database_migrations_do_not_move_current_data_aside() {
+    use diesel::{Connection, RunQueryDsl};
+
+    let device = Device::new();
+    device.write("save.dat", "precious");
+    device.add_game("Kept");
+    let Device { core, data, saves } = device;
+    drop(core);
+    let database = data.path().join("database.db");
+    let mut conn = diesel::SqliteConnection::establish(&database.to_string_lossy()).unwrap();
+    diesel::sql_query(
+        "INSERT INTO __diesel_schema_migrations (version) VALUES ('209901010000000000')",
+    )
+    .execute(&mut conn)
+    .unwrap();
+    drop(conn);
+    let before = fs::read(&database).unwrap();
+    let metadata = data.path().join("repository/metadata.json");
+    let store_before = fs::read(&metadata).unwrap();
+
+    let error = WorldlineCore::open(data.path(), OpenOptions::default())
+        .err()
+        .expect("unknown migrations must stop startup");
+    assert!(error.to_string().contains("209901010000000000"));
+    assert_eq!(fs::read(database).unwrap(), before);
+    assert_eq!(fs::read(metadata).unwrap(), store_before);
+    assert!(fs::read_dir(data.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("backup-pre-")
+    }));
+    assert_eq!(
+        fs::read_to_string(saves.path().join("Game Saves/save.dat")).unwrap(),
+        "precious"
+    );
+}
+
+#[test]
+fn newer_store_formats_are_not_moved_aside() {
+    let data = tempfile::tempdir().unwrap();
+    fs::create_dir_all(data.path().join("repository")).unwrap();
+    let metadata = data.path().join("repository/metadata.json");
+    let contents = br#"{"format_version":4,"created_at":"2026-01-01T00:00:00Z","app":"worldline"}"#;
+    fs::write(&metadata, contents).unwrap();
+
+    assert!(WorldlineCore::open(data.path(), OpenOptions::default()).is_err());
+    assert_eq!(fs::read(metadata).unwrap(), contents);
+    assert_eq!(fs::read_dir(data.path()).unwrap().count(), 1);
+}
+
+#[test]
 fn extract_rebuilds_a_version_without_touching_live_saves() {
     let device = Device::new();
     device.write("nested/save.dat", "extract me");
