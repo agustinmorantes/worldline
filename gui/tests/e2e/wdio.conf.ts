@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { browser } from '@wdio/globals';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const exe = process.platform === 'win32' ? '.exe' : '';
@@ -33,6 +34,13 @@ export const config: WebdriverIO.Config = {
   reporters: ['spec'],
   framework: 'mocha',
   mochaOpts: { ui: 'bdd', timeout: 60_000 },
+
+  // A WebDriver session can start before the app finishes loading preferences and
+  // rendering the first-run tour, especially on CI. Wait once for startup rather
+  // than relying on click's default five-second element wait in each spec.
+  before: async () => {
+    await browser.$('button=Skip, I’ll explore').waitForDisplayed({ timeout: 30_000 });
+  },
 
   // Session hooks run in the worker, which is also where the specs read the env.
   beforeSession: () => {
