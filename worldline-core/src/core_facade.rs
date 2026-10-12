@@ -1024,6 +1024,10 @@ impl WorldlineCore {
                 }
             }
         }
+        // A full heal for the games that can leave, queued before any of
+        // them does: if it can't be, all of them stay. Every version and
+        // chunk is checked.
+        self.upload_all(live.iter().copied())?;
         let mut untracked = HashSet::new();
         let mut results = self.exclusive(|| {
             let mut stale = Vec::new();
@@ -1057,8 +1061,6 @@ impl WorldlineCore {
         let Some(remote) = remote.filter(|_| !untracked.is_empty()) else {
             return Ok(results);
         };
-        // A full heal for these games: every version and chunk is checked.
-        self.upload_all(untracked.iter().copied())?;
         let incomplete = match self.push_games_locked(&remote, Some(&untracked)) {
             Ok(pushed) => {
                 for problem in pushed.problems {
@@ -1075,19 +1077,22 @@ impl WorldlineCore {
             return Ok(results);
         }
         self.exclusive(|| {
-            for result in results
+            let mut unlisted = Vec::new();
+            for (at, result) in results
                 .iter_mut()
-                .filter(|result| incomplete.contains(&result.uuid))
+                .enumerate()
+                .filter(|(_, result)| incomplete.contains(&result.uuid))
             {
-                let back = self
-                    .history()
-                    .set_untracked(result.uuid, false)
-                    .and_then(|()| self.history().refresh_game(result.uuid));
-                result.outcome = match back {
-                    Ok(()) => GameOutcome::failed(&anyhow!(
-                        "Not all of '{}' reached the sync folder, so it stays on this device",
-                        result.title
-                    )),
+                result.outcome = match self.history().set_untracked(result.uuid, false) {
+                    Ok(()) => {
+                        if self.history().refresh_game(result.uuid).is_err() {
+                            unlisted.push(at);
+                        }
+                        GameOutcome::failed(&anyhow!(
+                            "Not all of '{}' reached the sync folder, so it stays on this device",
+                            result.title
+                        ))
+                    }
                     // Off this device, with its history still here; the
                     // upload heal stays queued until a push completes it.
                     Err(error) => GameOutcome::Applied {
@@ -1098,6 +1103,21 @@ impl WorldlineCore {
                             .into(),
                     },
                 };
+            }
+            // Tracked again, but the library couldn't show it: rebuild it,
+            // as every start does.
+            if !unlisted.is_empty() && self.history().reindex().is_err() {
+                for at in unlisted {
+                    results[at].outcome = GameOutcome::failed(&anyhow!(
+                        "Not all of '{}' reached the sync folder, so it stays on this device; your library shows it again by the next start",
+                        results[at].title
+                    ));
+                }
+            }
+            for result in results
+                .iter_mut()
+                .filter(|result| incomplete.contains(&result.uuid))
+            {
                 result.game_id = self.history().index.game_id(result.uuid)?;
             }
             Ok(())
@@ -4529,6 +4549,43 @@ mod tests {
             ]
         );
         assert!(listed(&core).is_empty());
+    }
+
+    #[test]
+    fn games_stay_on_this_pc_when_their_upload_check_cannot_be_queued() {
+        let (core, games, dirs) = synced_games(&["A", "B"]);
+        // Nothing can be written where the sync state lives.
+        let state = dirs[0].path().join("sync_state.json");
+        let _ = std::fs::remove_file(&state);
+        std::fs::create_dir(&state).unwrap();
+        let before = pushes();
+        assert!(core.untrack_games(&games).is_err());
+        assert_eq!(pushes(), before, "nothing pushed");
+        assert_eq!(listed(&core), games, "both still here");
+        assert!(core.history().untracked().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_game_tracked_again_that_the_library_cannot_show_yet_is_not_reported_removed() {
+        let (core, games, _dirs) = synced_games(&["A", "B"]);
+        // B's history doesn't all arrive, and neither projecting it back
+        // nor rebuilding the library works.
+        crate::history::faults::fail("push_game", Some(games[1]));
+        crate::history::faults::fail("refresh_game", Some(games[1]));
+        crate::history::faults::fail("reindex", None);
+        let results = core.untrack_games(&games).unwrap();
+        assert_eq!(results[0].outcome, GameOutcome::Done);
+        assert!(
+            matches!(&results[1].outcome, GameOutcome::Failed { failure } if failure.message.contains("stays on this device; your library shows it again")),
+            "{:?}",
+            results[1]
+        );
+        assert!(!core.history().untracked().unwrap().contains(&games[1]));
+
+        // What every start does.
+        crate::history::faults::clear();
+        core.reindex().unwrap();
+        assert_eq!(listed(&core), vec![games[1]]);
     }
 
     #[test]
