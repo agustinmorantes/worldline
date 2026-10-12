@@ -174,6 +174,66 @@ pub enum DeletedKind {
     Slot,
 }
 
+/// What a batch action did with one of the games it was asked about.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct GameResult {
+    /// `None` for a library id this device doesn't know.
+    pub uuid: Option<uuid::Uuid>,
+    /// The library id the request named, if it named one.
+    pub game_id: Option<i32>,
+    /// Empty when the game wasn't found.
+    pub title: String,
+    pub outcome: GameOutcome,
+}
+
+impl GameResult {
+    pub fn of(game: &FullGame, outcome: GameOutcome) -> Self {
+        Self {
+            uuid: uuid::Uuid::parse_str(&game.game.uuid).ok(),
+            game_id: Some(game.game.id),
+            title: game.game.title.clone(),
+            outcome,
+        }
+    }
+
+    pub fn not_found(game_id: i32) -> Self {
+        Self {
+            uuid: None,
+            game_id: Some(game_id),
+            title: String::new(),
+            outcome: GameOutcome::NotFound,
+        }
+    }
+}
+
+impl GameOutcome {
+    pub fn failed(error: &anyhow::Error) -> Self {
+        Self::Failed {
+            failure: error.into(),
+        }
+    }
+}
+
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum GameOutcome {
+    Done,
+    /// Recovered for the other devices; this one doesn't track it, so it
+    /// waits in the cloud list.
+    InCloud,
+    /// Left alone: only a game already in the sync folder can be removed
+    /// from this device.
+    NotInCloud,
+    /// Not in the library (or, to recover, not in the store).
+    NotFound,
+    /// Nothing changed for this game.
+    Failed {
+        failure: crate::error::Failure,
+    },
+}
+
 /// A game or slot deleted everywhere and still in its recovery window (ADR 0011).
 #[derive(Serialize, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
