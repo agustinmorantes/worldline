@@ -11,12 +11,18 @@ on:
       - 'website/**'
       - '.github/workflows/site.yml'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release:
+        description: Run full cross-platform checks for a release tag
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,13 +34,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest]
+        # Routine CI avoids the Tauri build and Windows runner.
+        os: ${{ fromJSON(inputs.release && startsWith(github.ref, 'refs/tags/v') && '["ubuntu-24.04", "windows-latest"]' || '["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
-      - if: runner.os == 'Linux'
+      - if: inputs.release && startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
         name: Install Tauri system dependencies
         run: |
           sudo apt-get update
@@ -44,15 +51,26 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ${{ inputs.release && 'release-check' || 'quick-check' }}
+          save-if: ${{ github.event_name != 'pull_request' }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: '22'
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: gui/package.json
+
+      - name: Cache Bun packages
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('gui/bun.lockb', 'gui/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install GUI dependencies
         working-directory: gui
@@ -62,12 +80,27 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run Rust tests
-        run: cargo test --workspace --locked
+        shell: bash
+        env:
+          RELEASE_CHECK: ${{ inputs.release && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          if [ "$RELEASE_CHECK" = "true" ]; then
+            cargo test --workspace --locked
+          else
+            cargo test -p worldline-core -p cli --locked
+          fi
 
       - name: Run Clippy
+        shell: bash
+        env:
+          RELEASE_CHECK: ${{ inputs.release && startsWith(github.ref, 'refs/tags/v') }}
         run: |
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo clippy -p worldline --all-targets --features e2e --locked -- -D warnings
+          if [ "$RELEASE_CHECK" = "true" ]; then
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+            cargo clippy -p worldline --all-targets --features e2e --locked -- -D warnings
+          else
+            cargo clippy -p worldline-core -p cli --all-targets --locked -- -D warnings
+          fi
 
       - name: Check GUI
         working-directory: gui
@@ -77,7 +110,8 @@ jobs:
         working-directory: gui
         run: bun run test --run
 
-      - name: Build GUI
+      - if: inputs.release && startsWith(github.ref, 'refs/tags/v')
+        name: Build GUI
         working-directory: gui
         run: bun run build
 
@@ -88,21 +122,22 @@ jobs:
           git status --porcelain -- gui/src/ipc/bindings
           test -z "$(git status --porcelain -- gui/src/ipc/bindings)"
 
-      - if: runner.os == 'Linux'
+      - if: inputs.release && startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
         name: Run screen tests
         working-directory: gui
         run: |
           bunx playwright install --with-deps chromium
           bun run test:screens
 
-      - if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+      - if: failure() && inputs.release && startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: screen-test-results
           path: gui/test-results/
           if-no-files-found: ignore
 
   e2e:
+    if: inputs.release && startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -113,7 +148,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - if: runner.os == 'Linux'
         name: Install Tauri system dependencies and WebKitWebDriver
@@ -123,28 +158,37 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: e2e
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: '22'
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: gui/package.json
 
       - name: Install tauri-driver
-        run: cargo install tauri-driver --locked
+        shell: bash
+        run: command -v tauri-driver >/dev/null || cargo install tauri-driver --locked
 
       - if: runner.os == 'Windows'
         name: Install an msedgedriver matching WebView2
         shell: bash
         run: |
-          cargo install --locked --git https://github.com/chippers/msedgedriver-tool
+          command -v msedgedriver-tool >/dev/null || cargo install --locked --git https://github.com/chippers/msedgedriver-tool
           msedgedriver-tool
           echo "TAURI_NATIVE_DRIVER=$(cygpath -w "$PWD")\msedgedriver.exe" >> "$GITHUB_ENV"
+
+      - name: Cache Bun packages
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('gui/bun.lockb', 'gui/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install GUI dependencies
         working-directory: gui
