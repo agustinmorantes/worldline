@@ -92,36 +92,50 @@ impl History {
         self.index.reindex(&catalog, &self.retired()?, &self.store)
     }
 
-    /// Re-projects one game from its files into the index. A deleted game
-    /// leaving the index keeps this device's pointers, so recovering it here
-    /// resumes where it was.
+    /// Re-projects one game from its files into the index.
     pub fn refresh_game(&self, uuid: Uuid) -> Result<()> {
         if self.untracked()?.contains(&uuid) {
             return self.index.remove_game(uuid);
         }
         match self.store.game(uuid)? {
-            Some(record) => {
-                if record.meta.deletion.is_deleted() && self.index.game_id(uuid)?.is_some() {
-                    self.keep_pointers(uuid)?;
-                }
-                self.index
-                    .upsert_game(&record, &self.retired()?, &self.store)
-            }
+            Some(record) => self
+                .index
+                .upsert_game(&record, &self.retired()?, &self.store),
             None => self.index.remove_game(uuid),
         }
     }
 
+    /// The pointers kept for deleted games. They only help a recovery resume,
+    /// so a damaged file is set aside and starts over empty.
     fn deleted_pointers(&self) -> Result<HashMap<Uuid, DeviceGameState>> {
-        if !self.deleted_pointers_path.exists() {
-            return Ok(HashMap::new());
+        let path = &self.deleted_pointers_path;
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(HashMap::new());
+            }
+            Err(error) => {
+                return Err(error).context("Failed to load the pointers of deleted games");
+            }
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(kept) => Ok(kept),
+            Err(_) => {
+                let aside = path.with_file_name(format!(
+                    ".deleted_pointers.corrupt-{}.json",
+                    Uuid::new_v4().simple()
+                ));
+                // The next write replaces the file anyway.
+                let _ = std::fs::rename(path, aside);
+                Ok(HashMap::new())
+            }
         }
-        read_json(&self.deleted_pointers_path)
-            .context("Failed to load the pointers of deleted games")
     }
 
-    /// Records this device's pointers of a game being deleted, and forgets
-    /// those of games that can no longer be recovered.
-    fn keep_pointers(&self, uuid: Uuid) -> Result<()> {
+    /// Records this device's pointers of a game about to be deleted, before
+    /// the deletion is written, and forgets those of games that can no longer
+    /// be recovered. One whose files can't be read now is kept.
+    pub(crate) fn keep_pointers(&self, uuid: Uuid) -> Result<()> {
         let pointers: Vec<_> = self
             .index
             .pointers()?
@@ -130,19 +144,17 @@ impl History {
             .collect();
         let mut kept = self.deleted_pointers()?;
         let now = Utc::now();
-        kept.retain(|game, _| {
-            self.store
-                .find_game(*game)
-                .ok()
-                .flatten()
-                .is_some_and(|meta| meta.deletion.is_recoverable(now))
+        kept.retain(|game, _| match self.store.find_game(*game) {
+            Ok(meta) => meta.is_some_and(|meta| meta.deletion.is_recoverable(now)),
+            Err(_) => true,
         });
-        if let Some(state) = DeviceState::from_pointers(self.device, &pointers)
+        match DeviceState::from_pointers(self.device, &pointers)
             .games
             .remove(&uuid)
         {
-            kept.insert(uuid, state);
-        }
+            Some(state) => kept.insert(uuid, state),
+            None => kept.remove(&uuid),
+        };
         write_json(&self.deleted_pointers_path, &kept)
     }
 
@@ -313,6 +325,7 @@ impl History {
         let game = self.index.get_game(id)?;
         let record = self.record(&game.game)?;
         let mut meta = record.meta;
+        self.keep_pointers(meta.uuid)?;
         let now = Utc::now();
         meta.deletion.delete(now);
         meta.updated_at = now;
@@ -421,12 +434,15 @@ impl History {
         if here {
             self.validate_fits(&record)?;
         }
+        // Read before anything changes; the entry goes once the game can no
+        // longer be recovered.
+        let saved = self.deleted_pointers()?.remove(&uuid);
         meta.deletion.recover(now);
         meta.updated_at = now;
         self.store.write_game(&meta)?;
         self.refresh_game(uuid)?;
         if here {
-            self.resume_pointers(uuid)?;
+            self.resume_pointers(uuid, saved)?;
         }
         Ok(here)
     }
@@ -449,14 +465,13 @@ impl History {
     /// deleted: the playthrough it was on and each playthrough's version.
     /// Without a record it resumes as an adoption does, from the newest
     /// version of its active playthrough.
-    fn resume_pointers(&self, uuid: Uuid) -> Result<()> {
+    fn resume_pointers(&self, uuid: Uuid, saved: Option<DeviceGameState>) -> Result<()> {
         let game_id = self
             .index
             .game_id(uuid)?
             .context("Recovered game is not indexed")?;
         let retired = self.retired()?;
-        let mut kept = self.deleted_pointers()?;
-        let Some(state) = kept.remove(&uuid) else {
+        let Some(state) = saved else {
             if let Some(slot) = self.index.get_game(game_id)?.active_slot {
                 let newest = self
                     .index
@@ -485,7 +500,7 @@ impl History {
                 self.index.set_active_slot(game_id, slot_id)?;
             }
         }
-        write_json(&self.deleted_pointers_path, &kept)
+        Ok(())
     }
 
     /// Brings back a deleted slot into its game, as an inactive slot. A name
@@ -540,7 +555,7 @@ impl History {
         self.store.write_slot(&game.folder_slug, &meta)
     }
 
-    fn find_slot(&self, uuid: Uuid) -> Result<Option<(GameMeta, SlotMeta)>> {
+    pub(crate) fn find_slot(&self, uuid: Uuid) -> Result<Option<(GameMeta, SlotMeta)>> {
         for game in self.store.game_metas()? {
             if let Some(slot) = self
                 .store

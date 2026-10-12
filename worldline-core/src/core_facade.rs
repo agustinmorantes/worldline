@@ -82,6 +82,11 @@ struct SyncState {
     /// have collected it already (ADR 0011).
     #[serde(default)]
     reviving: HashSet<Uuid>,
+    /// Games recovered here, pushed with every version healed until the sync
+    /// folder holds all of their history: another device may have collected
+    /// it already (ADR 0011).
+    #[serde(default)]
+    uploading: HashSet<Uuid>,
 }
 
 /// Whether `remote` brings back a game or slot deleted in `local`.
@@ -579,12 +584,30 @@ impl WorldlineCore {
     /// is back in this device's library; a game this device doesn't track
     /// stays in the cloud list.
     pub fn recover_game(&self, uuid: Uuid) -> Result<bool> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.upload_all(uuid)?;
         self.exclusive(|| self.history().recover_game(uuid, Utc::now()))
     }
 
     /// Brings a deleted slot back into its game, inactive.
     pub fn recover_slot(&self, uuid: Uuid) -> Result<()> {
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((game, _)) = self.history().find_slot(uuid)? {
+            self.upload_all(game.uuid)?;
+        }
         self.exclusive(|| self.history().recover_slot(uuid, Utc::now()))
+    }
+
+    /// Has the next pushes heal every version of `game` until one completes.
+    /// Recorded before the recovery, so neither a failed push nor a restart
+    /// loses it. Callers hold `sync_lock`.
+    fn upload_all(&self, game: Uuid) -> Result<()> {
+        let state_path = self.data_dir.join("sync_state.json");
+        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        if state.uploading.insert(game) {
+            write_json(&state_path, &state)?;
+        }
+        Ok(())
     }
 
     /// Ends a deleted game's or slot's recovery window now; the next cleanup
@@ -1273,7 +1296,7 @@ impl WorldlineCore {
     fn push_locked(&self, remote: &Remote) -> Result<Vec<String>> {
         let history = self.history();
         let state_path = self.data_dir.join("sync_state.json");
-        let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+        let state: SyncState = read_json(&state_path).unwrap_or_default();
         let now = Utc::now();
         let full = state
             .last_full_heal
@@ -1299,9 +1322,18 @@ impl WorldlineCore {
         let mut transfer = Transfer::new(&history.store, &remote.store, Completeness::Partial)
             .screenshots(self.get_monitoring_settings()?.sync_screenshots);
         let mut problems = Vec::new();
+        let mut uploaded = Vec::new();
         for game in history.store.catalog()? {
-            if let Err(error) = transfer.copy_game(&game, &markers, heal) {
-                problems.push(format!("{}: {error:#}", game.meta.title));
+            let uuid = game.meta.uuid;
+            let uploading = state.uploading.contains(&uuid);
+            let heal = if uploading { Heal::All } else { heal };
+            let missing = transfer.report.not_arrived.len();
+            match transfer.copy_game(&game, &markers, heal) {
+                Ok(_) if uploading && transfer.report.not_arrived.len() == missing => {
+                    uploaded.push(uuid);
+                }
+                Ok(_) => {}
+                Err(error) => problems.push(format!("{}: {error:#}", game.meta.title)),
             }
         }
         let device = self.device_metadata();
@@ -1309,8 +1341,14 @@ impl WorldlineCore {
         let published = remote.publish(&device, &pointers)?;
         sync::save_device(&self.data_dir, &published)?;
         *self.device.write().unwrap_or_else(|e| e.into_inner()) = published;
-        if full && problems.is_empty() {
-            state.last_full_heal = Some(now);
+        if (full && problems.is_empty()) || !uploaded.is_empty() {
+            let mut state: SyncState = read_json(&state_path).unwrap_or_default();
+            if full && problems.is_empty() {
+                state.last_full_heal = Some(now);
+            }
+            for uuid in &uploaded {
+                state.uploading.remove(uuid);
+            }
             write_json(&state_path, &state)?;
         }
         Ok(problems)
@@ -1342,6 +1380,15 @@ impl WorldlineCore {
         }
         let reviving = state.reviving.contains(&uuid);
         let heal = if reviving { Heal::All } else { Heal::None };
+        // A game this device plays, deleted elsewhere: its pointers are kept
+        // before the deletion lands here, so recovering it resumes here.
+        if let Some(local) = &local
+            && !local.meta.deletion.is_deleted()
+            && Deletion::merge(local.meta.deletion, game.meta.deletion).is_deleted()
+            && history.index.game_id(uuid)?.is_some()
+        {
+            history.keep_pointers(uuid)?;
+        }
         let copy = || {
             let mut transfer = Transfer::new(&remote.store, &history.store, Completeness::Partial)
                 .screenshots(screenshots);

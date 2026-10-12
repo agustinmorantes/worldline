@@ -663,3 +663,333 @@ fn versions_reach_a_game_recovered_here_after_the_remote_window_ended() {
     assert_eq!(a.game(game.game.id).versions.len(), 2);
     assert!(a.core.check_integrity(true).unwrap().is_ok());
 }
+
+fn reopen(device: Device) -> Device {
+    let Device { core, data, saves } = device;
+    drop(core);
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+    Device { core, data, saves }
+}
+
+fn pointers_file(device: &Device) -> std::path::PathBuf {
+    device.data.path().join("deleted_pointers.json")
+}
+
+/// A game whose first playthrough is on its older version while a newer
+/// version waits in a second one. Returns the game and that slot and version.
+fn on_an_older_version(device: &Device, title: &str) -> (FullGame, String, String) {
+    device.write("save.dat", "v1");
+    let game = device.add_game(title);
+    let id = game.game.id;
+    let default = game.active_slot.clone().unwrap();
+    let v1 = device.active_version(id);
+    device.write("save.dat", "v2");
+    device.checkpoint(id);
+    device.core.restore_version(v1.id).unwrap();
+    device.core.create_slot(id, "Second").unwrap();
+    device.write("save.dat", "second");
+    device.checkpoint(id);
+    device.core.switch_slot(id, default.id).unwrap();
+    assert_eq!(device.read("save.dat").as_deref(), Some("v1"));
+    (game, default.uuid, v1.uuid)
+}
+
+fn resumes(device: &Device, title: &str, slot: &str, version: &str) {
+    let back = device.game_by_title(title).unwrap();
+    assert_eq!(back.active_slot.unwrap().uuid, slot);
+    assert_eq!(device.active_version(back.game.id).uuid, version);
+    assert_eq!(
+        device.read("save.dat").as_deref(),
+        Some("v1"),
+        "no live writes"
+    );
+}
+
+#[test]
+fn a_damaged_pointer_file_never_blocks_deleting_or_restoring() {
+    let device = Device::new();
+    let (game, slot, version) = on_an_older_version(&device, "Damaged");
+    let uuid = uuid_of(&game);
+    fs::write(pointers_file(&device), "{ not json").unwrap();
+
+    device.core.delete_game(game.game.id).unwrap();
+    let aside = fs::read_dir(device.data.path())
+        .unwrap()
+        .filter_map(|entry| entry.unwrap().file_name().into_string().ok())
+        .filter(|name| name.starts_with(".deleted_pointers.corrupt-"))
+        .count();
+    assert_eq!(aside, 1, "set aside, not lost");
+    assert!(device.core.recover_game(uuid).unwrap());
+    resumes(&device, "Damaged", &slot, &version);
+
+    // Damaged after the deletion: it still comes back, without live writes.
+    let id = device.game_by_title("Damaged").unwrap().game.id;
+    device.core.delete_game(id).unwrap();
+    fs::write(pointers_file(&device), "garbage").unwrap();
+    assert!(device.core.recover_game(uuid).unwrap());
+    let back = device.game_by_title("Damaged").unwrap();
+    assert!(back.last_version.is_some());
+    assert_eq!(
+        device.read("save.dat").as_deref(),
+        Some("v1"),
+        "no live writes"
+    );
+}
+
+#[test]
+fn a_damaged_pointer_file_never_blocks_a_deletion_from_another_device() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    let (game, slot, version) = on_an_older_version(&a, "Elsewhere");
+    let uuid = uuid_of(&game);
+    a.core.refresh_sync().unwrap();
+    // Another device deletes it.
+    let remote_store = Store::open_existing(remote.path()).unwrap();
+    let mut meta = remote_store.find_game(uuid).unwrap().unwrap();
+    meta.deletion.deleted_at = Some(Utc::now());
+    remote_store.write_game(&meta).unwrap();
+    fs::write(pointers_file(&a), "garbage").unwrap();
+
+    let report = a.core.refresh_sync().unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert!(a.game_by_title("Elsewhere").is_none());
+    let a = reopen(a);
+    assert!(a.core.recover_game(uuid).unwrap());
+    resumes(&a, "Elsewhere", &slot, &version);
+}
+
+#[test]
+fn pointers_kept_before_a_deletion_survive_a_crash_before_the_library_caught_up() {
+    let device = Device::new();
+    let (game, slot, version) = on_an_older_version(&device, "Crashed");
+    let uuid = uuid_of(&game);
+    // A damaged untracked list stops the deletion right after it is
+    // written, as a crash there would.
+    let untracked = device.data.path().join("untracked_games.json");
+    fs::write(&untracked, "garbage").unwrap();
+    assert!(device.core.delete_game(game.game.id).is_err());
+    let meta = store_of(&device).find_game(uuid).unwrap().unwrap();
+    assert!(meta.deletion.is_deleted());
+    fs::remove_file(&untracked).unwrap();
+
+    let device = reopen(device);
+    assert!(device.game_by_title("Crashed").is_none());
+    assert!(device.core.recover_game(uuid).unwrap());
+    resumes(&device, "Crashed", &slot, &version);
+}
+
+/// Moves every version's creation `days` back, as if made that long ago.
+fn backdate_versions(root: &std::path::Path, days: i64) {
+    for entry in fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            backdate_versions(&path, days);
+            continue;
+        }
+        let in_versions = path
+            .parent()
+            .and_then(|dir| dir.parent())
+            .and_then(|dir| dir.file_name())
+            .is_some_and(|name| name == "versions");
+        if !in_versions || path.file_name().unwrap() != "metadata.json" {
+            continue;
+        }
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let at =
+            chrono::DateTime::parse_from_rfc3339(meta["created_at"].as_str().unwrap()).unwrap();
+        meta["created_at"] = serde_json::json!((at - Duration::days(days)).to_rfc3339());
+        fs::write(&path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    }
+}
+
+fn remote_chunks(remote: &std::path::Path) -> usize {
+    Store::open_existing(remote)
+        .unwrap()
+        .chunk_sizes()
+        .unwrap()
+        .len()
+}
+
+fn uploading(device: &Device) -> Vec<String> {
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(device.data.path().join("sync_state.json")).unwrap())
+            .unwrap();
+    state["uploading"]
+        .as_array()
+        .map(|uuids| {
+            uuids
+                .iter()
+                .map(|u| u.as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Another device, keeping every version, cleans the sync folder up twice,
+/// the second time past the grace period.
+fn collect_remote(remote: &std::path::Path) {
+    let b = Device::synced(remote);
+    b.core
+        .update_pruning_settings(RetentionSettings {
+            keep_all_hours: 24 * 3650,
+            hourly_until_hours: 24 * 3650,
+            daily_until_days: 3650,
+            weekly_until_days: 3650,
+            ..RetentionSettings::default()
+        })
+        .unwrap();
+    b.core.run_pruning_at(Utc::now()).unwrap();
+    b.core
+        .run_pruning_at(Utc::now() + GRACE + Duration::hours(1))
+        .unwrap();
+}
+
+/// A synced game with three versions older than the push heal window and a
+/// screenshot on the first. A deletes it offline while the sync folder, told
+/// another device deleted it 31 days ago, has its history collected. Returns
+/// A, the game, the screenshot's path in the sync folder and how many chunks
+/// the folder had.
+fn collected_in_the_cloud_deleted_here(
+    remote: &std::path::Path,
+) -> (Device, FullGame, std::path::PathBuf, usize) {
+    let a = Device::synced(remote);
+    a.write("save.dat", "v1");
+    let game = a.add_game("Uploaded");
+    let uuid = uuid_of(&game);
+    let first = a.active_version(game.game.id);
+    for n in 2..=3 {
+        a.write("save.dat", &format!("v{n}"));
+        a.checkpoint(game.game.id);
+    }
+    let version = a.core.get_version(first.id).unwrap();
+    store_of(&a)
+        .write_screenshot(
+            &version.game.folder_slug,
+            &version.slot.folder_slug,
+            &version.version.folder_slug,
+            b"jpeg",
+        )
+        .unwrap();
+    a.core.refresh_sync().unwrap();
+    backdate_versions(a.core.repository_root(), 10);
+    backdate_versions(remote, 10);
+    let remote_store = Store::open_existing(remote).unwrap();
+    let screenshot = remote_store.screenshot_path(
+        &version.game.folder_slug,
+        &version.slot.folder_slug,
+        &version.version.folder_slug,
+    );
+    assert!(screenshot.exists());
+    let chunks = remote_chunks(remote);
+
+    a.core.delete_game(game.game.id).unwrap();
+    let mut meta = remote_store.find_game(uuid).unwrap().unwrap();
+    meta.deletion.deleted_at = Some(Utc::now() - RECOVERY_WINDOW - Duration::days(1));
+    remote_store.write_game(&meta).unwrap();
+    collect_remote(remote);
+    assert!(remote_chunks(remote) < chunks);
+    assert!(!screenshot.exists());
+    (a, game, screenshot, chunks)
+}
+
+#[test]
+fn history_collected_in_the_cloud_is_uploaded_again_once_recovered_here() {
+    let remote = tempfile::tempdir().unwrap();
+    let (a, game, screenshot, chunks) = collected_in_the_cloud_deleted_here(remote.path());
+    let uuid = uuid_of(&game);
+
+    assert!(a.core.recover_game(uuid).unwrap());
+    assert_eq!(uploading(&a), [uuid.to_string()]);
+    let report = a.core.refresh_sync().unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert_eq!(remote_chunks(remote.path()), chunks);
+    assert!(screenshot.exists());
+    assert!(uploading(&a).is_empty(), "only until one push completes");
+    assert_eq!(a.read("save.dat").as_deref(), Some("v3"), "no live writes");
+
+    let c = Device::synced(remote.path());
+    c.core.refresh_sync().unwrap();
+    let on_c = c.core.adopt_remote_game(uuid).unwrap();
+    assert_eq!(on_c.versions.len(), 3);
+    assert!(c.core.check_integrity(true).unwrap().is_ok());
+    let out = tempfile::tempdir().unwrap();
+    let exported = c
+        .core
+        .export_game_history(on_c.game.id, &out.path().join("uploaded.zip"))
+        .unwrap();
+    assert_eq!(exported.version_count, 3);
+}
+
+#[test]
+fn a_failed_upload_of_recovered_history_is_retried_after_a_restart() {
+    let remote = tempfile::tempdir().unwrap();
+    let (a, game, screenshot, chunks) = collected_in_the_cloud_deleted_here(remote.path());
+    let uuid = uuid_of(&game);
+    assert!(a.core.recover_game(uuid).unwrap());
+
+    // The sync folder can't take chunks for now.
+    let held = remote.path().join("chunks");
+    let aside = remote.path().join("chunks-aside");
+    fs::rename(&held, &aside).unwrap();
+    fs::write(&held, "not a folder").unwrap();
+    let _ = a.core.push_sync();
+    assert_eq!(uploading(&a), [uuid.to_string()]);
+    fs::remove_file(&held).unwrap();
+    fs::rename(&aside, &held).unwrap();
+
+    let a = reopen(a);
+    assert_eq!(uploading(&a), [uuid.to_string()]);
+    a.core.push_sync().unwrap();
+    assert_eq!(remote_chunks(remote.path()), chunks);
+    assert!(screenshot.exists());
+    assert!(uploading(&a).is_empty());
+}
+
+#[test]
+fn a_playthrough_recovered_here_uploads_its_collected_history_again() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "v1");
+    let game = a.add_game("Playthroughs");
+    let uuid = uuid_of(&game);
+    let id = game.game.id;
+    let default = game.active_slot.clone().unwrap();
+    a.core.create_slot(id, "Second").unwrap();
+    for n in 1..=3 {
+        a.write("save.dat", &format!("s{n}"));
+        a.checkpoint(id);
+    }
+    let second = a.game(id).active_slot.unwrap();
+    a.core.switch_slot(id, default.id).unwrap();
+    a.core.refresh_sync().unwrap();
+    backdate_versions(a.core.repository_root(), 10);
+    backdate_versions(remote.path(), 10);
+    let chunks = remote_chunks(remote.path());
+
+    a.core.delete_slot(second.id, None).unwrap();
+    let remote_store = Store::open_existing(remote.path()).unwrap();
+    let record = remote_store.game(uuid).unwrap().unwrap();
+    let mut meta = record
+        .slots
+        .iter()
+        .find(|slot| slot.meta.uuid.to_string() == second.uuid)
+        .unwrap()
+        .meta
+        .clone();
+    meta.deletion.deleted_at = Some(Utc::now() - RECOVERY_WINDOW - Duration::days(1));
+    remote_store
+        .write_slot(&record.meta.folder_slug, &meta)
+        .unwrap();
+    collect_remote(remote.path());
+    assert!(remote_chunks(remote.path()) < chunks);
+
+    a.core
+        .recover_slot(Uuid::parse_str(&second.uuid).unwrap())
+        .unwrap();
+    let report = a.core.refresh_sync().unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert_eq!(remote_chunks(remote.path()), chunks);
+    assert!(uploading(&a).is_empty());
+    assert_eq!(a.read("save.dat").as_deref(), Some("v1"), "no live writes");
+}
