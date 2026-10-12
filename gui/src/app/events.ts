@@ -96,6 +96,11 @@ export function listenNotifications(): void {
     })
     .catch((err: unknown) => { reportError("Couldn't read the startup notice", err); });
 
+  void on('games-changed', () => {
+    void queryClient.invalidateQueries({ queryKey: ['games'] });
+    void queryClient.invalidateQueries({ queryKey: ['game'] });
+  });
+
   void on('history-pruned', () => {
     void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
     void queryClient.invalidateQueries({ queryKey: ['games'] });

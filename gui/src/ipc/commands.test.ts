@@ -25,7 +25,8 @@ describe('ipc commands', () => {
     ['save_game', () => commands.saveGame({ id: null, title: 'Celeste' }, ['C:/saves']), { game: { id: null, title: 'Celeste' }, dirs: ['C:/saves'], allowLarge: false }],
     ['delete_slot', () => commands.deleteSlot(2, 1), { slotId: 2, replacementSlotId: 1 }],
     ['switch_slot', () => commands.switchSlot(1, 2), { gameId: 1, slotId: 2 }],
-    ['set_game_icon', () => commands.setGameIcon(1, 'C:/icon.png'), { gameId: 1, sourcePath: 'C:/icon.png' }],
+    ['set_game_icon', () => commands.setGameIcon(1, 'C:/icon.png'), { gameId: 1, sourcePath: 'C:/icon.png', source: 'user' }],
+    ['set_game_icon', () => commands.setGameIcon(1, 'C:/icon.png', 'auto'), { gameId: 1, sourcePath: 'C:/icon.png', source: 'auto' }],
     ['apply_remote_version', () => commands.applyRemoteVersion(7), { versionId: 7 }],
     ['adopt_remote_game', () => commands.adoptRemoteGame('uuid'), { gameUuid: 'uuid' }],
     [

@@ -6,6 +6,7 @@ use tauri::{generate_handler, Emitter, State};
 use worldline_core::error::Failure;
 use worldline_core::install_scanner::InstallScannerItem;
 use worldline_core::models::*;
+use worldline_core::store::IconSource;
 use worldline_core::WorldlineCore;
 
 /// Runs `work` off the main thread: a command that waits there for the repository lock (held by a
@@ -158,10 +159,12 @@ async fn tag_version(
 async fn set_game_icon(
     game_id: i32,
     source_path: String,
+    source: Option<IconSource>,
     core: State<'_, Arc<WorldlineCore>>,
 ) -> Result<String, String> {
     let core = Arc::clone(&core);
-    off_main(move || core.set_game_icon(game_id, &source_path))
+    let source = source.unwrap_or(IconSource::User);
+    off_main(move || core.set_game_icon_as(game_id, &source_path, source))
         .await
         .map_err(|e| e.to_string())
 }

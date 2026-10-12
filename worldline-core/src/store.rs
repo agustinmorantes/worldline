@@ -48,6 +48,21 @@ pub struct GameMeta {
     pub accent_hue: Option<u16>,
     #[serde(default)]
     pub accent_hue_source: AccentHueSource,
+    #[serde(default)]
+    pub icon_source: IconSource,
+}
+
+/// Who chose the icon: found automatically (a sharper automatic one may
+/// replace it), or picked by the user (never replaced automatically).
+/// Metadata written before this existed counts as the user's: nothing tells
+/// whether its icon was picked by hand.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum IconSource {
+    Auto,
+    #[default]
+    User,
 }
 
 /// Who chose the accent hue: computed from the icon, or picked by the user
@@ -1110,7 +1125,39 @@ mod tests {
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: AccentHueSource::Auto,
+            icon_source: IconSource::User,
         }
+    }
+
+    #[test]
+    fn an_icon_without_a_source_counts_as_the_users_and_auto_roundtrips() {
+        let root = tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let uuid = Uuid::new_v4();
+        let meta = GameMeta {
+            icon_sha256: Some(crate::icon::sha256(b"png")),
+            icon_source: IconSource::Auto,
+            ..game(uuid, "Game", Utc::now())
+        };
+        let path = store.game_dir(&meta.folder_slug).join(METADATA);
+        let mut old = serde_json::to_value(&meta).unwrap();
+        old.as_object_mut().unwrap().remove("icon_source");
+        write_json(&path, &old).unwrap();
+        let loaded = store.find_game(uuid).unwrap().unwrap();
+        assert_eq!(loaded.icon_source, IconSource::User);
+        assert_eq!(loaded.icon_sha256, meta.icon_sha256);
+
+        let auto = GameMeta {
+            updated_at: meta.updated_at + chrono::Duration::seconds(1),
+            ..meta
+        };
+        store.write_game(&auto).unwrap();
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains(r#""icon_source": "auto""#)
+        );
+        assert_eq!(store.find_game(uuid).unwrap().unwrap(), auto);
     }
 
     #[test]
@@ -1121,7 +1168,12 @@ mod tests {
         let meta = game(uuid, "Game", Utc::now());
         // Metadata written before icons existed still loads.
         let mut old = serde_json::to_value(&meta).unwrap();
-        for field in ["icon_sha256", "accent_hue", "accent_hue_source"] {
+        for field in [
+            "icon_sha256",
+            "accent_hue",
+            "accent_hue_source",
+            "icon_source",
+        ] {
             old.as_object_mut().unwrap().remove(field);
         }
         write_json(&store.game_dir(&meta.folder_slug).join(METADATA), &old).unwrap();

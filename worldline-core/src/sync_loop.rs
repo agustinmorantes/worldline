@@ -50,6 +50,13 @@ fn run(
     triggers: mpsc::Receiver<Trigger>,
     notifications: mpsc::Sender<Notification>,
 ) {
+    // Once, before the first sync, so that sync fills the icons it finds.
+    // A shutdown meanwhile waits for it, then only pushes.
+    if let Some(core) = core.upgrade()
+        && let Err(error) = core.scan_for_missing_icons()
+    {
+        eprintln!("Icons: {error:#}");
+    }
     let mut next = Trigger::Sync;
     let mut due = Instant::now();
     loop {

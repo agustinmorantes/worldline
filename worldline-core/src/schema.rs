@@ -14,6 +14,7 @@ diesel::table! {
         accent_hue_source -> Text,
         created_at -> Timestamp,
         updated_at -> Timestamp,
+        icon_sha256 -> Nullable<Text>,
     }
 }
 

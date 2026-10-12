@@ -79,6 +79,106 @@ struct SyncState {
     recent_pulls: HashMap<Uuid, DateTime<Utc>>,
 }
 
+/// One install a scan found: where it is, and where its icon comes from.
+#[derive(Debug, Clone, Default)]
+struct ScannedInstall {
+    /// The title the scan found it by, naming its preview in the icon cache.
+    title: String,
+    install_path: Option<String>,
+    icon_path: Option<String>,
+    steam_appid: Option<u64>,
+}
+
+impl ScannedInstall {
+    /// The scan's result keyed by normalized title, as installs are matched to games.
+    fn by_title(items: &[InstallScannerItem]) -> HashMap<String, Self> {
+        items
+            .iter()
+            .map(|item| {
+                (
+                    store::normalize_display_name(&item.title),
+                    Self {
+                        title: item.title.clone(),
+                        install_path: item.install_path.clone(),
+                        icon_path: item.icon_path.clone(),
+                        steam_appid: item.steam_appid,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn icon(&self) -> Option<crate::icon::Source<'_>> {
+        let local = Path::new(self.icon_path.as_deref()?);
+        Some(match self.steam_appid {
+            Some(appid) => crate::icon::Source::Steam { appid, local },
+            None => crate::icon::Source::File(local),
+        })
+    }
+}
+
+/// A game here that wants an icon (see `games_wanting_icons`), and the
+/// install the scan found it by, if any.
+struct WantedIcon {
+    uuid: Uuid,
+    title_normalized: String,
+    install: ScannedInstall,
+    /// The size of its automatic icon; `None` when it has none.
+    size: Option<(u32, u32)>,
+    /// Whether Steam may be asked about it now (`lookup_due`).
+    due: bool,
+}
+
+impl WantedIcon {
+    /// Whether it's worth an install scan or a sync of its own: it has no
+    /// icon, or Steam may be asked about it. An automatic icon looked up
+    /// lately waits for the next scan or sync that happens anyway.
+    fn is_pressing(&self) -> bool {
+        self.size.is_none() || self.due
+    }
+}
+
+/// A game looked up on Steam is looked up again after this long: one Steam
+/// had no icon for, or one whose icon is still smaller than `ICON_SIZE`.
+const ICON_LOOKUP_RETRY: chrono::Duration = chrono::Duration::days(7);
+
+/// When each game was last looked up on Steam, from `cache/icon_lookups.json`.
+fn read_icon_lookups(path: &Path) -> Result<HashMap<Uuid, DateTime<Utc>>> {
+    match read_json(path) {
+        Ok(lookups) => Ok(lookups),
+        Err(_) if !path.exists() => Ok(HashMap::new()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether `uuid` may be looked up on Steam at `now`.
+fn lookup_due(lookups: &HashMap<Uuid, DateTime<Utc>>, uuid: &Uuid, now: DateTime<Utc>) -> bool {
+    lookups
+        .get(uuid)
+        .is_none_or(|at| now - *at >= ICON_LOOKUP_RETRY)
+}
+
+/// The Add Games preview cache, shared with the icon fills.
+fn icon_cache_dir(cache_dir: &Path) -> PathBuf {
+    let dir = cache_dir.join("icon_cache_v2");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// The name of `title`'s preview in the icon cache.
+fn preview_name(title: &str) -> String {
+    title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// How far back a push heals versions that were created or pulled.
 fn heal_window() -> chrono::Duration {
     maintenance::GRACE * 2
@@ -209,9 +309,10 @@ pub struct WorldlineCore {
     device: RwLock<DeviceMetadata>,
     sync_lock: Mutex<()>,
     /// Installed titles seen by the last full sync, for later reports.
-    last_installs: Mutex<HashMap<String, Option<String>>>,
-    /// Install dirs by normalized title, from the last install scan.
-    scanned_installs: Mutex<HashMap<String, Option<String>>>,
+    last_installs: Mutex<HashMap<String, ScannedInstall>>,
+    /// What the last install scan found, by normalized title; `None` until
+    /// this process scans.
+    scanned_installs: Mutex<Option<HashMap<String, ScannedInstall>>>,
     last_prune: Mutex<Option<DateTime<Utc>>>,
     moved_old_data: Option<PathBuf>,
     /// Writes to live saves a crash interrupted, rolled back on this start.
@@ -294,7 +395,7 @@ impl WorldlineCore {
             device: RwLock::new(device),
             sync_lock: Mutex::new(()),
             last_installs: Mutex::new(HashMap::new()),
-            scanned_installs: Mutex::new(HashMap::new()),
+            scanned_installs: Mutex::new(None),
             last_prune: Mutex::new(None),
             moved_old_data,
             recovered_restores,
@@ -892,13 +993,33 @@ impl WorldlineCore {
         self.get_game(game.game.id)
     }
 
-    /// Stores an image (or an executable's icon) as the game's shared icon
-    /// and returns its local path.
+    /// Stores an image (or an executable's icon) the user picked as the
+    /// game's shared icon and returns its local path.
     pub fn set_game_icon(&self, game_id: i32, source_path: &str) -> Result<String> {
+        self.set_game_icon_as(game_id, source_path, store::IconSource::User)
+    }
+
+    /// `set_game_icon`, chosen by `source`. An automatic icon (Add Games'
+    /// preview) only takes the place of none or of a smaller automatic one
+    /// (`History::takes_auto_icon`); otherwise the game keeps its icon and
+    /// its path is returned.
+    pub fn set_game_icon_as(
+        &self,
+        game_id: i32,
+        source_path: &str,
+        source: store::IconSource,
+    ) -> Result<String> {
         let image = crate::icon::resolve(crate::icon::Source::File(Path::new(source_path)))?;
         let png = crate::icon::normalize(&image)?;
+        let size = crate::icon::dimensions(&png)?;
         let game = store::with_lock(self.repository_root(), || {
-            self.history().set_icon(game_id, &png)
+            let history = self.history();
+            if source == store::IconSource::Auto
+                && !history.takes_auto_icon(&history.game_meta(game_id)?, size)
+            {
+                return history.index.get_game(game_id);
+            }
+            history.set_icon(game_id, &png, source)
         })?;
         game.game.icon_path.context("The icon was not stored")
     }
@@ -1026,30 +1147,23 @@ impl WorldlineCore {
     }
 
     /// Installed games with saves to track. Also refreshes the install dirs
-    /// of the games already tracked here.
+    /// of the games already tracked here, and fills their missing icons
+    /// (see `fill_missing_icons`).
     pub fn scan_installed(&self) -> Result<Vec<InstallScannerItem>> {
         let cache_dir = self.data_dir.join("cache");
         let candidates =
             crate::install_scanner::scan_installed_candidates(&cache_dir, &self.get_scan_roots()?)?;
-        self.remember_installs(
-            candidates
-                .iter()
-                .map(|item| {
-                    (
-                        store::normalize_display_name(&item.title),
-                        item.install_path.clone(),
-                    )
-                })
-                .collect(),
-        )?;
+        self.remember_installs(ScannedInstall::by_title(&candidates))?;
+        if let Err(error) = self.fill_missing_icons() {
+            eprintln!("Icons: {error:#}");
+        }
         let mut items: Vec<InstallScannerItem> = candidates
             .into_iter()
             .filter(|item| !item.dirs.is_empty())
             .collect();
         // v1 held 32 px exe icons and 32 px Steam ones.
         let _ = std::fs::remove_dir_all(cache_dir.join("icon_cache"));
-        let icon_cache_dir = cache_dir.join("icon_cache_v2");
-        let _ = std::fs::create_dir_all(&icon_cache_dir);
+        let icon_cache_dir = icon_cache_dir(&cache_dir);
         // After one failed download, the rest of this scan uses local icons
         // instead of waiting out a timeout per game.
         let mut offline = false;
@@ -1057,63 +1171,31 @@ impl WorldlineCore {
             let Some(source_path) = &item.icon_path else {
                 continue;
             };
-            let safe_title: String = item
-                .title
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric() || c == '-' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
-            let mut cache_png = icon_cache_dir.join(format!("{safe_title}.png"));
-            if !cache_png.exists() {
-                let local = Path::new(source_path);
-                let source = match item.steam_appid {
-                    Some(appid) => crate::icon::Source::Steam { appid, local },
-                    None => crate::icon::Source::File(local),
-                };
-                let mut unanswered = false;
-                let image = crate::icon::resolve_with(source, |url| {
-                    let bytes = if offline {
-                        Err(anyhow!("Skipped while offline"))
-                    } else {
-                        crate::icon::download(url)
-                    };
-                    // An HTTP error status is an answer (older apps have no
-                    // 184 px icon); anything else means no answer.
-                    unanswered = bytes.as_ref().is_err_and(|error| {
-                        !matches!(
-                            error.downcast_ref::<ureq::Error>(),
-                            Some(ureq::Error::Status(..))
-                        )
-                    });
-                    offline |= unanswered;
-                    bytes
-                });
-                // The local fallback isn't cached, so a later scan can upgrade it.
-                if unanswered {
-                    cache_png = icon_cache_dir.join(format!("{safe_title}.offline.png"));
-                }
-                if image.and_then(|image| Ok(image.save(&cache_png)?)).is_err() {
-                    item.icon_path = None;
-                    continue;
-                }
-            }
-            item.icon_path = Some(cache_png.to_string_lossy().into_owned());
+            let safe_title = preview_name(&item.title);
+            let local = Path::new(source_path);
+            let source = match item.steam_appid {
+                Some(appid) => crate::icon::Source::Steam { appid, local },
+                None => crate::icon::Source::File(local),
+            };
+            item.icon_path = cached_preview(
+                &icon_cache_dir,
+                &safe_title,
+                source,
+                None,
+                &mut offline,
+                crate::icon::download,
+            )
+            .map(|path| path.to_string_lossy().into_owned());
         }
         Ok(items)
     }
 
-    /// Keeps `installs` (normalized title → install dir) as the last scan's
-    /// result and refreshes install dirs from it.
-    fn remember_installs(&self, installs: HashMap<String, Option<String>>) -> Result<()> {
+    /// Keeps `installs` as the last scan's result and refreshes install dirs from it.
+    fn remember_installs(&self, installs: HashMap<String, ScannedInstall>) -> Result<()> {
         *self
             .scanned_installs
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = installs;
+            .unwrap_or_else(|e| e.into_inner()) = Some(installs);
         self.refresh_install_dirs()
     }
 
@@ -1127,10 +1209,11 @@ impl WorldlineCore {
             .scanned_installs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone();
+            .clone()
+            .unwrap_or_default();
         let index = &self.history().index;
         for (id, title, stored) in index.install_dirs()? {
-            let wanted = match scanned.get(&title).cloned().flatten() {
+            let wanted = match scanned.get(&title).and_then(|s| s.install_path.clone()) {
                 Some(dir) => Some(dir),
                 None => stored.clone().filter(|dir| Path::new(dir).is_dir()),
             };
@@ -1138,6 +1221,389 @@ impl WorldlineCore {
                 index.set_install_dir(id, wanted.as_deref())?;
             }
         }
+        Ok(())
+    }
+
+    /// Gives the games that want an icon (`games_wanting_icons`) the icon of
+    /// their install, as the last install scan found it (ADR 0005). Without
+    /// a remote that happens now. With one, the sync does it after pulling,
+    /// so the write can't win over a rename another device made; a sync is
+    /// asked for when there is something to fill. Games still wanting one
+    /// then get their Steam icon (`fill_steam_icons`). Returns how many games
+    /// got an icon.
+    fn fill_missing_icons(&self) -> Result<usize> {
+        let installs = self
+            .scanned_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_default();
+        let now = Utc::now();
+        if self.get_sync_settings()?.remote_path.is_some() {
+            let wanted = self.wanted_install_icons(&installs, now)?;
+            if wanted.iter().any(WantedIcon::is_pressing) {
+                let _ = self.inner.sync_trigger.send(Trigger::Sync);
+            }
+            return Ok(0);
+        }
+        Ok(self.fill_icons(&installs, crate::icon::download, now)?
+            + self.fill_steam_icons(crate::icon::download, now)?)
+    }
+
+    /// The games here that want an icon: those whose stored metadata names
+    /// none, and those whose automatic icon is smaller than `ICON_SIZE`
+    /// (ADR 0005). A user's icon, or one that hasn't arrived, wants nothing.
+    /// Untracked and deleted games aren't indexed.
+    fn games_wanting_icons(&self, now: DateTime<Utc>) -> Result<Vec<WantedIcon>> {
+        let lookups_path = self.data_dir.join("cache").join("icon_lookups.json");
+        let lookups = read_icon_lookups(&lookups_path).unwrap_or_default();
+        let history = self.history();
+        let mut wanted = Vec::new();
+        for game in history.index.get_games()? {
+            let Some(meta) = history.store.game_meta(&game.game.folder_slug)? else {
+                continue;
+            };
+            let size = match meta.icon_sha256 {
+                None => None,
+                Some(_) if meta.icon_source == store::IconSource::Auto => {
+                    match history.icon_size(&meta) {
+                        Some((w, h)) if w.max(h) < crate::icon::ICON_SIZE => Some((w, h)),
+                        _ => continue,
+                    }
+                }
+                Some(_) => continue,
+            };
+            wanted.push(WantedIcon {
+                uuid: meta.uuid,
+                title_normalized: game.game.title_normalized,
+                install: ScannedInstall::default(),
+                size,
+                due: lookup_due(&lookups, &meta.uuid, now),
+            });
+        }
+        Ok(wanted)
+    }
+
+    /// The games here that want an icon whose install is in `installs` with one.
+    fn wanted_install_icons(
+        &self,
+        installs: &HashMap<String, ScannedInstall>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<WantedIcon>> {
+        let mut wanted = self.games_wanting_icons(now)?;
+        wanted.retain_mut(|game| {
+            match installs
+                .get(&game.title_normalized)
+                .filter(|install| install.icon_path.is_some())
+            {
+                Some(install) => {
+                    game.install = install.clone();
+                    true
+                }
+                None => false,
+            }
+        });
+        Ok(wanted)
+    }
+
+    /// What the last install scan in this process found, for filling icons.
+    /// A process that hasn't scanned yet (a CLI sync, or the app when no
+    /// game wanted an icon at startup) scans now through `scan` when some
+    /// game presses for one (`WantedIcon::is_pressing`), so its install's
+    /// icon comes before Steam's.
+    fn installs_for_icons(
+        &self,
+        scan: impl FnOnce() -> HashMap<String, ScannedInstall>,
+        now: DateTime<Utc>,
+    ) -> Result<HashMap<String, ScannedInstall>> {
+        let scanned = self
+            .scanned_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Ok(match scanned {
+            Some(scanned) => scanned,
+            None if self
+                .games_wanting_icons(now)?
+                .iter()
+                .any(WantedIcon::is_pressing) =>
+            {
+                scan()
+            }
+            None => HashMap::new(),
+        })
+    }
+
+    /// Fills the icons of games just pulled or adopted that want one, before
+    /// the push publishes them: after the pull, so the metadata written is
+    /// current. An install's icon first, then Steam's. Never fails the sync.
+    fn fill_icons_before_push(
+        &self,
+        installs: &HashMap<String, ScannedInstall>,
+        fetch: impl Fn(&str) -> Result<Vec<u8>>,
+        now: DateTime<Utc>,
+    ) {
+        if let Err(error) = self.fill_icons(installs, &fetch, now) {
+            eprintln!("Icons: {error:#}");
+        }
+        if let Err(error) = self.fill_steam_icons(&fetch, now) {
+            eprintln!("Steam icons: {error:#}");
+        }
+    }
+
+    /// Gives the games still wanting an icon their Steam icon (ADR 0010):
+    /// the manifest names each title's appid, one batched `GetItems` call
+    /// (chunked past `STEAM_ITEMS_PER_CALL`) gives their `community_icon`
+    /// hashes, and each icon is downloaded outside the repository lock and
+    /// stored under it like `fill_icons` does. Runs after the install icons,
+    /// so an install always wins.
+    ///
+    /// `cache/icon_lookups.json` keeps when each game was last looked up
+    /// with an answer: no appid, no `community_icon`, neither icon size on
+    /// the CDN, or an icon (sharper or not than the game's). Those aren't
+    /// looked up again for `ICON_LOOKUP_RETRY`, so a game whose Steam icon is
+    /// smaller than `ICON_SIZE` is asked about weekly, not every sync. A
+    /// lookup that failed for now (no manifest yet, offline, throttled, a
+    /// server error, an answer that isn't Steam's) is not kept, so the next
+    /// sync tries again rather than a short outage hiding icons for a week;
+    /// so is an icon download that failed any way but Steam not having it
+    /// (a body that isn't an image included, as for the Add Games preview).
+    /// Returns how many games got an icon.
+    fn fill_steam_icons(
+        &self,
+        fetch: impl Fn(&str) -> Result<Vec<u8>>,
+        now: DateTime<Utc>,
+    ) -> Result<usize> {
+        let cache_dir = self.data_dir.join("cache");
+        let lookups_path = cache_dir.join("icon_lookups.json");
+        let mut lookups = read_icon_lookups(&lookups_path).unwrap_or_else(|error| {
+            // Rewritten below; until then every game is due.
+            eprintln!("Steam icons: {error:#}");
+            HashMap::new()
+        });
+        let pending: Vec<WantedIcon> = self
+            .games_wanting_icons(now)?
+            .into_iter()
+            .filter(|game| game.due)
+            .collect();
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let appids = crate::install_scanner::steam_appids(&cache_dir);
+        if appids.is_empty() {
+            // The bundled manifest is empty: no appids until one downloads.
+            return Ok(0);
+        }
+
+        let mut settled = Vec::new();
+        let mut wanted: HashMap<u64, Vec<WantedIcon>> = HashMap::new();
+        for game in pending {
+            match appids.get(&game.title_normalized) {
+                Some(appid) => wanted.entry(*appid).or_default().push(game),
+                None => settled.push(game.uuid),
+            }
+        }
+        let mut sorted: Vec<u64> = wanted.keys().copied().collect();
+        sorted.sort_unstable();
+        let mut hashes = HashMap::new();
+        for chunk in sorted.chunks(crate::icon::STEAM_ITEMS_PER_CALL) {
+            match crate::icon::steam_community_icons(chunk, &fetch) {
+                Ok(found) => {
+                    for appid in chunk {
+                        match found.get(appid) {
+                            Some(hash) => {
+                                hashes.insert(*appid, hash.clone());
+                            }
+                            None => settled.extend(wanted[appid].iter().map(|game| game.uuid)),
+                        }
+                    }
+                }
+                Err(error) => {
+                    // The rest wait for the next sync, unrecorded.
+                    eprintln!("Steam icons: {error:#}");
+                    break;
+                }
+            }
+        }
+
+        let mut filled = 0;
+        for (appid, hash) in &hashes {
+            let png = crate::icon::steam_icon(*appid, hash, &fetch)
+                .and_then(|image| crate::icon::normalize(&image));
+            // Only Steam saying it has neither size settles the lookup; any
+            // other failure (no answer, throttled, refused, a server error, a
+            // body that isn't an image) may work on the next sync.
+            let png = match png {
+                Ok(png) => png,
+                Err(error) if crate::icon::is_missing_download(&error) => {
+                    settled.extend(wanted[appid].iter().map(|game| game.uuid));
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("Steam icon {appid}: {error:#}");
+                    if crate::icon::is_unreachable(&error) {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            let size = crate::icon::dimensions(&png)?;
+            for game in &wanted[appid] {
+                if game
+                    .size
+                    .is_some_and(|current| !crate::icon::is_sharper(size, current))
+                {
+                    settled.push(game.uuid);
+                    continue;
+                }
+                let stored =
+                    store::with_lock(self.repository_root(), || self.fill_icon(game, &png));
+                match stored {
+                    Ok(true) => filled += 1,
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!("Icon for '{}': {error:#}", game.title_normalized);
+                        continue;
+                    }
+                }
+                settled.push(game.uuid);
+            }
+        }
+
+        if !settled.is_empty() {
+            lookups.retain(|_, at| now - *at < ICON_LOOKUP_RETRY);
+            lookups.extend(settled.into_iter().map(|uuid| (uuid, now)));
+            if let Err(error) = write_json(&lookups_path, &lookups) {
+                eprintln!("Steam icons: {error:#}");
+            }
+        }
+        if filled > 0 {
+            self.notify(Notification::GamesChanged);
+        }
+        Ok(filled)
+    }
+
+    /// `fill_missing_icons`' work, with `fetch` downloading Steam icons.
+    /// Icons are read and downloaded outside the repository lock, through
+    /// the Add Games preview cache, so an install's icon is only read or
+    /// downloaded once; each is stored under the lock by `fill_icon`. A Steam
+    /// icon that can't be had right now (offline, refused, a server error)
+    /// leaves the game as it is, so a later fill tries again rather than
+    /// settling on the client's 32 px copy; one Steam doesn't have falls back
+    /// to it. For a game whose automatic icon may still get sharper, a
+    /// preview older than `ICON_LOOKUP_RETRY` is made again, so an update
+    /// that brings a sharper icon is found without asking every sync.
+    fn fill_icons(
+        &self,
+        installs: &HashMap<String, ScannedInstall>,
+        fetch: impl Fn(&str) -> Result<Vec<u8>>,
+        now: DateTime<Utc>,
+    ) -> Result<usize> {
+        let cache = icon_cache_dir(&self.data_dir.join("cache"));
+        let mut filled = 0;
+        // After one unreachable download, the rest wait for the next fill.
+        let mut offline = false;
+        for game in self.wanted_install_icons(installs, now)? {
+            let Some(source) = game.install.icon() else {
+                continue;
+            };
+            let name = preview_name(&game.install.title);
+            let stale_before = game
+                .size
+                .map(|_| std::time::SystemTime::from(now - ICON_LOOKUP_RETRY));
+            let preview = cached_preview(&cache, &name, source, stale_before, &mut offline, &fetch);
+            // A preview to retry (Steam failed for now) isn't final.
+            let Some(path) = preview.filter(|path| *path == cache.join(format!("{name}.png")))
+            else {
+                continue;
+            };
+            let png = match image::open(&path)
+                .context("Failed to open the cached icon")
+                .and_then(|image| crate::icon::normalize(&image))
+            {
+                Ok(png) => png,
+                Err(error) => {
+                    eprintln!("Icon for '{}': {error:#}", game.title_normalized);
+                    continue;
+                }
+            };
+            // No sharper than the icon it has: not worth the lock.
+            if let (Some(current), Ok(size)) = (game.size, crate::icon::dimensions(&png))
+                && !crate::icon::is_sharper(size, current)
+            {
+                continue;
+            }
+            let stored = store::with_lock(self.repository_root(), || self.fill_icon(&game, &png));
+            match stored {
+                Ok(true) => filled += 1,
+                Ok(false) => {}
+                Err(error) => eprintln!("Icon for '{}': {error:#}", game.title_normalized),
+            }
+        }
+        if filled > 0 {
+            self.notify(Notification::GamesChanged);
+        }
+        Ok(filled)
+    }
+
+    /// Stores `png` as `game`'s automatic icon if the game is still here,
+    /// still has the title it was matched by, and still takes it: it has no
+    /// icon, or an automatic one `png` is sharper than
+    /// (`History::takes_auto_icon`). So a user's pick, a rename, a deletion
+    /// or a sharper icon that came meanwhile wins, and an icon no sharper
+    /// than the stored one writes nothing. The caller holds the repository
+    /// lock.
+    fn fill_icon(&self, game: &WantedIcon, png: &[u8]) -> Result<bool> {
+        let history = self.history();
+        let Some(id) = history.index.game_id(game.uuid)? else {
+            return Ok(false);
+        };
+        let slug = history.index.get_game(id)?.game.folder_slug;
+        let size = crate::icon::dimensions(png)?;
+        let takes = history.store.game_meta(&slug)?.is_some_and(|meta| {
+            meta.uuid == game.uuid
+                && meta.deleted_at.is_none()
+                && store::normalize_display_name(&meta.title) == game.title_normalized
+                && history.takes_auto_icon(&meta, size)
+        });
+        if takes {
+            history.set_icon(id, png, store::IconSource::Auto)?;
+        }
+        Ok(takes)
+    }
+
+    /// Sends `notification` while the watcher's notifications run.
+    fn notify(&self, notification: Notification) {
+        if let Some(notifications) = &*self
+            .inner
+            .notifications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
+            let _ = notifications.send(notification);
+        }
+    }
+
+    /// At startup, when some game here presses for an icon
+    /// (`WantedIcon::is_pressing`), scans installs once: a game installed
+    /// since the last scan, or one whose icon couldn't be had then, would
+    /// otherwise wait for Add Games or a sync that needs the scan. Runs on
+    /// the sync loop's thread before its first sync, which then fills them
+    /// when a remote is configured.
+    pub(crate) fn scan_for_missing_icons(&self) -> Result<()> {
+        if !self
+            .games_wanting_icons(Utc::now())?
+            .iter()
+            .any(WantedIcon::is_pressing)
+        {
+            return Ok(());
+        }
+        let candidates = crate::install_scanner::scan_installed_candidates(
+            &self.data_dir.join("cache"),
+            &self.get_scan_roots()?,
+        )?;
+        self.remember_installs(ScannedInstall::by_title(&candidates))?;
+        self.fill_missing_icons()?;
         Ok(())
     }
 
@@ -1505,8 +1971,18 @@ impl WorldlineCore {
         problems
     }
 
-    /// Pull, adopt, fast-forward, push, report.
+    /// Pull, adopt, fast-forward, fill missing icons, push, report.
     pub fn refresh_sync(&self) -> Result<SyncReport> {
+        self.refresh_sync_with(crate::icon::download, Utc::now())
+    }
+
+    /// `refresh_sync` with `fetch` downloading icons and looking them up on
+    /// Steam at `now`.
+    fn refresh_sync_with(
+        &self,
+        fetch: impl Fn(&str) -> Result<Vec<u8>>,
+        now: DateTime<Utc>,
+    ) -> Result<SyncReport> {
         let remote = self.require_remote()?;
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut problems = Vec::new();
@@ -1550,21 +2026,15 @@ impl WorldlineCore {
             .collect();
         let scan_roots = self.get_scan_roots()?;
         let installs = std::cell::OnceCell::new();
-        let installed_titles = || -> &HashMap<String, Option<String>> {
+        let installed_titles = || -> &HashMap<String, ScannedInstall> {
             installs.get_or_init(|| {
-                crate::install_scanner::scan_installed_candidates(
-                    &self.data_dir.join("cache"),
-                    &scan_roots,
-                )
-                .unwrap_or_default()
-                .into_iter()
-                .map(|item| {
-                    (
-                        store::normalize_display_name(&item.title),
-                        item.install_path,
+                ScannedInstall::by_title(
+                    &crate::install_scanner::scan_installed_candidates(
+                        &self.data_dir.join("cache"),
+                        &scan_roots,
                     )
-                })
-                .collect()
+                    .unwrap_or_default(),
+                )
             })
         };
         let mut auto_applied = HashSet::new();
@@ -1602,8 +2072,7 @@ impl WorldlineCore {
             let install = || {
                 installed_titles()
                     .get(&game.game.title_normalized)
-                    .cloned()
-                    .flatten()
+                    .and_then(|install| install.install_path.clone())
             };
             match self.fast_forward(&remote, remote_game, &game, install) {
                 Ok(true) => {
@@ -1612,6 +2081,15 @@ impl WorldlineCore {
                 Ok(false) => {}
                 Err(error) => problems.push(format!("{}: {error:#}", game.game.title)),
             }
+        }
+
+        let scanned = match installs.get() {
+            Some(scanned) => Ok(scanned.clone()),
+            None => self.installs_for_icons(|| installed_titles().clone(), now),
+        };
+        match scanned {
+            Ok(scanned) => self.fill_icons_before_push(&scanned, fetch, now),
+            Err(error) => eprintln!("Icons: {error:#}"),
         }
 
         problems.extend(self.push_locked(&remote)?);
@@ -1689,6 +2167,27 @@ impl WorldlineCore {
             LocalMatch::Collision(kind, reason) => {
                 return Err(anyhow::Error::new(kind).context(reason));
             }
+        }
+        // Pulled, so like a sync it may fill a missing icon before pushing.
+        let now = Utc::now();
+        let scanned = self.installs_for_icons(
+            || {
+                let candidates = crate::install_scanner::scan_installed_candidates(
+                    &self.data_dir.join("cache"),
+                    &self.get_scan_roots().unwrap_or_default(),
+                )
+                .unwrap_or_default();
+                let scanned = ScannedInstall::by_title(&candidates);
+                if let Err(error) = self.remember_installs(scanned.clone()) {
+                    eprintln!("Install folders: {error:#}");
+                }
+                scanned
+            },
+            now,
+        );
+        match scanned {
+            Ok(scanned) => self.fill_icons_before_push(&scanned, crate::icon::download, now),
+            Err(error) => eprintln!("Icons: {error:#}"),
         }
         for problem in self.push_locked(&remote)? {
             eprintln!("Sync: {problem}");
@@ -1798,6 +2297,7 @@ impl WorldlineCore {
             {
                 let mut meta = remote_game.meta.clone();
                 meta.icon_sha256 = Some(wanted.clone());
+                meta.icon_source = old.meta.icon_source;
                 if meta.accent_hue_source == store::AccentHueSource::Auto {
                     meta.accent_hue = old.meta.accent_hue;
                     meta.accent_hue_source = old.meta.accent_hue_source;
@@ -2075,7 +2575,7 @@ impl WorldlineCore {
         &self,
         remote: &Remote,
         auto_applied: &HashSet<Uuid>,
-        installed_titles: &HashMap<String, Option<String>>,
+        installed_titles: &HashMap<String, ScannedInstall>,
         problems: Vec<String>,
     ) -> Result<SyncReport> {
         let me = self.device_metadata().device_uuid;
@@ -2519,6 +3019,54 @@ fn move_aside_old_data(data_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(backup))
 }
 
+/// The Add Games preview of `source`, cached in `dir` as `{name}.png` once
+/// final. When a Steam download fails in a way a later scan may get past
+/// (offline, a server error, a body that isn't an image), the local fallback
+/// goes to `{name}.retry.png` instead, so the next scan tries again; a
+/// missing icon is final. Once Steam proves unreachable, `offline` makes the
+/// rest of the scan skip downloads instead of waiting out a timeout per game.
+/// A final preview written before `stale_before` is made again.
+fn cached_preview(
+    dir: &Path,
+    name: &str,
+    source: crate::icon::Source,
+    stale_before: Option<std::time::SystemTime>,
+    offline: &mut bool,
+    fetch: impl FnOnce(&str) -> Result<Vec<u8>>,
+) -> Option<PathBuf> {
+    let settled = dir.join(format!("{name}.png"));
+    let fresh = match stale_before {
+        None => settled.exists(),
+        Some(before) => std::fs::metadata(&settled)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|at| at >= before),
+    };
+    if fresh {
+        return Some(settled);
+    }
+    let skip = *offline;
+    let (image, failed) = crate::icon::resolve_with(source, |url| {
+        if skip {
+            bail!("Skipped while offline");
+        }
+        fetch(url)
+    })
+    .ok()?;
+    let retry = dir.join(format!("{name}.retry.png"));
+    let path = match &failed {
+        Some(error) if !crate::icon::is_missing_download(error) => {
+            *offline |= crate::icon::is_unreachable(error);
+            retry
+        }
+        _ => {
+            let _ = std::fs::remove_file(&retry);
+            settled
+        }
+    };
+    image.save(&path).ok()?;
+    Some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2652,5 +3200,1025 @@ mod tests {
         let (created, active) = created_and_active(&core, game_id, &kept);
         assert_eq!(active.id, created.id);
         assert_eq!(created.tag.as_deref(), Some("Kept in game, 21:04"));
+    }
+
+    fn jpg(size: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(size, size))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn http_status(status: u16) -> anyhow::Error {
+        ureq::Error::Status(status, ureq::Response::new(status, "", "").unwrap()).into()
+    }
+
+    /// A temp preview cache and a Steam game's local 32 px icon.
+    fn steam_preview_dirs() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir
+            .path()
+            .join("3eec57d783c54036166564e195039b20f600a52f.jpg");
+        std::fs::write(&local, jpg(32)).unwrap();
+        std::fs::create_dir(dir.path().join("cache")).unwrap();
+        (dir, local)
+    }
+
+    fn preview(
+        dir: &Path,
+        local: &Path,
+        offline: &mut bool,
+        fetch: impl FnOnce(&str) -> Result<Vec<u8>>,
+    ) -> (PathBuf, u32) {
+        let source = crate::icon::Source::Steam { appid: 1, local };
+        let path =
+            cached_preview(&dir.join("cache"), "Game", source, None, offline, fetch).unwrap();
+        let width = image::open(&path).unwrap().width();
+        (path.strip_prefix(dir).unwrap().to_owned(), width)
+    }
+
+    #[test]
+    fn a_preview_whose_steam_download_failed_for_now_is_retried_next_scan() {
+        type Fetch = Box<dyn FnOnce(&str) -> Result<Vec<u8>>>;
+        let failures: [(Fetch, bool); 3] = [
+            (Box::new(|_| Err(http_status(503))), true),
+            // Forbidden for now, not missing.
+            (Box::new(|_| Err(http_status(403))), false),
+            // An HTTP 200 whose body isn't an image.
+            (Box::new(|_| Ok(b"<html>".to_vec())), false),
+        ];
+        for (fetch, unreachable) in failures {
+            let (dir, local) = steam_preview_dirs();
+            let dir = dir.path();
+            let mut offline = false;
+            let fallback = preview(dir, &local, &mut offline, fetch);
+            assert_eq!(fallback, (Path::new("cache/Game.retry.png").into(), 32));
+            assert_eq!(offline, unreachable);
+            assert!(!dir.join("cache/Game.png").exists());
+
+            // The next scan.
+            let mut offline = false;
+            let upgraded = preview(dir, &local, &mut offline, |_| Ok(jpg(184)));
+            assert_eq!(upgraded, (Path::new("cache/Game.png").into(), 184));
+            assert!(!dir.join("cache/Game.retry.png").exists());
+            let cached = preview(dir, &local, &mut offline, |_| panic!("cached"));
+            assert_eq!(cached, upgraded);
+        }
+    }
+
+    #[test]
+    fn a_missing_steam_icon_settles_on_the_local_one() {
+        let (dir, local) = steam_preview_dirs();
+        let dir = dir.path();
+        let mut offline = false;
+        let fallback = preview(dir, &local, &mut offline, |_| Err(http_status(404)));
+        assert_eq!(fallback, (Path::new("cache/Game.png").into(), 32));
+        assert!(!offline);
+        let cached = preview(dir, &local, &mut offline, |_| panic!("cached"));
+        assert_eq!(cached, fallback);
+    }
+
+    /// What a scan found for `changed_game`'s game: a Steam install with its local icon.
+    fn steam_install(local: &Path) -> HashMap<String, ScannedInstall> {
+        HashMap::from([(
+            store::normalize_display_name("Hollow Knight"),
+            ScannedInstall {
+                title: "Hollow Knight".into(),
+                install_path: None,
+                icon_path: Some(local.to_string_lossy().into_owned()),
+                steam_appid: Some(1),
+            },
+        )])
+    }
+
+    fn icon_sha(core: &WorldlineCore, game_id: i32) -> Option<String> {
+        let slug = core.get_game(game_id).unwrap().game.folder_slug;
+        core.history().store.game_meta(&slug).unwrap()?.icon_sha256
+    }
+
+    #[test]
+    fn a_missing_icon_steam_cant_send_for_now_is_filled_by_a_later_try() {
+        let (core, id, _data, _saves) = changed_game();
+        let (_dir, local) = steam_preview_dirs();
+        let installs = steam_install(&local);
+        for status in [503, 429, 403] {
+            let filled = core.fill_icons(&installs, |_| Err(http_status(status)), Utc::now());
+            assert_eq!(filled.unwrap(), 0, "{status}: not the 32 px copy");
+            assert_eq!(icon_sha(&core, id), None);
+        }
+        assert_eq!(
+            core.fill_icons(&installs, |_| Ok(jpg(184)), Utc::now())
+                .unwrap(),
+            1
+        );
+        assert!(icon_sha(&core, id).is_some());
+        let again = core.fill_icons(&installs, |_| panic!("already has one"), Utc::now());
+        assert_eq!(again.unwrap(), 0);
+    }
+
+    #[test]
+    fn an_icon_steam_doesnt_have_falls_back_to_the_local_one() {
+        let (core, id, _data, _saves) = changed_game();
+        let (_dir, local) = steam_preview_dirs();
+        let filled = core.fill_icons(
+            &steam_install(&local),
+            |_| Err(http_status(404)),
+            Utc::now(),
+        );
+        assert_eq!(filled.unwrap(), 1);
+        assert!(icon_sha(&core, id).is_some());
+        assert_eq!(game_meta(&core, id).icon_source, store::IconSource::Auto);
+    }
+
+    /// The download runs outside the repository lock (these changes take it,
+    /// so they would wait forever otherwise), and the fill only stores the
+    /// icon if none of them happened meanwhile.
+    #[test]
+    fn a_fill_never_overwrites_what_changed_while_the_icon_downloaded() {
+        let user_icon = tempfile::tempdir().unwrap();
+        let picked = user_icon.path().join("picked.png");
+        image::RgbaImage::from_pixel(48, 48, image::Rgba([255, 0, 0, 255]))
+            .save(&picked)
+            .unwrap();
+        type Change<'a> = Box<dyn Fn(&WorldlineCore, i32) + 'a>;
+        let changes: [(&str, Change); 3] = [
+            (
+                "a user's icon",
+                Box::new(|core, id| {
+                    core.set_game_icon(id, &picked.to_string_lossy()).unwrap();
+                }),
+            ),
+            (
+                "a rename",
+                Box::new(|core, id| {
+                    let form = GameForm {
+                        id: Some(id),
+                        title: "Silksong".into(),
+                    };
+                    core.save_game(form, None).unwrap();
+                }),
+            ),
+            (
+                "a deletion",
+                Box::new(|core, id| core.delete_game(id).unwrap()),
+            ),
+        ];
+        for (change, apply) in changes {
+            let (core, id, _data, _saves) = changed_game();
+            let uuid = core.get_game(id).unwrap().game.uuid;
+            let (_dir, local) = steam_preview_dirs();
+            let filled = core.fill_icons(
+                &steam_install(&local),
+                |_| {
+                    apply(&core, id);
+                    Ok(jpg(184))
+                },
+                Utc::now(),
+            );
+            assert_eq!(filled.unwrap(), 0, "{change}");
+            let history = core.history();
+            let meta = history
+                .store
+                .game_metas()
+                .unwrap()
+                .into_iter()
+                .find(|meta| meta.uuid.to_string() == uuid)
+                .unwrap();
+            if change == "a user's icon" {
+                let png = std::fs::read(history.store.icon_path(&meta.folder_slug)).unwrap();
+                assert_eq!(meta.icon_sha256, Some(crate::icon::sha256(&png)));
+                let stored = crate::icon::decode(&png).unwrap().to_rgba8();
+                assert_eq!(stored.get_pixel(0, 0).0, [255, 0, 0, 255], "the user's");
+            } else {
+                assert_eq!(meta.icon_sha256, None, "{change}");
+            }
+            if change == "a deletion" {
+                assert!(meta.deleted_at.is_some(), "not brought back");
+                assert_eq!(history.index.game_id(meta.uuid).unwrap(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn once_steam_is_unreachable_the_rest_of_the_scan_skips_downloads() {
+        let (dir, local) = steam_preview_dirs();
+        let mut offline = true;
+        let fallback = preview(dir.path(), &local, &mut offline, |_| {
+            panic!("skipped while offline")
+        });
+        assert_eq!(fallback, (Path::new("cache/Game.retry.png").into(), 32));
+    }
+
+    // ---- Steam icons for games not installed here (phase 3) ----------------------
+
+    const HASH_A: &str = "3eec57d783c54036166564e195039b20f600a52f";
+    const HASH_B: &str = "e2cae122ca4663db2108808148d2793eef2f3e0f";
+
+    /// A core tracking `titles`, none installed, with a manifest naming
+    /// `appids` by title.
+    fn steam_games(
+        titles: &[&str],
+        appids: &[(&str, u64)],
+    ) -> (
+        WorldlineCore,
+        Vec<i32>,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        let data = tempfile::tempdir().unwrap();
+        let saves = tempfile::tempdir().unwrap();
+        write_manifest(data.path(), appids);
+        let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+        let ids = titles
+            .iter()
+            .enumerate()
+            .map(|(n, title)| {
+                let dir = saves.path().join(n.to_string());
+                std::fs::create_dir_all(&dir).unwrap();
+                let form = GameForm {
+                    id: None,
+                    title: title.to_string(),
+                };
+                let dirs = vec![dir.to_string_lossy().into_owned()];
+                core.save_game(form, Some(dirs)).unwrap().id
+            })
+            .collect();
+        (core, ids, data, saves)
+    }
+
+    /// A fresh manifest cache, so `load_manifest` never downloads one.
+    fn write_manifest(data: &Path, appids: &[(&str, u64)]) {
+        let yaml: String = appids
+            .iter()
+            .map(|(title, appid)| format!("{title}:\n  steam: {{id: {appid}}}\n"))
+            .collect();
+        let cache = data.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let yaml = if yaml.is_empty() { "{}".into() } else { yaml };
+        std::fs::write(cache.join("manifest.yaml"), yaml).unwrap();
+    }
+
+    /// A `GetItems` answer: an icon hash per appid, or `success: 15` for `None`.
+    fn get_items(items: &[(u64, Option<&str>)]) -> Vec<u8> {
+        let items: Vec<_> = items
+            .iter()
+            .map(|(appid, hash)| match hash {
+                Some(hash) => serde_json::json!({
+                    "item_type": 0, "id": appid, "success": 1, "appid": appid,
+                    "assets": { "community_icon": hash, "header": "header.jpg" },
+                }),
+                None => serde_json::json!({ "item_type": 0, "id": appid, "success": 15 }),
+            })
+            .collect();
+        serde_json::to_vec(&serde_json::json!({ "response": { "store_items": items } })).unwrap()
+    }
+
+    /// A fake Steam logging every URL asked for: `GetItems` answers `items`,
+    /// `_full` icons `full()`, and 32 px icons a 32 px JPG.
+    fn fake_steam<'a>(
+        log: &'a std::cell::RefCell<Vec<String>>,
+        items: &'a [u8],
+        full: impl Fn() -> Result<Vec<u8>> + 'a,
+    ) -> impl Fn(&str) -> Result<Vec<u8>> + 'a {
+        move |url| {
+            log.borrow_mut().push(url.to_string());
+            if url.contains("/IStoreBrowseService/GetItems/v1/") {
+                Ok(items.to_vec())
+            } else if url.ends_with("_full.jpg") {
+                full()
+            } else {
+                Ok(jpg(32))
+            }
+        }
+    }
+
+    fn lookups(data: &Path) -> HashMap<Uuid, DateTime<Utc>> {
+        read_json(&data.join("cache").join("icon_lookups.json")).unwrap_or_default()
+    }
+
+    fn uuid_of(core: &WorldlineCore, id: i32) -> Uuid {
+        Uuid::parse_str(&core.get_game(id).unwrap().game.uuid).unwrap()
+    }
+
+    fn at(day: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000, 0).unwrap() + chrono::Duration::days(day)
+    }
+
+    fn user_icon(dir: &Path) -> String {
+        let picked = dir.join("picked.png");
+        image::RgbaImage::from_pixel(48, 48, image::Rgba([255, 0, 0, 255]))
+            .save(&picked)
+            .unwrap();
+        picked.to_string_lossy().into_owned()
+    }
+
+    fn stored_pixel(core: &WorldlineCore, id: i32) -> [u8; 4] {
+        let slug = core.get_game(id).unwrap().game.folder_slug;
+        let png = std::fs::read(core.history().store.icon_path(&slug)).unwrap();
+        crate::icon::decode(&png)
+            .unwrap()
+            .to_rgba8()
+            .get_pixel(0, 0)
+            .0
+    }
+
+    #[test]
+    fn steam_icons_are_looked_up_in_one_call_and_misses_are_remembered() {
+        let (core, ids, data, _saves) = steam_games(
+            &["Celeste", "Doom", "Delisted", "Homebrew"],
+            &[("Celeste", 504230), ("Doom", 2280), ("Delisted", 1024020)],
+        );
+        let log = Default::default();
+        let items = get_items(&[
+            (504230, Some(HASH_A)),
+            (2280, Some(HASH_B)),
+            (1024020, None),
+        ]);
+        let filled = core.fill_steam_icons(fake_steam(&log, &items, || Ok(jpg(184))), at(0));
+        assert_eq!(filled.unwrap(), 2);
+
+        let log = log.into_inner();
+        let calls: Vec<_> = log.iter().filter(|url| url.contains("GetItems")).collect();
+        assert_eq!(calls.len(), 1, "one batched call: {log:?}");
+        for appid in [504230, 2280, 1024020] {
+            assert!(calls[0].contains(&format!("%7B%22appid%22%3A{appid}%7D")));
+        }
+        assert!(calls[0].contains("include_assets%22%3Atrue"));
+        assert!(log.contains(&format!(
+            "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/504230/{HASH_A}_full.jpg"
+        )));
+        assert!(icon_sha(&core, ids[0]).is_some());
+        assert!(icon_sha(&core, ids[1]).is_some());
+        assert_eq!(
+            game_meta(&core, ids[0]).icon_source,
+            store::IconSource::Auto
+        );
+        assert_eq!(icon_sha(&core, ids[2]), None);
+        assert_eq!(icon_sha(&core, ids[3]), None);
+        // Every answer is remembered: delisted (`success: 15`), not on
+        // Steam, and hits, whose 184 px icons Steam won't sharpen next sync.
+        assert_eq!(
+            lookups(data.path()),
+            ids.iter().map(|id| (uuid_of(&core, *id), at(0))).collect()
+        );
+    }
+
+    #[test]
+    fn appids_past_one_call_are_asked_in_chunks() {
+        let titles: Vec<String> = (0..=crate::icon::STEAM_ITEMS_PER_CALL)
+            .map(|n| format!("Game {n}"))
+            .collect();
+        let appids: Vec<(&str, u64)> = titles
+            .iter()
+            .enumerate()
+            .map(|(n, title)| (title.as_str(), n as u64 + 1))
+            .collect();
+        let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
+        let (core, _ids, data, _saves) = steam_games(&refs, &appids);
+        let calls = std::cell::Cell::new(0);
+        let steam = |_: &str| {
+            calls.set(calls.get() + 1);
+            Ok(get_items(&[]))
+        };
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0);
+        assert_eq!(calls.get(), 2);
+        assert_eq!(lookups(data.path()).len(), titles.len());
+    }
+
+    #[test]
+    fn a_miss_is_looked_up_again_after_seven_days() {
+        let (core, ids, _data, _saves) = steam_games(&["Delisted"], &[("Delisted", 1024020)]);
+        let log = Default::default();
+        let miss = get_items(&[(1024020, None)]);
+        let steam = fake_steam(&log, &miss, || panic!("no icon to download"));
+        assert_eq!(core.fill_steam_icons(&steam, at(0)).unwrap(), 0);
+        assert_eq!(log.borrow().len(), 1);
+
+        let just_before = at(7) - chrono::Duration::seconds(1);
+        assert_eq!(core.fill_steam_icons(&steam, just_before).unwrap(), 0);
+        assert_eq!(log.borrow().len(), 1, "within the week: not asked again");
+
+        let hit = get_items(&[(1024020, Some(HASH_A))]);
+        let steam = fake_steam(&log, &hit, || Ok(jpg(184)));
+        assert_eq!(core.fill_steam_icons(&steam, at(7)).unwrap(), 1);
+        assert!(icon_sha(&core, ids[0]).is_some());
+        let steam = fake_steam(&log, &hit, || panic!("already has one"));
+        assert_eq!(core.fill_steam_icons(&steam, at(8)).unwrap(), 0);
+    }
+
+    #[test]
+    fn without_a_full_icon_the_32_px_one_is_used() {
+        let (core, ids, data, _saves) = steam_games(&["Old Game"], &[("Old Game", 70)]);
+        let log = Default::default();
+        let items = get_items(&[(70, Some(HASH_A))]);
+        let steam = fake_steam(&log, &items, || Err(http_status(404)));
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 1);
+        assert!(icon_sha(&core, ids[0]).is_some());
+        let base = "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/70";
+        assert_eq!(
+            log.into_inner()[1..],
+            [
+                format!("{base}/{HASH_A}_full.jpg"),
+                format!("{base}/{HASH_A}.jpg")
+            ]
+        );
+        assert_eq!(lookups(data.path()).len(), 1, "not asked again next sync");
+    }
+
+    #[test]
+    fn an_icon_steam_has_in_neither_size_is_a_miss() {
+        let (core, ids, data, _saves) = steam_games(&["Old Game"], &[("Old Game", 70)]);
+        let items = get_items(&[(70, Some(HASH_A))]);
+        let steam = |url: &str| {
+            if url.contains("GetItems") {
+                Ok(items.clone())
+            } else {
+                Err(http_status(404))
+            }
+        };
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0);
+        assert_eq!(icon_sha(&core, ids[0]), None);
+        assert_eq!(lookups(data.path()).len(), 1);
+    }
+
+    /// Failures that may pass leave nothing behind, so the next sync tries
+    /// again, and never become an error.
+    #[test]
+    fn a_lookup_or_download_that_failed_for_now_is_not_remembered() {
+        type Fetch = Box<dyn Fn(&str) -> Result<Vec<u8>>>;
+        let items = get_items(&[(504230, Some(HASH_A)), (2280, Some(HASH_B))]);
+        let answer = |full: u16| -> Fetch {
+            let items = items.clone();
+            Box::new(move |url: &str| {
+                if url.contains("GetItems") {
+                    Ok(items.clone())
+                } else {
+                    Err(http_status(full))
+                }
+            })
+        };
+        // A transport error, as when offline: nothing listens there.
+        let refused = ureq::get("http://127.0.0.1:9/")
+            .timeout(std::time::Duration::from_secs(2))
+            .call()
+            .unwrap_err();
+        assert!(matches!(refused, ureq::Error::Transport(_)));
+        let refused = std::cell::RefCell::new(Some(refused));
+        let offline: Fetch = Box::new(move |_| Err(refused.borrow_mut().take().unwrap().into()));
+        let failures: [(&str, Fetch); 6] = [
+            ("offline", offline),
+            ("throttled", Box::new(|_| Err(http_status(429)))),
+            ("not JSON", Box::new(|_| Ok(b"<html>".to_vec()))),
+            (
+                "not Steam's JSON",
+                Box::new(|_| Ok(br#"{"ok":true}"#.to_vec())),
+            ),
+            ("icon refused", answer(403)),
+            ("CDN down", answer(503)),
+        ];
+        let downloads = std::cell::Cell::new(0);
+        for (failure, fetch) in failures {
+            let (core, ids, data, _saves) =
+                steam_games(&["Celeste", "Doom"], &[("Celeste", 504230), ("Doom", 2280)]);
+            let counted = |url: &str| {
+                if !url.contains("GetItems") {
+                    downloads.set(downloads.get() + 1);
+                }
+                fetch(url)
+            };
+            downloads.set(0);
+            let filled = core.fill_steam_icons(counted, at(0));
+            assert_eq!(filled.unwrap(), 0, "{failure}");
+            assert_eq!(icon_sha(&core, ids[0]), None, "{failure}");
+            assert!(lookups(data.path()).is_empty(), "{failure}");
+            match failure {
+                "icon refused" => assert_eq!(downloads.get(), 2, "each tried"),
+                "CDN down" => assert_eq!(downloads.get(), 1, "the rest wait"),
+                _ => {}
+            }
+        }
+    }
+
+    /// The CDN answering 200 with something that isn't an image (a portal's
+    /// page, a damaged file), for the 184 px icon or the 32 px fallback, is a
+    /// failure for now: not remembered, so the next sync, days before the
+    /// week is out, fills or sharpens the icon.
+    #[test]
+    fn an_icon_download_that_isnt_an_image_is_tried_again_next_sync() {
+        let items = get_items(&[(504230, Some(HASH_A))]);
+        let page = || -> Result<Vec<u8>> { Ok(b"<html>Sign in to this network</html>".to_vec()) };
+        let damaged = || -> Result<Vec<u8>> { Ok(jpg(184)[..64].to_vec()) };
+        for broken in [
+            "184 px page",
+            "184 px damaged",
+            "32 px page",
+            "32 px damaged",
+        ] {
+            for small in [false, true] {
+                let case = format!("{broken}, small icon before: {small}");
+                let (core, ids, data, saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+                let id = ids[0];
+                if small {
+                    core.set_game_icon_as(
+                        id,
+                        &png_file(saves.path(), 32, RED),
+                        store::IconSource::Auto,
+                    )
+                    .unwrap();
+                }
+                let before = game_meta(&core, id);
+                let bad = if broken.contains("page") {
+                    page
+                } else {
+                    damaged
+                };
+                let steam = |url: &str| {
+                    if url.contains("GetItems") {
+                        Ok(items.clone())
+                    } else if broken.starts_with("184") || !url.ends_with("_full.jpg") {
+                        bad()
+                    } else {
+                        Err(http_status(404))
+                    }
+                };
+                assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0, "{case}");
+                assert_eq!(game_meta(&core, id), before, "{case}");
+                assert!(lookups(data.path()).is_empty(), "{case}: not a miss");
+
+                let log = Default::default();
+                let fixed = fake_steam(&log, &items, || Ok(jpg(184)));
+                assert_eq!(core.fill_steam_icons(fixed, at(1)).unwrap(), 1, "{case}");
+                assert_eq!(stored_size(&core, id), (184, 184), "{case}");
+                assert_eq!(game_meta(&core, id).icon_source, store::IconSource::Auto);
+                assert_eq!(lookups(data.path())[&uuid_of(&core, id)], at(1), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_valid_hashes_for_the_appids_asked_about_become_urls() {
+        let (core, ids, data, _saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        let answers = [
+            get_items(&[(504230, Some("../../../evil"))]),
+            get_items(&[(504230, Some("ZZec57d783c54036166564e195039b20f600a52f"))]),
+            // An item for an appid nobody asked about.
+            get_items(&[(666, Some(HASH_A))]),
+        ];
+        for items in answers {
+            let log = std::cell::RefCell::new(Vec::new());
+            let steam = fake_steam(&log, &items, || panic!("no URL from that answer"));
+            assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0);
+            assert_eq!(log.borrow().len(), 1);
+            assert_eq!(icon_sha(&core, ids[0]), None);
+            std::fs::remove_file(data.path().join("cache").join("icon_lookups.json")).unwrap();
+        }
+    }
+
+    #[test]
+    fn games_with_an_icon_or_without_a_manifest_ask_steam_nothing() {
+        let (core, ids, _data, saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        core.set_game_icon(ids[0], &user_icon(saves.path()))
+            .unwrap();
+        let filled = core.fill_steam_icons(|_| panic!("has an icon"), at(0));
+        assert_eq!(filled.unwrap(), 0);
+        assert_eq!(stored_pixel(&core, ids[0]), [255, 0, 0, 255]);
+
+        // Only the bundled (empty) manifest: nothing to look up by, and no
+        // game is marked as a miss for it.
+        let (core, _ids, data, _saves) = steam_games(&["Celeste"], &[]);
+        let filled = core.fill_steam_icons(|_| panic!("no appids"), at(0));
+        assert_eq!(filled.unwrap(), 0);
+        assert!(lookups(data.path()).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_lookup_cache_starts_over() {
+        let (core, ids, data, _saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        let path = data.path().join("cache").join("icon_lookups.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let miss = get_items(&[(504230, None)]);
+        let log = Default::default();
+        let steam = fake_steam(&log, &miss, || panic!("a miss"));
+        assert_eq!(core.fill_steam_icons(&steam, at(0)).unwrap(), 0);
+        assert_eq!(
+            lookups(data.path()),
+            HashMap::from([(uuid_of(&core, ids[0]), at(0))])
+        );
+    }
+
+    #[test]
+    fn a_steam_fill_never_overwrites_what_changed_while_the_icon_downloaded() {
+        let items = get_items(&[(504230, Some(HASH_A))]);
+        let log = Default::default();
+
+        let (core, ids, _data, saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        let picked = user_icon(saves.path());
+        let steam = fake_steam(&log, &items, || {
+            core.set_game_icon(ids[0], &picked).unwrap();
+            Ok(jpg(184))
+        });
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0);
+        assert_eq!(stored_pixel(&core, ids[0]), [255, 0, 0, 255], "the user's");
+
+        let (core, ids, _data, _saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        let steam = fake_steam(&log, &items, || {
+            let form = GameForm {
+                id: Some(ids[0]),
+                title: "Celeste Classic".into(),
+            };
+            core.save_game(form, None).unwrap();
+            Ok(jpg(184))
+        });
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0, "renamed");
+        assert_eq!(icon_sha(&core, ids[0]), None);
+
+        let (core, ids, _data, _saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        let steam = fake_steam(&log, &items, || {
+            core.delete_game(ids[0]).unwrap();
+            Ok(jpg(184))
+        });
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0, "deleted");
+    }
+
+    /// What a scan found for Celeste: an install whose own icon is a blue
+    /// `size` px image.
+    fn own_install(dir: &Path, size: u32) -> HashMap<String, ScannedInstall> {
+        let own = dir.join(format!("celeste-{size}.png"));
+        image::RgbaImage::from_pixel(size, size, image::Rgba([0, 0, 255, 255]))
+            .save(&own)
+            .unwrap();
+        HashMap::from([(
+            "celeste".to_string(),
+            ScannedInstall {
+                title: "Celeste".into(),
+                install_path: None,
+                icon_path: Some(own.to_string_lossy().into_owned()),
+                steam_appid: None,
+            },
+        )])
+    }
+
+    #[test]
+    fn an_installed_games_own_icon_wins_without_asking_steam() {
+        let (core, ids, _data, saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        let installs = own_install(saves.path(), 256);
+        core.fill_icons_before_push(&installs, |url| panic!("asked Steam: {url}"), at(0));
+        assert_eq!(stored_pixel(&core, ids[0]), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn installs_are_scanned_for_icons_once_and_only_when_some_game_lacks_one() {
+        let (core, _ids, _data, _saves) = steam_games(&["Celeste"], &[]);
+        let scans = std::cell::Cell::new(0);
+        let scan = || {
+            scans.set(scans.get() + 1);
+            HashMap::new()
+        };
+        core.installs_for_icons(scan, at(0)).unwrap();
+        assert_eq!(scans.get(), 1, "lacks an icon, nothing scanned yet");
+        core.remember_installs(HashMap::new()).unwrap();
+        core.installs_for_icons(scan, at(0)).unwrap();
+        assert_eq!(scans.get(), 1, "this process scanned already");
+
+        let (core, ids, _data, saves) = steam_games(&["Celeste"], &[]);
+        core.set_game_icon(ids[0], &user_icon(saves.path()))
+            .unwrap();
+        core.installs_for_icons(|| panic!("every game has an icon"), at(0))
+            .unwrap();
+    }
+
+    /// The icon is looked up after the pull, by the title the pull brought
+    /// in, and reaches the other device with the push.
+    #[test]
+    fn a_steam_icon_is_looked_up_after_the_pull_and_reaches_the_other_device() {
+        let remote = tempfile::tempdir().unwrap();
+        // Made-up appids, so no Steam install on this machine matches them.
+        let appids = [("Ember Trail", 900000001), ("Ember Trail II", 900000002)];
+        let synced = |appids: &[(&str, u64)]| {
+            let (core, _, data, saves) = steam_games(&[], appids);
+            let settings = SyncSettings {
+                remote_path: Some(remote.path().to_string_lossy().into_owned()),
+            };
+            core.update_sync_settings(settings).unwrap();
+            (core, data, saves)
+        };
+        let (a, _a_data, a_saves) = synced(&appids);
+        // B adopts it before it has a manifest, so without looking it up.
+        let (b, b_data, _b_saves) = synced(&[]);
+        let form = GameForm {
+            id: None,
+            title: "Ember Trail".into(),
+        };
+        let dirs = vec![a_saves.path().to_string_lossy().into_owned()];
+        let id = a.save_game(form, Some(dirs)).unwrap().id;
+        let uuid = uuid_of(&a, id);
+        let offline = |_: &str| -> Result<Vec<u8>> { Err(http_status(503)) };
+        a.refresh_sync_with(offline, at(0)).unwrap();
+        let b_id = b.adopt_remote_game(uuid).unwrap().game.id;
+        assert_eq!(icon_sha(&b, b_id), None);
+        write_manifest(b_data.path(), &appids);
+
+        // A renames it; B's next sync pulls that before looking the icon up.
+        let form = GameForm {
+            id: Some(id),
+            title: "Ember Trail II".into(),
+        };
+        a.save_game(form, None).unwrap();
+        a.refresh_sync_with(offline, at(0)).unwrap();
+        let log = Default::default();
+        let items = get_items(&[(900000002, Some(HASH_A))]);
+        b.refresh_sync_with(fake_steam(&log, &items, || Ok(jpg(184))), at(0))
+            .unwrap();
+        let log = log.into_inner();
+        assert!(log[0].contains("%7B%22appid%22%3A900000002%7D"), "{log:?}");
+        assert!(!log[0].contains("900000001"));
+        assert!(icon_sha(&b, b_id).is_some());
+
+        assert_eq!(icon_sha(&a, id), None);
+        // A pulls the icon. It is automatic and under 256 px, so A asks Steam
+        // once too; the same icon writes nothing.
+        let log = Default::default();
+        a.refresh_sync_with(fake_steam(&log, &items, || Ok(jpg(184))), at(0))
+            .unwrap();
+        assert_eq!(icon_sha(&a, id), icon_sha(&b, b_id));
+        let meta = |core: &WorldlineCore, id| {
+            let slug = core.get_game(id).unwrap().game.folder_slug;
+            core.history().store.game_meta(&slug).unwrap().unwrap()
+        };
+        assert_eq!(meta(&a, id), meta(&b, b_id), "not rewritten on A");
+        assert_eq!(meta(&a, id).icon_source, store::IconSource::Auto);
+    }
+
+    // ---- Upgrading automatic icons (phase 4) --------------------------------------
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    /// A solid `color` image file of `size` px in `dir`.
+    fn png_file(dir: &Path, size: u32, color: [u8; 4]) -> String {
+        let name = color.map(|c| c.to_string()).join("-");
+        let path = dir.join(format!("{size}-{name}.png"));
+        image::RgbaImage::from_pixel(size, size, image::Rgba(color))
+            .save(&path)
+            .unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn game_meta(core: &WorldlineCore, id: i32) -> store::GameMeta {
+        core.history().game_meta(id).unwrap()
+    }
+
+    fn stored_size(core: &WorldlineCore, id: i32) -> (u32, u32) {
+        let slug = core.get_game(id).unwrap().game.folder_slug;
+        let png = std::fs::read(core.history().store.icon_path(&slug)).unwrap();
+        crate::icon::dimensions(&png).unwrap()
+    }
+
+    /// What a scan found for `title`: an install whose icon is the file at `icon`.
+    fn file_install(title: &str, icon: &str) -> (String, ScannedInstall) {
+        (
+            store::normalize_display_name(title),
+            ScannedInstall {
+                title: title.into(),
+                install_path: None,
+                icon_path: Some(icon.into()),
+                steam_appid: None,
+            },
+        )
+    }
+
+    #[test]
+    fn an_automatic_icon_only_replaces_none_or_a_smaller_automatic_one() {
+        let (core, ids, _data, saves) = steam_games(&["Celeste"], &[]);
+        let (dir, id) = (saves.path(), ids[0]);
+        let auto = store::IconSource::Auto;
+        core.set_game_icon_as(id, &png_file(dir, 32, RED), auto)
+            .unwrap();
+        assert_eq!(game_meta(&core, id).icon_source, auto, "Add Games' icon");
+        assert_eq!(stored_size(&core, id), (32, 32));
+
+        let before = game_meta(&core, id);
+        for size in [32, 16] {
+            core.set_game_icon_as(id, &png_file(dir, size, BLUE), auto)
+                .unwrap();
+            assert_eq!(game_meta(&core, id), before, "{size} px: nothing written");
+        }
+        core.set_game_icon_as(id, &png_file(dir, 64, BLUE), auto)
+            .unwrap();
+        assert_eq!(stored_size(&core, id), (64, 64));
+        assert_eq!(stored_pixel(&core, id), BLUE);
+
+        // The user's pick replaces it even when smaller, and nothing
+        // automatic replaces the user's.
+        core.set_game_icon(id, &png_file(dir, 16, GREEN)).unwrap();
+        assert_eq!(game_meta(&core, id).icon_source, store::IconSource::User);
+        let picked = game_meta(&core, id);
+        let path = core
+            .set_game_icon_as(id, &png_file(dir, 512, BLUE), auto)
+            .unwrap();
+        assert_eq!(game_meta(&core, id), picked);
+        assert_eq!(Some(path), core.get_game(id).unwrap().game.icon_path);
+    }
+
+    #[test]
+    fn a_small_automatic_icon_is_upgraded_by_steam_and_never_downgraded() {
+        let (core, ids, data, saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+        let id = ids[0];
+        core.set_game_icon_as(
+            id,
+            &png_file(saves.path(), 32, RED),
+            store::IconSource::Auto,
+        )
+        .unwrap();
+        let items = get_items(&[(504230, Some(HASH_A))]);
+        let log = Default::default();
+        let steam = fake_steam(&log, &items, || Ok(jpg(184)));
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 1);
+        assert_eq!(stored_size(&core, id), (184, 184));
+        assert_eq!(game_meta(&core, id).icon_source, store::IconSource::Auto);
+        let upgraded = game_meta(&core, id);
+
+        // Looked up already: not asked again within the week.
+        let asked = |url: &str| -> Result<Vec<u8>> { panic!("asked again: {url}") };
+        assert_eq!(core.fill_steam_icons(asked, at(6)).unwrap(), 0);
+        // Then the same size, or only the 32 px one, writes nothing.
+        let same = fake_steam(&log, &items, || Ok(jpg(184)));
+        assert_eq!(core.fill_steam_icons(same, at(7)).unwrap(), 0);
+        assert_eq!(game_meta(&core, id), upgraded, "the same size");
+        let smaller = fake_steam(&log, &items, || Err(http_status(404)));
+        assert_eq!(core.fill_steam_icons(smaller, at(14)).unwrap(), 0);
+        assert_eq!(game_meta(&core, id), upgraded, "the 32 px one");
+        assert_eq!(lookups(data.path())[&uuid_of(&core, id)], at(14));
+    }
+
+    #[test]
+    fn full_size_users_and_legacy_icons_are_never_looked_up_or_replaced() {
+        let titles = ["Celeste", "Doom", "Legacy"];
+        let (core, ids, _data, saves) =
+            steam_games(&titles, &[("Celeste", 1), ("Doom", 2), ("Legacy", 3)]);
+        let dir = saves.path();
+        let auto = store::IconSource::Auto;
+        core.set_game_icon_as(ids[0], &png_file(dir, 256, RED), auto)
+            .unwrap();
+        core.set_game_icon(ids[1], &png_file(dir, 32, RED)).unwrap();
+        // Stored before icons had a source: counted as the user's.
+        core.set_game_icon_as(ids[2], &png_file(dir, 32, BLUE), auto)
+            .unwrap();
+        let slug = core.get_game(ids[2]).unwrap().game.folder_slug;
+        let path = core.history().store.game_dir(&slug).join("metadata.json");
+        let mut legacy: serde_json::Value = read_json(&path).unwrap();
+        legacy.as_object_mut().unwrap().remove("icon_source");
+        write_json(&path, &legacy).unwrap();
+        assert_eq!(
+            game_meta(&core, ids[2]).icon_source,
+            store::IconSource::User
+        );
+
+        let before: Vec<_> = ids.iter().map(|id| game_meta(&core, *id)).collect();
+        let steam = |url: &str| -> Result<Vec<u8>> { panic!("asked Steam: {url}") };
+        assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0);
+        assert!(core.games_wanting_icons(at(0)).unwrap().is_empty());
+        core.installs_for_icons(|| panic!("scanned"), at(0))
+            .unwrap();
+        let sharper = png_file(dir, 512, GREEN);
+        let installs: HashMap<_, _> = titles
+            .iter()
+            .map(|title| file_install(title, &sharper))
+            .collect();
+        assert_eq!(core.fill_icons(&installs, steam, Utc::now()).unwrap(), 0);
+        let after: Vec<_> = ids.iter().map(|id| game_meta(&core, *id)).collect();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn an_install_upgrade_follows_the_accent_rules_and_rereads_the_install_weekly() {
+        let (core, id, _data, _saves) = changed_game();
+        let files = tempfile::tempdir().unwrap();
+        core.set_game_icon_as(
+            id,
+            &png_file(files.path(), 32, RED),
+            store::IconSource::Auto,
+        )
+        .unwrap();
+        assert_eq!(game_meta(&core, id).accent_hue, Some(0));
+        let source = files.path().join("install.png");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba(BLUE))
+            .save(&source)
+            .unwrap();
+        let installs = HashMap::from([file_install("Hollow Knight", &source.to_string_lossy())]);
+        let steam = |url: &str| -> Result<Vec<u8>> { panic!("asked Steam: {url}") };
+        let now = Utc::now();
+        assert_eq!(core.fill_icons(&installs, steam, now).unwrap(), 1);
+        assert_eq!(stored_size(&core, id), (64, 64));
+        assert_eq!(
+            game_meta(&core, id).accent_hue,
+            Some(240),
+            "the automatic hue follows"
+        );
+
+        // The user picks a hue; then the install gets a sharper icon. Its
+        // cached preview stands in for it until it is a week old.
+        core.set_game_accent(id, Some(100)).unwrap();
+        image::RgbaImage::from_pixel(128, 128, image::Rgba(GREEN))
+            .save(&source)
+            .unwrap();
+        assert_eq!(core.fill_icons(&installs, steam, now).unwrap(), 0);
+        assert_eq!(stored_size(&core, id), (64, 64));
+        let later = now + chrono::Duration::days(8);
+        assert_eq!(core.fill_icons(&installs, steam, later).unwrap(), 1);
+        assert_eq!(stored_size(&core, id), (128, 128));
+        assert_eq!(stored_pixel(&core, id), GREEN);
+        let meta = game_meta(&core, id);
+        assert_eq!(
+            (meta.accent_hue, meta.accent_hue_source, meta.icon_source),
+            (
+                Some(100),
+                store::AccentHueSource::User,
+                store::IconSource::Auto
+            )
+        );
+    }
+
+    /// Like a fill, an upgrade downloads outside the repository lock and
+    /// stores nothing if the game changed meanwhile.
+    #[test]
+    fn an_upgrade_never_overwrites_what_changed_while_the_icon_downloaded() {
+        type Change = Box<dyn Fn(&WorldlineCore, i32, &Path)>;
+        let changes: [(&str, Change); 4] = [
+            (
+                "a user's icon",
+                Box::new(|core, id, dir| {
+                    core.set_game_icon(id, &png_file(dir, 48, GREEN)).unwrap();
+                }),
+            ),
+            (
+                "a sharper icon",
+                Box::new(|core, id, dir| {
+                    let png = png_file(dir, 256, GREEN);
+                    core.set_game_icon_as(id, &png, store::IconSource::Auto)
+                        .unwrap();
+                }),
+            ),
+            (
+                "a rename",
+                Box::new(|core, id, _| {
+                    let form = GameForm {
+                        id: Some(id),
+                        title: "Celeste Classic".into(),
+                    };
+                    core.save_game(form, None).unwrap();
+                }),
+            ),
+            (
+                "a deletion",
+                Box::new(|core, id, _| core.delete_game(id).unwrap()),
+            ),
+        ];
+        let items = get_items(&[(504230, Some(HASH_A))]);
+        for (change, apply) in changes {
+            let (core, ids, _data, saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+            let id = ids[0];
+            let auto = store::IconSource::Auto;
+            core.set_game_icon_as(id, &png_file(saves.path(), 32, RED), auto)
+                .unwrap();
+            let uuid = uuid_of(&core, id);
+            let small = game_meta(&core, id).icon_sha256;
+            let log = Default::default();
+            let steam = fake_steam(&log, &items, || {
+                apply(&core, id, saves.path());
+                Ok(jpg(184))
+            });
+            assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0, "{change}");
+            let history = core.history();
+            let meta = history
+                .store
+                .game_metas()
+                .unwrap()
+                .into_iter()
+                .find(|meta| meta.uuid == uuid)
+                .unwrap();
+            let size = || {
+                let png = std::fs::read(history.store.icon_path(&meta.folder_slug)).unwrap();
+                crate::icon::dimensions(&png).unwrap()
+            };
+            match change {
+                "a user's icon" => {
+                    assert_eq!(
+                        (meta.icon_source, size()),
+                        (store::IconSource::User, (48, 48))
+                    );
+                }
+                "a sharper icon" => assert_eq!((meta.icon_source, size()), (auto, (256, 256))),
+                _ => assert_eq!(meta.icon_sha256, small, "{change}"),
+            }
+            if change == "a deletion" {
+                assert!(meta.deleted_at.is_some(), "not brought back");
+            }
+        }
     }
 }

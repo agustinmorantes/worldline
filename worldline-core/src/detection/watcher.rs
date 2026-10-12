@@ -511,6 +511,7 @@ mod tests {
                     folder_slug: "g__g_1".into(),
                     active_slot_id: None,
                     icon_path: None,
+                    icon_sha256: None,
                     install_dir: None,
                     accent_hue: 0,
                     accent_hue_source: "auto".into(),

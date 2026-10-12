@@ -227,6 +227,7 @@ function GameRow({ game, status, fold }: { game: FullGame; status: GameStatus; f
               title={game.title}
               hue={game.accent_hue}
               iconPath={game.icon_path ?? undefined}
+              iconRevision={game.icon_sha256 ?? undefined}
               className="transition-transform duration-300 ease-spring group-hover:scale-[1.08]"
             />
           )}

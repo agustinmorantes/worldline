@@ -8,8 +8,9 @@ use crate::icon;
 use crate::index::Index;
 use crate::models::*;
 use crate::store::{
-    AccentHueSource, FileEntry, GameMeta, GameRecord, SlotMeta, Store, TrackedDirMeta, VersionMeta,
-    VersionReason, folder_slug, normalize_display_name, read_json, validate_hue, write_json,
+    AccentHueSource, FileEntry, GameMeta, GameRecord, IconSource, SlotMeta, Store, TrackedDirMeta,
+    VersionMeta, VersionReason, folder_slug, normalize_display_name, read_json, validate_hue,
+    write_json,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
@@ -171,6 +172,7 @@ impl History {
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: AccentHueSource::Auto,
+            icon_source: IconSource::User,
         };
         self.validate_dirs(None, dirs)?;
         self.store.write_game(&meta)?;
@@ -207,15 +209,16 @@ impl History {
         self.index.get_game(id)
     }
 
-    /// Stores `png` (already normalized) as the game's icon. An automatic
-    /// accent hue follows the icon; a user-chosen one is kept. The caller
-    /// holds the repository lock.
-    pub fn set_icon(&self, id: i32, png: &[u8]) -> Result<FullGame> {
+    /// Stores `png` (already normalized) as the game's icon, chosen by
+    /// `source`. An automatic accent hue follows the icon; a user-chosen one
+    /// is kept. The caller holds the repository lock.
+    pub fn set_icon(&self, id: i32, png: &[u8], source: IconSource) -> Result<FullGame> {
         let mut meta = self.game_meta(id)?;
         if meta.accent_hue_source == AccentHueSource::Auto {
             meta.accent_hue = icon::dominant_hue(&icon::decode(png)?);
         }
         meta.icon_sha256 = Some(icon::sha256(png));
+        meta.icon_source = source;
         meta.updated_at = Utc::now().max(meta.updated_at + chrono::Duration::milliseconds(1));
         // The icon first: the metadata must never name an icon not yet written.
         self.store.write_icon(&meta.folder_slug, png)?;
@@ -246,6 +249,28 @@ impl History {
         self.index.get_game(id)
     }
 
+    /// Whether an automatic icon of `size` may take the place of `meta`'s:
+    /// it has none, or an automatic one (arrived) that `size` is sharper
+    /// than. A user's icon, or one not arrived yet, is never replaced.
+    pub fn takes_auto_icon(&self, meta: &GameMeta, size: (u32, u32)) -> bool {
+        if meta.icon_sha256.is_none() {
+            return true;
+        }
+        meta.icon_source == IconSource::Auto
+            && self
+                .icon_size(meta)
+                .is_some_and(|current| icon::is_sharper(size, current))
+    }
+
+    /// The size of the stored icon `meta` names, if it has arrived.
+    pub fn icon_size(&self, meta: &GameMeta) -> Option<(u32, u32)> {
+        let png = self.store.read_icon(&meta.folder_slug).ok()??;
+        if meta.icon_sha256.as_deref() != Some(icon::sha256(&png).as_str()) {
+            return None;
+        }
+        icon::dimensions(&png).ok()
+    }
+
     /// The dominant hue of the stored icon `meta` names, if it has arrived.
     fn icon_hue(&self, meta: &GameMeta) -> Option<u16> {
         let png = self.store.read_icon(&meta.folder_slug).ok()??;
@@ -255,7 +280,7 @@ impl History {
         icon::dominant_hue(&icon::decode(&png).ok()?)
     }
 
-    fn game_meta(&self, id: i32) -> Result<GameMeta> {
+    pub(crate) fn game_meta(&self, id: i32) -> Result<GameMeta> {
         let game = self.index.get_game(id)?.game;
         self.store
             .game_meta(&game.folder_slug)?

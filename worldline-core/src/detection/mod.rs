@@ -66,6 +66,8 @@ pub enum Notification {
     SyncFailed(Failure),
     HistoryPruned,
     PruningFailed(Failure),
+    /// Games changed outside a sync, like a missing icon filled from an install.
+    GamesChanged,
     // A process runs from the game's install dir, and when its last one exits.
     GameStarted {
         game_id: i32,

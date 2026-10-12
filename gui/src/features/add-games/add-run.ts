@@ -59,7 +59,7 @@ export async function addAll(items: InstallScannerItem[], allowLarge = false): P
       const game = await saveGame({ id: null, title: item.title }, item.dirs, allowLarge);
       if (item.icon_path !== null) {
         // The game is added either way; it just keeps its initials.
-        game.icon_path = await setGameIcon(game.id, item.icon_path).catch(() => null);
+        game.icon_path = await setGameIcon(game.id, item.icon_path, 'auto').catch(() => null);
       }
       update(state = { ...state, added: new Set(state.added).add(item.title) });
       await queryClient.invalidateQueries({ queryKey: ['games'] });

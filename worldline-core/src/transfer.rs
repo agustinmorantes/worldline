@@ -349,6 +349,7 @@ mod tests {
             icon_sha256: None,
             accent_hue: None,
             accent_hue_source: Default::default(),
+            icon_source: Default::default(),
         };
         let slot_uuid = Uuid::new_v4();
         let slot = SlotMeta {

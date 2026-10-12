@@ -26,6 +26,8 @@ export interface Events {
   'sync-error': Failure;
   'history-pruned': null;
   'pruning-error': Failure;
+  /** Games changed outside a sync, like a missing icon filled from an install. */
+  'games-changed': null;
   /** A game's process started or its last one exited; the payload is the game id. */
   'game-started': number;
   'game-stopped': number;

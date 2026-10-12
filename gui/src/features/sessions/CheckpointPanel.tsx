@@ -77,7 +77,7 @@ export function CheckpointPanel({ game, version, active, unrecorded, onLine, dev
         {current !== null && (
           <motion.div key="now" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={fold}>
             <div className="flex h-11 items-center gap-2.5 rounded-[14px] bg-sf px-3.5">
-              <GameIcon title={game.title} hue={game.accent_hue} iconPath={game.icon_path ?? undefined} size={22} className="text-[9px]" />
+              <GameIcon title={game.title} hue={game.accent_hue} iconPath={game.icon_path ?? undefined} iconRevision={game.icon_sha256 ?? undefined} size={22} className="text-[9px]" />
               <span className="text-[13px] font-bold">{t.checkpoint.now}</span>
               <span className="min-w-0 flex-1 truncate text-[13px] text-tx2">{current.name}</span>
               <span className="font-mono text-xs text-tx3">{current.when}</span>

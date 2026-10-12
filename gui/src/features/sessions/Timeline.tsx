@@ -154,6 +154,7 @@ export function Dot({ game, version, left, top, side, elsewhere, active, selecte
             title={game.title}
             hue={game.accent_hue}
             iconPath={game.icon_path ?? undefined}
+            iconRevision={game.icon_sha256 ?? undefined}
             size={30}
             className="relative shadow-[0_6px_18px_oklch(0%_0_0/0.5)] [&]:rounded-[10px] text-[11px]"
           />

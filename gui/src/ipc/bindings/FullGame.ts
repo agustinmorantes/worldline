@@ -31,6 +31,11 @@ linked_slot_ids: Array<number>, id: number, uuid: string, title: string, title_n
  */
 icon_path: string | null, 
 /**
+ * The content hash of the icon at `icon_path`: it changes when an icon
+ * replaces another at the same path.
+ */
+icon_sha256: string | null, 
+/**
  * Where the game is installed on this device, once a scan found it.
  */
 install_dir: string | null, 
