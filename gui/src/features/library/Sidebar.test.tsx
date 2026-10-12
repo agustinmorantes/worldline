@@ -159,6 +159,18 @@ describe('the sync card', () => {
     expect(card.querySelector('svg.lucide-cloud-off')).not.toBeNull();
   });
 
+  it('asks for an update when another device synced with a newer Worldline', async () => {
+    mockGames([]);
+    mockReport({ isError: true });
+    setSyncOutcome({ kind: 'update_required', message: 'newer' });
+    renderSidebar();
+    const card = screen.getByRole('button', { name: /sync now/i });
+    expect(card).toHaveAttribute('data-state', 'update');
+    expect(card).toHaveAccessibleName(/update worldline to sync/i);
+    fireEvent.pointerMove(card);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Update Worldline on this PC to keep syncing.');
+  });
+
   it('hints at retrying when a sync failed', async () => {
     mockGames([]);
     mockReport({ isError: true });

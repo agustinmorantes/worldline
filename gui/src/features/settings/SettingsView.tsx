@@ -1,5 +1,5 @@
-// Settings: Capture and In-game popup on the left, Cloud, Appearance and Keep on the right. Every change
-// applies at once; there is no Save button.
+// Settings: Capture and In-game popup on the left, Cloud, Appearance, Keep and, while something is
+// in it, Recently deleted on the right. Every change applies at once; there is no Save button.
 import type { ReactElement } from 'react';
 import { useT } from '@/shared/i18n';
 import { AppearanceSection } from './AppearanceSection';
@@ -7,6 +7,7 @@ import { CaptureSection } from './CaptureSection';
 import { CloudSection } from './CloudSection';
 import { KeepSection } from './KeepSection';
 import { OverlaySection } from './OverlaySection';
+import { RecentlyDeletedSection } from './RecentlyDeletedSection';
 
 export function SettingsView(): ReactElement {
   const t = useT();
@@ -22,6 +23,7 @@ export function SettingsView(): ReactElement {
           <CloudSection />
           <AppearanceSection />
           <KeepSection />
+          <RecentlyDeletedSection />
         </div>
       </div>
     </div>

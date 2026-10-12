@@ -2,7 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { ContextMenu } from 'radix-ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeGame } from '@/ipc/builders';
-import { deleteGame, untrackGame } from '@/ipc/commands';
+import { toast } from 'sonner';
+import { deleteGame, recoverGame, untrackGame } from '@/ipc/commands';
 import { ShellNavContext, type NavTarget, type ShellNav } from '@/features/library/shell-nav';
 import { reportError } from '@/shared/errors/report';
 import { getPrefs, setPref } from '@/shared/prefs/prefs';
@@ -10,15 +11,10 @@ import { DEFAULT_PREFS } from '@/shared/prefs/schema';
 import { GameContextMenu, GameMenu } from './GameMenu';
 
 const navigate = vi.hoisted(() => vi.fn());
-vi.mock('@/ipc/commands', () => ({ deleteGame: vi.fn(), untrackGame: vi.fn() }));
+vi.mock('@/ipc/commands', () => ({ deleteGame: vi.fn(), recoverGame: vi.fn(), untrackGame: vi.fn() }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn() } }));
 vi.mock('@tanstack/react-router', () => ({ useRouter: () => ({ navigate }) }));
 vi.mock('@/shared/errors/report', () => ({ reportError: vi.fn() }));
-// Holding is a timed pointer gesture; a click stands for a completed hold.
-vi.mock('@/shared/ui/HoldButton', () => ({
-  HoldButton: ({ label, onComplete }: { label: string; onComplete: () => void }) => (
-    <button type="button" onClick={onComplete}>{label}</button>
-  ),
-}));
 
 const game = makeGame({ id: 1, title: 'Lantern Knight', uuid: 'lantern' });
 
@@ -109,6 +105,7 @@ describe('Leaving a game from its menu', () => {
     vi.clearAllMocks();
     vi.mocked(untrackGame).mockResolvedValue(undefined);
     vi.mocked(deleteGame).mockResolvedValue(undefined);
+    vi.mocked(recoverGame).mockResolvedValue(undefined);
   });
 
   // The sidebar's right-click menu, with `current` on screen.
@@ -126,7 +123,7 @@ describe('Leaving a game from its menu', () => {
   function deleteEverywhere(): void {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete everywhere' }));
     const dialog = screen.getByRole('dialog', { name: 'Delete Lantern Knight everywhere?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Hold to delete' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
   }
 
   it('goes home after removing the game on screen', async () => {
@@ -156,6 +153,17 @@ describe('Leaving a game from its menu', () => {
     await waitFor(() => { expect(deleteGame).toHaveBeenCalledWith(1); });
     await waitFor(() => { expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('offers to undo a delete, which brings the game back', async () => {
+    openFromSidebar(here);
+    deleteEverywhere();
+    await waitFor(() => { expect(toast.success).toHaveBeenCalledWith('Lantern Knight deleted', expect.anything()); });
+    const { action } = vi.mocked(toast.success).mock.calls[0][1] as { action: { label: string; onClick: () => void } };
+    expect(action.label).toBe('Undo');
+    action.onClick();
+    await waitFor(() => { expect(recoverGame).toHaveBeenCalledWith('lantern'); });
+    expect(reportError).not.toHaveBeenCalled();
   });
 
   it('stays, reports it, and keeps the dialog open when deleting fails', async () => {

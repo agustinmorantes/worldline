@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Cloud, CloudAlert, CloudOff, Monitor } from 'lucide-react';
+import { Cloud, CloudAlert, CloudCog, CloudOff, Monitor } from 'lucide-react';
 import { reportError } from '@/shared/errors/report';
 import { formatRelative, useLocale, useT } from '@/shared/i18n';
 import { ease, spring } from '@/shared/motion/motion';
@@ -9,10 +9,10 @@ import { cn } from '@/shared/ui/utils';
 import { fadeLabel, type Fold } from './fold';
 import { useSyncReport, useSyncSettings } from './queries';
 import { useShellNav } from './shell-nav';
-import { isFolderUnreachable, useFolderUnreachable, useSyncRunning } from './sync-activity';
+import { syncBlock, useSyncBlock, useSyncRunning } from './sync-activity';
 import { useNow } from './useNow';
 
-type SyncState = 'synced' | 'syncing' | 'unavailable' | 'failed' | 'idle';
+type SyncState = 'synced' | 'syncing' | 'unavailable' | 'update' | 'failed' | 'idle';
 
 /** "This PC ── Cloud" at the bottom of the sidebar. Click to sync now. */
 export function SyncCard({ fold }: { fold: Fold }): ReactElement | null {
@@ -21,7 +21,7 @@ export function SyncCard({ fold }: { fold: Fold }): ReactElement | null {
   const { data: settings } = useSyncSettings();
   const report = useSyncReport();
   const running = useSyncRunning();
-  const unreachable = useFolderUnreachable();
+  const block = useSyncBlock();
   const now = useNow(30_000);
   const { go } = useShellNav();
 
@@ -46,33 +46,35 @@ export function SyncCard({ fold }: { fold: Fold }): ReactElement | null {
   }
 
   const syncing = running || report.isFetching;
-  const unavailable = unreachable && !syncing;
   const state: SyncState = syncing
     ? 'syncing'
-    : unavailable
+    : block === 'unreachable'
       ? 'unavailable'
-      : report.isError
-        ? 'failed'
-        : report.data !== undefined ? 'synced' : 'idle';
+      : block === 'update'
+        ? 'update'
+        : report.isError
+          ? 'failed'
+          : report.data !== undefined ? 'synced' : 'idle';
   const status = {
     syncing: t.sync.syncing,
     unavailable: t.sync.unavailable,
+    update: t.sync.updateRequired,
     failed: t.sync.syncFailed,
     synced: report.data === undefined ? '' : t.sync.synced(formatRelative(new Date(report.data.synced_at), locale, now)),
     idle: t.sync.notSynced,
   }[state];
-  const warn = state === 'unavailable' || state === 'failed';
+  const warn = state === 'unavailable' || state === 'update' || state === 'failed';
 
   const syncNow = (): void => {
     if (syncing) return;
     void report.refetch().then((result) => {
-      // The card itself says when the folder is unavailable.
-      if (result.isError && !isFolderUnreachable(result.error)) reportError(t.sync.failed, result.error);
+      // The card itself says when the folder is unavailable or needs a newer Worldline.
+      if (result.isError && syncBlock(result.error) === null) reportError(t.sync.failed, result.error);
     });
   };
 
   return (
-    <Tooltip side="right" content={state === 'unavailable' ? t.sync.unavailableHint : state === 'failed' ? t.sync.failedHint : t.sync.syncNow}>
+    <Tooltip side="right" content={state === 'unavailable' ? t.sync.unavailableHint : state === 'update' ? t.sync.updateRequiredHint : state === 'failed' ? t.sync.failedHint : t.sync.syncNow}>
       <button
         type="button"
         aria-label={`${t.sync.syncNow}. ${status}`}
@@ -142,6 +144,7 @@ function SyncIcon({ state, reduced }: { state: SyncState; reduced: boolean }): R
     synced: <CloudCheckDrawn reduced={reduced} />,
     syncing: <Cloud size={16} aria-hidden="true" />,
     unavailable: <CloudOff size={16} aria-hidden="true" className="text-warn" />,
+    update: <CloudCog size={16} aria-hidden="true" className="text-warn" />,
     failed: <CloudAlert size={16} aria-hidden="true" className="text-warn" />,
     idle: <Cloud size={16} aria-hidden="true" className="text-tx3" />,
   }[state];

@@ -4,7 +4,7 @@ import {on} from "@/ipc/events";
 import {queryClient} from "@/app/query-client";
 import {reportError} from "@/shared/errors/report";
 import {getT} from "@/shared/i18n";
-import {isFolderUnreachable, setSyncOutcome, setSyncRunning} from "@/features/library/sync-activity";
+import {setSyncOutcome, setSyncRunning, syncBlock} from "@/features/library/sync-activity";
 import {withRunning} from "@/features/library/library";
 import {withUnrecorded} from "@/features/sessions/sessions";
 
@@ -79,9 +79,9 @@ export function listenNotifications(): void {
     console.warn('Sync failed:', payload);
   });
 
-  // Cleanup bails on an unreachable folder too, every time it comes due.
+  // Cleanup bails on an unreachable or newer folder too, every time it comes due.
   void on('pruning-error', payload => {
-    if (isFolderUnreachable(payload)) return;
+    if (syncBlock(payload) !== null) return;
     reportError(getT().errors.pruningFailed, payload);
   });
 

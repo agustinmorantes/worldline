@@ -8,7 +8,7 @@ import { toast } from 'sonner';
 import type { FullGame } from '@/ipc/bindings/FullGame';
 import type { RemoteGameSummary } from '@/ipc/bindings/RemoteGameSummary';
 import type { SyncReport } from '@/ipc/bindings/SyncReport';
-import { deleteGame, exportGameHistory, pickFile, pickFolder, pickSavePath, saveGame, setGameAccent, setGameIcon, untrackGame } from '@/ipc/commands';
+import { deleteGame, exportGameHistory, pickFile, pickFolder, pickSavePath, recoverGame, saveGame, setGameAccent, setGameIcon, untrackGame } from '@/ipc/commands';
 import { queryClient } from '@/app/query-client';
 import { reportError } from '@/shared/errors/report';
 import { useT } from '@/shared/i18n';
@@ -17,7 +17,6 @@ import { CORNERS, type GameCorner } from '@/shared/prefs/schema';
 import { useShellNav } from '@/features/library/shell-nav';
 import { accentVars } from '@/shared/tokens/accent';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog';
-import { HoldButton } from '@/shared/ui/HoldButton';
 import { btn, btnQuiet, chip, field, popover, row } from '@/shared/ui/classes';
 import { Tooltip } from '@/shared/ui/Tooltip';
 import { cn } from '@/shared/ui/utils';
@@ -127,8 +126,8 @@ function useGameMenu(game: FullGame, inCloud: boolean): { items: (Menu: MenuPart
   }
 
   /** Runs `action`, leaves the game, and updates the cloud list with `cloud` right away: the
-   *  sync that would tell it can take a while. */
-  async function leave(action: () => Promise<void>, cloud: (games: RemoteGameSummary[]) => RemoteGameSummary[], failed: string, done?: string): Promise<void> {
+   *  sync that would tell it can take a while. False when it failed. */
+  async function leave(action: () => Promise<void>, cloud: (games: RemoteGameSummary[]) => RemoteGameSummary[], failed: string, done?: string): Promise<boolean> {
     try {
       await action();
       setOpen(null);
@@ -138,9 +137,30 @@ function useGameMenu(game: FullGame, inCloud: boolean): { items: (Menu: MenuPart
       void queryClient.invalidateQueries({ queryKey: ['games'] });
       void queryClient.invalidateQueries({ queryKey: ['sync-report'] });
       if (done !== undefined) toast.success(done);
+      return true;
     } catch (err) {
       reportError(failed, err);
+      return false;
     }
+  }
+
+  /** Deletes the game everywhere, with an undo in the toast: it waits in Recently deleted. */
+  async function deleteEverywhere(): Promise<void> {
+    const left = await leave(() => deleteGame(game.id), (games) => games.filter((g) => g.uuid !== game.uuid), t.game.failed.delete);
+    void queryClient.invalidateQueries({ queryKey: ['recently-deleted'] });
+    // Longer than the usual toast, so there is time to reach Undo.
+    if (left) toast.success(t.game.deleted(game.title), { duration: 10_000, action:{ label: t.game.undo, onClick: () => { void undoDelete(); } } });
+  }
+
+  async function undoDelete(): Promise<void> {
+    try {
+      await recoverGame(game.uuid);
+    } catch (err) {
+      reportError(t.game.failed.undo, err);
+    }
+    void queryClient.invalidateQueries({ queryKey: ['games'] });
+    void queryClient.invalidateQueries({ queryKey: ['sync-report'] });
+    void queryClient.invalidateQueries({ queryKey: ['recently-deleted'] });
   }
 
   const userHue = game.accent_hue_source === 'user' ? game.accent_hue : null;
@@ -298,15 +318,10 @@ function useGameMenu(game: FullGame, inCloud: boolean): { items: (Menu: MenuPart
           </DialogHeader>
           <DialogFooter className="items-center gap-2">
             <button type="button" className={btnQuiet} onClick={() => { setOpen(null); }}>{t.game.cancel}</button>
-            <HoldButton
-              label={t.game.holdToDelete}
-              hint={t.game.holdHint}
-              disabled={false}
-              danger
-              icon={<Trash2 size={15} strokeWidth={2.4} aria-hidden="true" />}
-              className="mt-0 h-[38px] flex-1 rounded-xl text-sm"
-              onComplete={() => { void leave(() => deleteGame(game.id), (games) => games.filter((g) => g.uuid !== game.uuid), t.game.failed.delete); }}
-            />
+            <button type="button" className={cn(btn, 'bg-err text-bg')} onClick={() => { void deleteEverywhere(); }}>
+              <Trash2 size={15} strokeWidth={2.4} aria-hidden="true" />
+              {t.game.delete}
+            </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -54,6 +54,9 @@ function previewOf(settings: RetentionSettings): PruningPreview {
   };
 }
 
+/** Games deleted in this session, by `uuid`, for `recover_game` to bring back. */
+const binned = new Map<string, FullGame>();
+
 function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
   const game = (id: unknown): Fixture['games'][number] => {
     const found = state.games.find((g) => g.id === id);
@@ -147,9 +150,33 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       target.accent_hue_source = hue === null ? 'auto' : 'user';
       return structuredClone(target);
     }
-    case 'delete_game':
+    case 'delete_game': {
+      const deleted = game(args.id);
+      binned.set(deleted.uuid, deleted);
+      const now = Date.now();
+      state.deleted = [
+        { kind: 'game', uuid: deleted.uuid, title: deleted.title, game_title: deleted.title, deleted_at: new Date(now).toISOString(), expires_at: new Date(now + 30 * 86_400_000).toISOString() },
+        ...state.deleted ?? [],
+      ];
+      state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
+    }
     case 'untrack_game':
       state.games = state.games.filter((g) => g.id !== args.id);
+      return null;
+    case 'recently_deleted':
+      return structuredClone(state.deleted ?? []);
+    case 'recover_game': {
+      const back = binned.get(args.uuid as string);
+      if (back !== undefined) state.games.push(back);
+      binned.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
+      return null;
+    }
+    case 'recover_slot':
+    case 'purge_deleted':
+      binned.delete(args.uuid as string);
+      state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
       return null;
     case 'adopt_remote_game': {
       const report = state.syncReport;
@@ -193,6 +220,11 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       if (state.syncReport === 'unreachable') {
         const failure: Failure = { message: 'Sync folder is unavailable: The system cannot find the path specified. (os error 3)', kind: 'sync_folder_unreachable' };
         // Tauri rejects with the command's error value as is, not an Error.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject(failure);
+      }
+      if (state.syncReport === 'newer') {
+        const failure: Failure = { message: 'The sync folder needs a newer version of Worldline', kind: 'update_required' };
         // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
         return Promise.reject(failure);
       }
