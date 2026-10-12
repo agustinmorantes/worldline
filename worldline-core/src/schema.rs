@@ -67,6 +67,7 @@ diesel::table! {
         retired -> Bool,
         created_at -> Timestamp,
         origin_device -> Nullable<Text>,
+        last_played_at -> Nullable<Timestamp>,
     }
 }
 

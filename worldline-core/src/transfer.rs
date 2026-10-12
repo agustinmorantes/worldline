@@ -376,6 +376,7 @@ mod tests {
         let uuid = Uuid::new_v4();
         let now = Utc::now();
         VersionMeta {
+            last_played_at: None,
             uuid,
             game_uuid: game.uuid,
             slot_uuid: slot.uuid,

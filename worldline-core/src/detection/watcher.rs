@@ -506,6 +506,7 @@ mod tests {
     impl CaptureTarget for Counting {
         fn games(&self) -> anyhow::Result<Vec<FullGame>> {
             Ok(vec![FullGame {
+                last_played_at: None,
                 game: Game {
                     id: 1,
                     uuid: String::new(),

@@ -6,6 +6,10 @@ import type { Version } from "./Version";
 
 export type FullGame = { 
 /**
+ * Latest save activity across all slots, including retired versions.
+ */
+last_played_at: string | null, 
+/**
  * Live (non-retired) tracked directories.
  */
 tracked_dirs: Array<TrackedDir>, slots: Array<Slot>, 

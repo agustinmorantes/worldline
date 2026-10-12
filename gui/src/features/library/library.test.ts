@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { makeGame, makeVersion, naive } from '@/ipc/builders';
 import type { GameSyncStatus } from '@/ipc/bindings/GameSyncStatus';
-import { gameStatus, initials, matchesTitle, sortLibrary, withRunning } from './library';
+import { gameStatus, initials, lastPlayed, matchesTitle, sortLibrary, withRunning } from './library';
 
 const played = (id: number, title: string, iso: string | null) =>
-  makeGame({ id, title, versions: iso === null ? [] : [makeVersion({ id, created_at: naive(new Date(iso)) })] });
+  makeGame({
+    id,
+    title,
+    versions: iso === null ? [] : [makeVersion({ id, created_at: naive(new Date(iso)) })],
+    last_played_at: iso === null ? null : naive(new Date(iso)),
+  });
 
 const status = (relation: GameSyncStatus['relation'], device: string | null = 'Steam Deck'): GameSyncStatus => ({
   game_uuid: 'g',
@@ -41,6 +46,48 @@ describe('sortLibrary', () => {
     const sorted = ['Animal Well', 'Celeste', 'Outer Wilds', 'Tunic'];
     expect(sortLibrary(games).map((g) => g.title)).toEqual(sorted);
     expect(sortLibrary([...games].reverse()).map((g) => g.title)).toEqual(sorted);
+  });
+
+  it('orders by activity when a newly imported checkpoint has a newer creation date', () => {
+    const importedToday = makeGame({
+      id: 1,
+      title: 'Imported',
+      versions: [makeVersion({ id: 1, created_at: '2026-10-12T12:00:00' })],
+      last_played_at: '2026-02-01T10:00:00',
+    });
+    const playedRecently = makeGame({
+      id: 2,
+      title: 'Played',
+      versions: [makeVersion({ id: 2, created_at: '2026-03-01T10:00:00' })],
+      last_played_at: '2026-10-01T10:00:00',
+    });
+    expect(sortLibrary([importedToday, playedRecently]).map((game) => game.title)).toEqual(['Played', 'Imported']);
+  });
+
+  it('leaves activity unknown when checkpoints have no activity timestamp', () => {
+    const unknown = makeGame({ id: 1, title: 'Unknown', versions: [makeVersion({ id: 1 })], last_played_at: null });
+    expect(lastPlayed(unknown)).toBeNull();
+    expect(gameStatus(unknown, { on: false, reported: false, status: undefined })).toEqual({ kind: 'saved' });
+  });
+
+  it('uses game-wide activity even when the active slot version is older', () => {
+    const game = makeGame({
+      id: 1,
+      title: 'Two slots',
+      versions: [makeVersion({ id: 1, created_at: '2026-01-01T00:00:00' })],
+      last_played_at: '2026-07-01T00:00:00',
+    });
+    expect(lastPlayed(game)).toEqual(new Date('2026-07-01T00:00:00Z'));
+  });
+
+  it('lets mock games infer activity from checkpoint dates unless explicitly overridden', () => {
+    const versions = [
+      makeVersion({ id: 1, created_at: '2026-01-01T00:00:00' }),
+      makeVersion({ id: 2, created_at: '2026-02-01T00:00:00' }),
+    ];
+    expect(lastPlayed(makeGame({ id: 1, title: 'Derived', versions })))
+      .toEqual(new Date('2026-02-01T00:00:00Z'));
+    expect(lastPlayed(makeGame({ id: 2, title: 'Explicit unknown', versions, last_played_at: null }))).toBeNull();
   });
 });
 

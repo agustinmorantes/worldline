@@ -21,17 +21,12 @@ export function titleHue(title: string): number {
   return hash;
 }
 
-/** When the game last got a checkpoint on its current playthrough. */
+/** When the game was last played, across all playthroughs. */
 export function lastPlayed(game: FullGame): Date | null {
-  let latest: number | null = null;
-  for (const version of game.versions) {
-    const time = utcDate(version.created_at).getTime();
-    if (latest === null || time > latest) latest = time;
-  }
-  return latest === null ? null : new Date(latest);
+  return game.last_played_at === null ? null : utcDate(game.last_played_at);
 }
 
-/** Most recently played first; games without checkpoints last, by title. */
+/** Most recently played first; games without known activity last, by title. */
 export function sortLibrary(games: FullGame[]): FullGame[] {
   return [...games].sort((a, b) => {
     const at = lastPlayed(a)?.getTime() ?? null;
@@ -55,6 +50,7 @@ export type GameStatus =
   | { kind: 'played-too'; device: string }
   | { kind: 'not-in-cloud' }
   | { kind: 'no-saves' }
+  | { kind: 'saved' }
   | { kind: 'last-played'; at: Date };
 
 export interface GameSyncView {
@@ -73,8 +69,10 @@ export function gameStatus(game: FullGame, sync: GameSyncView, running = false):
   if (sync.status?.relation === 'fast_forward' && device !== null) return { kind: 'new-from', device };
   if (sync.status?.relation === 'diverged' && device !== null) return { kind: 'played-too', device };
   const at = lastPlayed(game);
-  if (at === null) return { kind: 'no-saves' };
+  const hasSaves = game.versions.length > 0 || game.slot_summaries.some((slot) => slot.version_count > 0);
+  if (at === null && !hasSaves) return { kind: 'no-saves' };
   if (sync.on && sync.reported && sync.status === undefined) return { kind: 'not-in-cloud' };
+  if (at === null) return { kind: 'saved' };
   return { kind: 'last-played', at };
 }
 

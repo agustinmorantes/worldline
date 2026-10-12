@@ -57,6 +57,8 @@ export function makeTrackedDir(overrides: Partial<TrackedDir> & Pick<TrackedDir,
 
 export function makeGame(overrides: Partial<FullGame> & Pick<FullGame, 'id' | 'title'>): FullGame {
   const { id, title } = overrides;
+  const lastPlayedAt = overrides.versions?.reduce<string | null>((latest, version) =>
+    latest === null || version.created_at > latest ? version.created_at : latest, null) ?? null;
   return {
     uuid: uuid(4, id),
     title_normalized: title.toLowerCase(),
@@ -72,6 +74,7 @@ export function makeGame(overrides: Partial<FullGame> & Pick<FullGame, 'id' | 't
     slot_summaries: [],
     active_slot: null,
     versions: [],
+    last_played_at: lastPlayedAt,
     last_version: null,
     linked_slot_ids: [],
     ...overrides,

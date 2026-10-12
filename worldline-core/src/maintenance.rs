@@ -598,6 +598,7 @@ mod tests {
             let uuid = Uuid::from_u128(id);
             let (game_uuid, slot_uuid) = (self.game.meta.uuid, self.game.slots[0].meta.uuid);
             self.game.slots[0].versions.push(VersionMeta {
+                last_played_at: None,
                 uuid,
                 game_uuid,
                 slot_uuid,
@@ -806,6 +807,7 @@ mod tests {
         let chunk = hash(7);
         crate::chunks::publish_chunk(&store, &chunk, b"x").unwrap();
         let version = VersionMeta {
+            last_played_at: None,
             uuid: Uuid::from_u128(3),
             game_uuid: game.uuid,
             slot_uuid: slot.uuid,

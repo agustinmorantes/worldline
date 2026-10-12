@@ -152,6 +152,9 @@ pub struct FileEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VersionMeta {
+    /// Estimated save activity, independent of when this version was recorded.
+    #[serde(default)]
+    pub last_played_at: Option<DateTime<Utc>>,
     pub uuid: Uuid,
     pub game_uuid: Uuid,
     pub slot_uuid: Uuid,
@@ -180,9 +183,14 @@ impl VersionMeta {
             tag: None,
             updated_at: meta.created_at,
             origin_device: None,
+            last_played_at: None,
             ..meta.clone()
         };
         strip(self) == strip(other)
+            && self
+                .last_played_at
+                .zip(other.last_played_at)
+                .is_none_or(|(a, b)| a == b)
     }
 }
 
@@ -644,10 +652,13 @@ impl Store {
             if !existing.same_identity(meta) {
                 bail!("version {} was reused with different content", meta.uuid);
             }
+            let mut merged = existing.clone();
+            merged.last_played_at = existing.last_played_at.or(meta.last_played_at);
             if meta.updated_at > existing.updated_at && meta.tag != existing.tag {
-                let mut merged = existing;
                 merged.tag = meta.tag.clone();
                 merged.updated_at = meta.updated_at;
+            }
+            if merged != existing {
                 write_json(&path, &merged)?;
             }
             return Ok(());
@@ -1284,6 +1295,7 @@ mod tests {
         let store = Store::open(root.path()).unwrap();
         let now = Utc::now();
         let version = VersionMeta {
+            last_played_at: Some(now),
             uuid: Uuid::new_v4(),
             game_uuid: Uuid::new_v4(),
             slot_uuid: Uuid::new_v4(),
@@ -1300,11 +1312,20 @@ mod tests {
         store.publish_version("g__g_1", "s__s_1", &version).unwrap();
         let mut tagged = version.clone();
         tagged.tag = Some("boss".into());
+        // A tag edit from a build without activity metadata keeps the date.
+        tagged.last_played_at = None;
         tagged.updated_at = now + chrono::Duration::seconds(1);
         store.publish_version("g__g_1", "s__s_1", &tagged).unwrap();
         // A stale copy without the tag doesn't erase it.
         store.publish_version("g__g_1", "s__s_1", &version).unwrap();
         let mut different = version.clone();
+        different.last_played_at = Some(now + chrono::Duration::seconds(1));
+        assert!(
+            store
+                .publish_version("g__g_1", "s__s_1", &different)
+                .is_err()
+        );
+        different = version.clone();
         different.version_number = 2;
         assert!(
             store
@@ -1315,6 +1336,10 @@ mod tests {
             .slot_dir("g__g_1", "s__s_1")
             .join("versions")
             .join(&version.folder_slug);
+        assert_eq!(
+            read_entity::<VersionMeta>(&dir).unwrap().last_played_at,
+            Some(now)
+        );
         assert_eq!(
             read_entity::<VersionMeta>(&dir).unwrap().tag.as_deref(),
             Some("boss")
