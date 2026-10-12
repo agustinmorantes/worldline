@@ -179,12 +179,6 @@ fn preview_name(title: &str) -> String {
         .collect()
 }
 
-/// Whether a failed Steam download may work later (no answer, throttled,
-/// refused, a server error), rather than saying there is no icon.
-fn is_failure_for_now(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<ureq::Error>().is_some() && !crate::icon::is_missing_download(error)
-}
-
 /// How far back a push heals versions that were created or pulled.
 fn heal_window() -> chrono::Duration {
     maintenance::GRACE * 2
@@ -1338,7 +1332,9 @@ impl WorldlineCore {
     /// smaller than `ICON_SIZE` is asked about weekly, not every sync. A
     /// lookup that failed for now (no manifest yet, offline, throttled, a
     /// server error, an answer that isn't Steam's) is not kept, so the next
-    /// sync tries again rather than a short outage hiding icons for a week.
+    /// sync tries again rather than a short outage hiding icons for a week;
+    /// so is an icon download that failed any way but Steam not having it
+    /// (a body that isn't an image included, as for the Add Games preview).
     /// Returns how many games got an icon.
     fn fill_steam_icons(
         &self,
@@ -1401,17 +1397,20 @@ impl WorldlineCore {
         for (appid, hash) in &hashes {
             let png = crate::icon::steam_icon(*appid, hash, &fetch)
                 .and_then(|image| crate::icon::normalize(&image));
+            // Only Steam saying it has neither size settles the lookup; any
+            // other failure (no answer, throttled, refused, a server error, a
+            // body that isn't an image) may work on the next sync.
             let png = match png {
                 Ok(png) => png,
-                Err(error) if is_failure_for_now(&error) => {
+                Err(error) if crate::icon::is_missing_download(&error) => {
+                    settled.extend(wanted[appid].iter().map(|game| game.uuid));
+                    continue;
+                }
+                Err(error) => {
                     eprintln!("Steam icon {appid}: {error:#}");
                     if crate::icon::is_unreachable(&error) {
                         break;
                     }
-                    continue;
-                }
-                Err(_) => {
-                    settled.extend(wanted[appid].iter().map(|game| game.uuid));
                     continue;
                 }
             };
@@ -3654,6 +3653,62 @@ mod tests {
                 "icon refused" => assert_eq!(downloads.get(), 2, "each tried"),
                 "CDN down" => assert_eq!(downloads.get(), 1, "the rest wait"),
                 _ => {}
+            }
+        }
+    }
+
+    /// The CDN answering 200 with something that isn't an image (a portal's
+    /// page, a damaged file), for the 184 px icon or the 32 px fallback, is a
+    /// failure for now: not remembered, so the next sync, days before the
+    /// week is out, fills or sharpens the icon.
+    #[test]
+    fn an_icon_download_that_isnt_an_image_is_tried_again_next_sync() {
+        let items = get_items(&[(504230, Some(HASH_A))]);
+        let page = || -> Result<Vec<u8>> { Ok(b"<html>Sign in to this network</html>".to_vec()) };
+        let damaged = || -> Result<Vec<u8>> { Ok(jpg(184)[..64].to_vec()) };
+        for broken in [
+            "184 px page",
+            "184 px damaged",
+            "32 px page",
+            "32 px damaged",
+        ] {
+            for small in [false, true] {
+                let case = format!("{broken}, small icon before: {small}");
+                let (core, ids, data, saves) = steam_games(&["Celeste"], &[("Celeste", 504230)]);
+                let id = ids[0];
+                if small {
+                    core.set_game_icon_as(
+                        id,
+                        &png_file(saves.path(), 32, RED),
+                        store::IconSource::Auto,
+                    )
+                    .unwrap();
+                }
+                let before = game_meta(&core, id);
+                let bad = if broken.contains("page") {
+                    page
+                } else {
+                    damaged
+                };
+                let steam = |url: &str| {
+                    if url.contains("GetItems") {
+                        Ok(items.clone())
+                    } else if broken.starts_with("184") || !url.ends_with("_full.jpg") {
+                        bad()
+                    } else {
+                        Err(http_status(404))
+                    }
+                };
+                assert_eq!(core.fill_steam_icons(steam, at(0)).unwrap(), 0, "{case}");
+                assert_eq!(game_meta(&core, id), before, "{case}");
+                assert!(lookups(data.path()).is_empty(), "{case}: not a miss");
+
+                let log = Default::default();
+                let fixed = fake_steam(&log, &items, || Ok(jpg(184)));
+                assert_eq!(core.fill_steam_icons(fixed, at(1)).unwrap(), 1, "{case}");
+                assert_eq!(stored_size(&core, id), (184, 184), "{case}");
+                assert_eq!(game_meta(&core, id).icon_source, store::IconSource::Auto);
+                assert_eq!(lookups(data.path())[&uuid_of(&core, id)], at(1), "{case}");
             }
         }
     }

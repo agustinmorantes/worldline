@@ -32,4 +32,16 @@ describe('GameIcon', () => {
     expect(screen.queryByText('ER')).not.toBeInTheDocument();
     expect(document.querySelector('img')?.getAttribute('src')).toBe('asset:///mock/icons/1.png');
   });
+
+  it('reloads an icon replaced at the same path, and only then', () => {
+    const { rerender } = render(<GameIcon title="Test" iconPath="/mock/icons/1.png" iconRevision="sha256:aa" />);
+    const src = (): string | null | undefined => document.querySelector('img')?.getAttribute('src');
+    expect(src()).toBe('asset:///mock/icons/1.png?v=sha256%3Aaa');
+    rerender(<GameIcon title="Test" iconPath="/mock/icons/1.png" iconRevision="sha256:aa" />);
+    expect(src()).toBe('asset:///mock/icons/1.png?v=sha256%3Aaa');
+    rerender(<GameIcon title="Test" iconPath="/mock/icons/1.png" iconRevision="sha256:bb" />);
+    expect(src()).toBe('asset:///mock/icons/1.png?v=sha256%3Abb');
+    // A replaced icon swaps in place; only one arriving from the initials settles in.
+    expect(document.querySelector('img')?.hasAttribute('initial')).toBe(false);
+  });
 });

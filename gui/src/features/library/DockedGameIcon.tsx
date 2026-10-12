@@ -13,6 +13,7 @@ export function DockedGameIcon({ game, size = 72 }: { game: FullGame; size?: num
       title={game.title}
       hue={game.accent_hue}
       iconPath={game.icon_path ?? undefined}
+      iconRevision={game.icon_sha256 ?? undefined}
       size={size}
       className="shadow-[0_18px_40px_-12px_oklch(0%_0_0/0.6)]"
       style={{ opacity: away ? 0 : 1 }}

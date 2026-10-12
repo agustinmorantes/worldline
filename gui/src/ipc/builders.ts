@@ -63,6 +63,7 @@ export function makeGame(overrides: Partial<FullGame> & Pick<FullGame, 'id' | 't
     folder_slug: title.toLowerCase().replace(/\W+/g, '-'),
     active_slot_id: null,
     icon_path: null,
+    icon_sha256: null,
     install_dir: null,
     accent_hue: 290,
     accent_hue_source: 'auto',

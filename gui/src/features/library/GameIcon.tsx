@@ -12,6 +12,8 @@ interface GameIconProps {
   hue?: number;
   size?: number;
   iconPath?: string;
+  /** The icon's content hash: a new one reloads an icon replaced at the same path. */
+  iconRevision?: string;
   className?: string;
   style?: CSSProperties;
   /** Marks the header icon that sidebar icons fly into. */
@@ -20,7 +22,7 @@ interface GameIconProps {
 
 /** The game's icon, or its initials on the accent gradient. An icon that arrives while shown
  * (filled from an install in the background) settles into the tile instead of popping in. */
-export function GameIcon({ title, hue, size = 36, iconPath, className, style, ...data }: GameIconProps): ReactElement {
+export function GameIcon({ title, hue, size = 36, iconPath, iconRevision, className, style, ...data }: GameIconProps): ReactElement {
   const reduced = useMotionReduced();
   const hadIconRef = useRef(iconPath !== undefined);
   const arrived = iconPath !== undefined && !hadIconRef.current && !reduced;
@@ -47,7 +49,7 @@ export function GameIcon({ title, hue, size = 36, iconPath, className, style, ..
         }}
       >
         <motion.img
-          src={convertFileSrc(iconPath)}
+          src={iconSrc(iconPath, iconRevision)}
           alt=""
           className="size-full object-cover"
           draggable={false}
@@ -75,4 +77,11 @@ export function GameIcon({ title, hue, size = 36, iconPath, className, style, ..
       {initials(title)}
     </span>
   );
+}
+
+/** The icon file's URL. The asset protocol ignores the query, so the revision only tells the
+ * webview a replaced icon apart from the one it cached at the same path. */
+function iconSrc(path: string, revision: string | undefined): string {
+  const src = convertFileSrc(path);
+  return revision === undefined ? src : `${src}?v=${encodeURIComponent(revision)}`;
 }

@@ -517,3 +517,123 @@ fn a_sharper_install_icon_replaces_an_automatic_one_on_every_device() {
     assert_eq!(icon_color(&a, &uuid), Some(GREEN));
     assert_eq!(meta(&a, &uuid), meta(&b, &uuid));
 }
+
+// ---- the icon's revision ------------------------------------------------------------
+
+/// The game's icon revision on `device`, after checking it names the bytes
+/// shown at its path.
+fn revision(device: &Device, uuid: &str) -> Option<String> {
+    let game = game(device, uuid);
+    if let Some(path) = &game.icon_path {
+        let shown = worldline_core::icon::sha256(&fs::read(path).unwrap());
+        assert_eq!(game.icon_sha256.as_deref(), Some(shown.as_str()));
+    }
+    game.icon_sha256
+}
+
+#[test]
+fn an_icon_replaced_at_the_same_path_gets_a_new_revision_on_every_device() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let game_a = a.add_game("Revised").game;
+    let (id, uuid) = (game_a.id, game_a.uuid);
+    assert_eq!((game_a.icon_path, game_a.icon_sha256), (None, None));
+    let sized = |color: [u8; 4], size: u32| {
+        let path = a.saves.path().join(format!("{size}.png"));
+        RgbaImage::from_pixel(size, size, Rgba(color))
+            .save(&path)
+            .unwrap();
+        path.to_string_lossy().into_owned()
+    };
+
+    a.core
+        .set_game_icon_as(id, &sized(RED, 32), IconSource::Auto)
+        .unwrap();
+    let path = game(&a, &uuid).icon_path.expect("an icon");
+    let small = revision(&a, &uuid).expect("a revision");
+
+    // A sharper automatic icon, then the user's: same path, new revision.
+    a.core
+        .set_game_icon_as(id, &sized(RED, 128), IconSource::Auto)
+        .unwrap();
+    let sharper = revision(&a, &uuid).expect("a revision");
+    assert_ne!(sharper, small);
+    a.core.set_game_icon(id, &sized(GREEN, 16)).unwrap();
+    let picked = revision(&a, &uuid).expect("a revision");
+    assert_ne!(picked, sharper);
+    assert_eq!(game(&a, &uuid).icon_path.as_ref(), Some(&path));
+
+    // Nothing replaced, nothing changed; reindexing keeps it.
+    a.core
+        .set_game_icon_as(id, &sized(BLUE, 256), IconSource::Auto)
+        .unwrap();
+    assert_eq!(revision(&a, &uuid).as_ref(), Some(&picked));
+    a.core.reindex().unwrap();
+    assert_eq!(revision(&a, &uuid).as_ref(), Some(&picked));
+
+    // Another device gets the revision with the icon, and the next one the
+    // same way at its own unchanged path.
+    a.core.refresh_sync().unwrap();
+    let b = Device::synced(remote.path());
+    b.core
+        .adopt_remote_game(Uuid::parse_str(&uuid).unwrap())
+        .unwrap();
+    let path_b = game(&b, &uuid).icon_path.expect("arrived");
+    assert_eq!(revision(&b, &uuid).as_ref(), Some(&picked));
+    a.core.set_game_icon(id, &sized(BLUE, 64)).unwrap();
+    let repicked = revision(&a, &uuid).expect("a revision");
+    assert_ne!(repicked, picked);
+    a.core.refresh_sync().unwrap();
+    b.core.refresh_sync().unwrap();
+    assert_eq!(game(&b, &uuid).icon_path, Some(path_b));
+    assert_eq!(revision(&b, &uuid), Some(repicked));
+}
+
+#[test]
+fn an_icon_that_has_not_arrived_has_no_revision() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let id = a.add_game("Pending").game.id;
+    set_icon(&a, id, BLUE);
+    a.core.refresh_sync().unwrap();
+    let on_a = a.game(id).game;
+    fs::remove_file(remote_icon(remote.path(), &on_a)).unwrap();
+
+    let b = Device::synced(remote.path());
+    b.core
+        .adopt_remote_game(Uuid::parse_str(&on_a.uuid).unwrap())
+        .unwrap();
+    assert_eq!(revision(&b, &on_a.uuid), None, "not arrived");
+    a.core.refresh_sync().unwrap();
+    b.core.refresh_sync().unwrap();
+    assert_eq!(revision(&b, &on_a.uuid), on_a.icon_sha256);
+}
+
+#[test]
+fn a_database_from_before_the_icon_revision_gains_it_in_place() {
+    use diesel::{Connection, RunQueryDsl, SqliteConnection};
+    let device = Device::new();
+    device.write("save.dat", "1");
+    let id = device.add_game("Older").game.id;
+    set_icon(&device, id, RED);
+    let uuid = device.game(id).game.uuid;
+    let Device { core, data, saves } = device;
+    drop(core);
+    // The index as the previous release left it.
+    let db = data.path().join("database.db");
+    let mut conn = SqliteConnection::establish(&db.to_string_lossy()).unwrap();
+    diesel::sql_query("ALTER TABLE games DROP COLUMN icon_sha256")
+        .execute(&mut conn)
+        .unwrap();
+    diesel::sql_query("DELETE FROM __diesel_schema_migrations WHERE version = (SELECT MAX(version) FROM __diesel_schema_migrations)")
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();
+    assert!(core.moved_old_data().is_none(), "kept, not moved aside");
+    let device = Device { core, data, saves };
+    assert!(revision(&device, &uuid).is_some());
+}

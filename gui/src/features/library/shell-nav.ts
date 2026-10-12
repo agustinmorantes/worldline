@@ -7,7 +7,7 @@ import type { FullGame } from '@/ipc/bindings/FullGame';
 export type NavTarget = { view: 'game'; gameId: number } | { view: 'add' } | { view: 'settings' };
 
 /** What a flying icon needs from its game. */
-export type FlyingGame = Pick<FullGame, 'id' | 'title' | 'accent_hue' | 'icon_path'>;
+export type FlyingGame = Pick<FullGame, 'id' | 'title' | 'accent_hue' | 'icon_path' | 'icon_sha256'>;
 
 /** `data-nav-anchor` value of the sidebar icon for a target. */
 export function anchorKey(target: NavTarget): string {

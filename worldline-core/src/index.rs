@@ -409,6 +409,7 @@ fn upsert_game(
         .map(|_| store.icon_path(&meta.folder_slug))
         .filter(|path| path.is_file())
         .map(|path| path.to_string_lossy().into_owned());
+    let icon_sha256 = icon_path.as_ref().and(meta.icon_sha256.as_ref());
     let accent_hue = i32::from(
         meta.accent_hue
             .unwrap_or_else(|| crate::icon::fallback_hue(meta.uuid)),
@@ -421,6 +422,7 @@ fn upsert_game(
             games::title_normalized.eq(normalize_display_name(&meta.title)),
             games::folder_slug.eq(&meta.folder_slug),
             games::icon_path.eq(&icon_path),
+            games::icon_sha256.eq(icon_sha256),
             games::accent_hue.eq(accent_hue),
             games::accent_hue_source.eq(accent_hue_source),
             games::created_at.eq(meta.created_at.naive_utc()),
@@ -433,6 +435,7 @@ fn upsert_game(
             games::title_normalized.eq(normalize_display_name(&meta.title)),
             games::folder_slug.eq(&meta.folder_slug),
             games::icon_path.eq(&icon_path),
+            games::icon_sha256.eq(icon_sha256),
             games::accent_hue.eq(accent_hue),
             games::accent_hue_source.eq(accent_hue_source),
             games::updated_at.eq(meta.updated_at.naive_utc()),

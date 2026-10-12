@@ -280,6 +280,7 @@ export function Shell({ titleBar, sidebar, children }: {
                 title={flight.game.title}
                 hue={flight.game.accent_hue}
                 iconPath={flight.game.icon_path ?? undefined}
+                iconRevision={flight.game.icon_sha256 ?? undefined}
                 size={size}
               />
             </motion.div>
