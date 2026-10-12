@@ -1,6 +1,6 @@
 [package]
 name = "worldline-core"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 edition = "2024"
 license = "MIT"
 
@@ -65,4 +65,3 @@ ureq = { version = "2.9", features = ["tls"] }
 [dev-dependencies]
 mockall = "0.13"
 tempfile = "3"
-

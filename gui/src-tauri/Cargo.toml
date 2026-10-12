@@ -1,6 +1,6 @@
 [package]
 name = "worldline"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 description = "Desktop app for tracking and restoring game save history"
 edition = "2021"
 license = "MIT"
