@@ -627,9 +627,11 @@ fn a_database_from_before_the_icon_revision_gains_it_in_place() {
     diesel::sql_query("ALTER TABLE games DROP COLUMN icon_sha256")
         .execute(&mut conn)
         .unwrap();
-    diesel::sql_query("DELETE FROM __diesel_schema_migrations WHERE version = (SELECT MAX(version) FROM __diesel_schema_migrations)")
-        .execute(&mut conn)
-        .unwrap();
+    diesel::sql_query(
+        "DELETE FROM __diesel_schema_migrations WHERE version = '202610110000000000'",
+    )
+    .execute(&mut conn)
+    .unwrap();
     drop(conn);
 
     let (core, _) = WorldlineCore::open(data.path(), OpenOptions::default()).unwrap();

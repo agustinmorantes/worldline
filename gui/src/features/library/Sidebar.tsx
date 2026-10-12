@@ -252,6 +252,7 @@ function statusText(status: GameStatus, t: Messages, when: (date: Date) => strin
     case 'played-too': return t.gameStatus.playedToo(status.device);
     case 'not-in-cloud': return t.gameStatus.notInCloud;
     case 'no-saves': return t.gameStatus.noSaves;
+    case 'saved': return t.gameStatus.saved;
     case 'last-played': return when(status.at);
   }
 }

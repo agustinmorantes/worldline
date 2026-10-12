@@ -107,6 +107,8 @@ pub struct SlotSummary {
 #[derive(Serialize, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct FullGame {
+    /// Latest save activity across all slots, including retired versions.
+    pub last_played_at: Option<NaiveDateTime>,
     #[serde(flatten)]
     pub game: Game,
     /// Live (non-retired) tracked directories.

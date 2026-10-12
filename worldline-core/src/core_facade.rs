@@ -1937,6 +1937,7 @@ impl WorldlineCore {
                 version.reason,
                 version.files,
                 version.created_at,
+                version.last_played_at,
             )?;
             if version.tag.is_some() {
                 history.tag_version(copy.id, version.tag)?;
@@ -1960,7 +1961,15 @@ impl WorldlineCore {
         // active version is not monitored.
         if matches!(outcome, CheckpointOutcome::Empty) && !copies.is_empty() {
             let now = Utc::now();
-            history.commit_version(&kept, &slot, None, VersionReason::Initial, Vec::new(), now)?;
+            history.commit_version(
+                &kept,
+                &slot,
+                None,
+                VersionReason::Initial,
+                Vec::new(),
+                now,
+                None,
+            )?;
         }
         Ok(())
     }

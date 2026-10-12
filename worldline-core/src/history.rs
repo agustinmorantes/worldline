@@ -423,7 +423,37 @@ impl History {
             .as_ref()
             .map(|version| Uuid::parse_str(&version.uuid))
             .transpose()?;
-        self.commit_version(game, slot, parent_uuid, reason, files, Utc::now())
+        let now = Utc::now();
+        // The first capture may be delayed until saves exist. Starting another
+        // slot carries known activity forward rather than dating restored files.
+        let first_capture = game
+            .slot_summaries
+            .iter()
+            .all(|slot| slot.version_count == 0);
+        let last_played_at = if reason == VersionReason::Initial || first_capture {
+            game.last_played_at.map(|at| at.and_utc()).or_else(|| {
+                files
+                    .iter()
+                    .filter_map(|file| {
+                        let dir = game
+                            .tracked_dirs
+                            .iter()
+                            .find(|dir| dir.uuid == file.tracked_dir_uuid.to_string())?;
+                        let modified = std::fs::metadata(Path::new(&dir.path).join(&file.path))
+                            .ok()?
+                            .modified()
+                            .ok()?;
+                        if modified < std::time::UNIX_EPOCH {
+                            return None;
+                        }
+                        Some(DateTime::<Utc>::from(modified).min(now))
+                    })
+                    .max()
+            })
+        } else {
+            Some(now)
+        };
+        self.commit_version(game, slot, parent_uuid, reason, files, now, last_played_at)
             .map(CheckpointOutcome::Created)
     }
 
@@ -503,6 +533,7 @@ impl History {
     /// Records `files`, captured at `created_at`, as a new version on `slot`
     /// and makes it the slot's active one. The caller must hold the
     /// repository lock.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_version(
         &self,
         game: &FullGame,
@@ -511,6 +542,7 @@ impl History {
         reason: VersionReason,
         files: Vec<FileEntry>,
         created_at: DateTime<Utc>,
+        last_played_at: Option<DateTime<Utc>>,
     ) -> Result<Version> {
         let slot_record = self.index.get_slot(slot.id)?;
         let number = slot_record
@@ -523,6 +555,7 @@ impl History {
         let uuid = Uuid::new_v4();
         let now = Utc::now();
         let meta = VersionMeta {
+            last_played_at,
             uuid,
             game_uuid: game_uuid(&game.game)?,
             slot_uuid: Uuid::parse_str(&slot.uuid)?,
