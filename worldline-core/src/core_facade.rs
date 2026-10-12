@@ -866,19 +866,28 @@ impl WorldlineCore {
         restoring: Option<&FullVersion>,
         apply: impl FnOnce(&FullGame) -> Result<T>,
     ) -> Result<T> {
-        self.exclusive(|| {
-            let game = self.covering(self.get_game(game_id)?, restoring)?;
-            if sync::game_is_running(game.game.install_dir.as_deref()) == Some(true) {
-                return Err(anyhow::Error::new(ErrorKind::GameRunning)
-                    .context("Nothing was changed. Close the game and try again"));
-            }
-            if !game.tracked_dirs.is_empty() {
-                self.inner
-                    .checkpoint(&game, reason, false)
-                    .context("Failed to checkpoint the current saves first")?;
-            }
-            apply(&self.get_game(game_id)?)
-        })
+        self.exclusive(|| self.guarded_locked(game_id, reason, restoring, apply))
+    }
+
+    /// `guarded`, for a caller already inside `exclusive`.
+    fn guarded_locked<T>(
+        &self,
+        game_id: i32,
+        reason: VersionReason,
+        restoring: Option<&FullVersion>,
+        apply: impl FnOnce(&FullGame) -> Result<T>,
+    ) -> Result<T> {
+        let game = self.covering(self.get_game(game_id)?, restoring)?;
+        if sync::game_is_running(game.game.install_dir.as_deref()) == Some(true) {
+            return Err(anyhow::Error::new(ErrorKind::GameRunning)
+                .context("Nothing was changed. Close the game and try again"));
+        }
+        if !game.tracked_dirs.is_empty() {
+            self.inner
+                .checkpoint(&game, reason, false)
+                .context("Failed to checkpoint the current saves first")?;
+        }
+        apply(&self.get_game(game_id)?)
     }
 
     /// Runs `apply` with capture suppressed and the repository lock held.
@@ -1024,45 +1033,54 @@ impl WorldlineCore {
         self.get_game(slot.game_id)
     }
 
-    /// Deletes a slot. The last slot can't be deleted, and deleting the active
-    /// one first switches to `replacement_slot_id`.
+    /// Deletes a slot everywhere; it stays recoverable (ADR 0011). The last
+    /// slot can't be deleted. Deleting the active one first switches to
+    /// `replacement_slot_id` like `switch_slot`, so the running-game gate
+    /// applies and the outgoing progress is checkpointed into the slot being
+    /// deleted; a failed switch deletes nothing. The checks, the switch and
+    /// the delete hold one repository lock, so the active slot can't change
+    /// in between.
     pub fn delete_slot(&self, slot_id: i32, replacement_slot_id: Option<i32>) -> Result<FullGame> {
-        let slot = self.get_slot(slot_id)?.slot;
-        let game = self.get_game(slot.game_id)?;
-        if game.slots.len() <= 1 {
-            bail!(
-                "Cannot delete '{}': a game must keep at least one slot",
-                slot.name
-            );
-        }
-        if game
-            .active_slot
-            .as_ref()
-            .is_some_and(|active| active.id == slot_id)
-        {
-            let replacement = replacement_slot_id.context(
-                "Deleting the active slot requires a replacement slot to switch to first",
-            )?;
-            if replacement == slot_id {
-                bail!("The replacement slot must not be the slot being deleted");
-            }
-            if !game
+        let game_id = self.get_slot(slot_id)?.slot.game_id;
+        self.exclusive(|| {
+            let game = self.get_game(game_id)?;
+            let slot = game
                 .slots
                 .iter()
-                .any(|candidate| candidate.id == replacement)
-            {
-                bail!("Replacement slot {replacement} does not belong to this game");
+                .find(|slot| slot.id == slot_id)
+                .context("The slot was already deleted")?;
+            if game.slots.len() <= 1 {
+                bail!(
+                    "Cannot delete '{}': a game must keep at least one slot",
+                    slot.name
+                );
             }
-            let target = self.slot_target(&game, replacement)?;
-            self.guarded(
-                game.game.id,
-                VersionReason::PreSwitch,
-                target.as_ref(),
-                |game| self.activate_slot(game, replacement),
-            )?;
-        }
-        self.history().delete_slot(slot_id)?;
-        self.get_game(game.game.id)
+            if game
+                .active_slot
+                .as_ref()
+                .is_some_and(|active| active.id == slot_id)
+            {
+                let replacement = replacement_slot_id.context(
+                    "Deleting the active slot requires a replacement slot to switch to first",
+                )?;
+                if replacement == slot_id {
+                    bail!("The replacement slot must not be the slot being deleted");
+                }
+                if !game
+                    .slots
+                    .iter()
+                    .any(|candidate| candidate.id == replacement)
+                {
+                    bail!("Replacement slot {replacement} does not belong to this game");
+                }
+                let target = self.slot_target(&game, replacement)?;
+                self.guarded_locked(game_id, VersionReason::PreSwitch, target.as_ref(), |game| {
+                    self.activate_slot(game, replacement)
+                })?;
+            }
+            self.history().delete_slot(slot_id)?;
+            self.get_game(game_id)
+        })
     }
 
     /// Stores an image (or an executable's icon) the user picked as the

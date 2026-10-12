@@ -305,6 +305,60 @@ fn slots_recover_on_their_own_with_a_free_name() {
     assert!(deleted(&device).is_empty());
 }
 
+/// Deleting the current playthrough keeps the progress nobody recorded yet in
+/// the deleted playthrough, whether it had history or not, and whether the
+/// one it switches to has any. Recovering writes no live saves.
+#[test]
+fn deleting_the_current_playthrough_keeps_its_unrecorded_progress_to_recover() {
+    let device = Device::new();
+    device.write("save.dat", "main");
+    let game = device.add_game("Current");
+    let id = game.game.id;
+    let main = game.active_slot.clone().unwrap();
+    let fresh = device.core.create_slot(id, "Fresh").unwrap();
+    let fresh = fresh.active_slot.unwrap();
+    assert!(device.core.get_slot(fresh.id).unwrap().versions.is_empty());
+
+    // No history yet: the progress becomes its root version.
+    device.write("save.dat", "fresh, unrecorded");
+    let after = device.core.delete_slot(fresh.id, Some(main.id)).unwrap();
+    assert_eq!(after.active_slot.unwrap().id, main.id);
+    assert_eq!(device.read("save.dat").as_deref(), Some("main"));
+
+    // Into a playthrough with no history: the folder is emptied.
+    let blank = device.core.create_slot(id, "Blank").unwrap();
+    let blank = blank.active_slot.unwrap();
+    device.core.switch_slot(id, main.id).unwrap();
+    device.write("save.dat", "main, unrecorded");
+    device.core.delete_slot(main.id, Some(blank.id)).unwrap();
+    assert_eq!(device.read("save.dat"), None);
+
+    for (slot, name) in [(&fresh, "Fresh"), (&main, "Default Slot")] {
+        device
+            .core
+            .recover_slot(Uuid::parse_str(&slot.uuid).unwrap())
+            .unwrap();
+        let game = device.game(id);
+        assert_eq!(game.active_slot.unwrap().id, blank.id, "back inactive");
+        assert_eq!(device.read("save.dat"), None, "no live writes");
+        assert!(game.slots.iter().any(|s| s.name == name));
+    }
+    let slot_of = |name: &str| {
+        let game = device.game(id);
+        game.slots.into_iter().find(|s| s.name == name).unwrap().id
+    };
+    device.core.switch_slot(id, slot_of("Fresh")).unwrap();
+    assert_eq!(
+        device.read("save.dat").as_deref(),
+        Some("fresh, unrecorded")
+    );
+    device
+        .core
+        .switch_slot(id, slot_of("Default Slot"))
+        .unwrap();
+    assert_eq!(device.read("save.dat").as_deref(), Some("main, unrecorded"));
+}
+
 #[test]
 fn a_slot_deleted_while_another_device_played_offline_still_recovers() {
     let remote = tempfile::tempdir().unwrap();

@@ -527,8 +527,9 @@ impl History {
         Ok(())
     }
 
-    /// Brings back a deleted slot into its game, as an inactive slot. A name
-    /// taken meanwhile gets a number.
+    /// Brings back a deleted slot into its game, as an inactive slot pointing
+    /// at its newest kept version, so switching to it later restores that
+    /// rather than an empty folder. A name taken meanwhile gets a number.
     pub fn recover_slot(&self, uuid: Uuid, now: DateTime<Utc>) -> Result<()> {
         let (game, mut meta) = self
             .find_slot(uuid)?
@@ -553,7 +554,19 @@ impl History {
         meta.deletion.recover(now);
         meta.updated_at = now;
         self.store.write_slot(&game.folder_slug, &meta)?;
-        self.refresh_game(game.uuid)
+        self.refresh_game(game.uuid)?;
+        let slot_id = self
+            .index
+            .slot_id(uuid)?
+            .context("Recovered playthrough is not indexed")?;
+        let newest = self
+            .index
+            .get_slot(slot_id)?
+            .versions
+            .into_iter()
+            .find(|version| !version.retired);
+        self.index
+            .set_active_version(slot_id, newest.map(|version| version.id))
     }
 
     /// Ends the recovery window of a deleted game or slot now. Its history is
