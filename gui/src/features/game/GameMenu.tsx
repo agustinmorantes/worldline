@@ -156,7 +156,8 @@ function useGameMenu(game: FullGame, inCloud: boolean): { items: (Menu: MenuPart
     try {
       await recoverGame(game.uuid);
     } catch (err) {
-      reportError(t.game.failed.undo, err);
+      // Still deleted, so still in Recently deleted; trying again here is as good.
+      reportError(t.game.failed.undo, err, t.game.undoHint, { label: t.errors.retry, onClick: () => { void undoDelete(); } });
     }
     void queryClient.invalidateQueries({ queryKey: ['games'] });
     void queryClient.invalidateQueries({ queryKey: ['sync-report'] });

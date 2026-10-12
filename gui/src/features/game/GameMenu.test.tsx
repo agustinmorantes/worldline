@@ -105,7 +105,7 @@ describe('Leaving a game from its menu', () => {
     vi.clearAllMocks();
     vi.mocked(untrackGame).mockResolvedValue(undefined);
     vi.mocked(deleteGame).mockResolvedValue(undefined);
-    vi.mocked(recoverGame).mockResolvedValue(undefined);
+    vi.mocked(recoverGame).mockResolvedValue(true);
   });
 
   // The sidebar's right-click menu, with `current` on screen.
@@ -164,6 +164,22 @@ describe('Leaving a game from its menu', () => {
     action.onClick();
     await waitFor(() => { expect(recoverGame).toHaveBeenCalledWith('lantern'); });
     expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed undo retryable, from the error and from Recently deleted', async () => {
+    vi.mocked(recoverGame).mockRejectedValueOnce(new Error('busy')).mockResolvedValueOnce(true);
+    openFromSidebar(here);
+    deleteEverywhere();
+    await waitFor(() => { expect(toast.success).toHaveBeenCalledWith('Lantern Knight deleted', expect.anything()); });
+    const { action } = vi.mocked(toast.success).mock.calls[0][1] as { action: { label: string; onClick: () => void } };
+    action.onClick();
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledWith('Couldn’t bring the game back.', expect.any(Error), 'It’s still in Settings, under Recently deleted.', expect.objectContaining({ label: 'Try again' }));
+    });
+    const retry = vi.mocked(reportError).mock.calls[0][3] as { onClick: () => void };
+    retry.onClick();
+    await waitFor(() => { expect(recoverGame).toHaveBeenCalledTimes(2); });
+    expect(reportError).toHaveBeenCalledTimes(1);
   });
 
   it('stays, reports it, and keeps the dialog open when deleting fails', async () => {

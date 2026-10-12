@@ -171,7 +171,7 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
       if (back !== undefined) state.games.push(back);
       binned.delete(args.uuid as string);
       state.deleted = (state.deleted ?? []).filter((item) => item.uuid !== args.uuid);
-      return null;
+      return true;
     }
     case 'recover_slot':
     case 'purge_deleted':

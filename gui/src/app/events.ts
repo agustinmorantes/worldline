@@ -69,6 +69,7 @@ export function listenNotifications(): void {
     void queryClient.invalidateQueries({ queryKey: ['game'] });
     void queryClient.invalidateQueries({ queryKey: ['retired-versions'] });
     void queryClient.invalidateQueries({ queryKey: ['screenshot'] });
+    void queryClient.invalidateQueries({ queryKey: ['recently-deleted'] });
   });
 
   // Background syncs retry every few minutes; an offline folder is not worth a toast each

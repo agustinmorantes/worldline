@@ -60,7 +60,8 @@ export const deleteSlot = (slotId: number, replacementSlotId?: number): Promise<
 
 export const recentlyDeleted = (): Promise<DeletedItem[]> => invoke('recently_deleted');
 /** Fails with `name_taken` or `folder_taken` when the game no longer fits this library. */
-export const recoverGame = (uuid: string): Promise<void> => invoke('recover_game', { uuid });
+/** Whether the game is back in this PC's library; one this PC doesn't track stays in the cloud. */
+export const recoverGame = (uuid: string): Promise<boolean> => invoke('recover_game', { uuid });
 export const recoverSlot = (uuid: string): Promise<void> => invoke('recover_slot', { uuid });
 /** Deletes a game or slot for good, ahead of its window. */
 export const purgeDeleted = (uuid: string): Promise<void> => invoke('purge_deleted', { uuid });
