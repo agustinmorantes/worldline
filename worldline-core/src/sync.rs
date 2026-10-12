@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -277,6 +278,45 @@ impl Remote {
         let mut states: Vec<_> = self.states.iter().filter(|s| s.device_uuid != me).collect();
         states.sort_by_key(|state| std::cmp::Reverse(state.updated_at));
         states
+    }
+}
+
+/// Times the phases of a sync operation and logs them as one line when
+/// dropped (early returns included), so a slow remote shows where time goes.
+pub(crate) struct Phases {
+    operation: &'static str,
+    started: Instant,
+    last: Instant,
+    laps: Vec<String>,
+}
+
+impl Phases {
+    pub(crate) fn start(operation: &'static str) -> Self {
+        let now = Instant::now();
+        Self {
+            operation,
+            started: now,
+            last: now,
+            laps: Vec::new(),
+        }
+    }
+
+    /// Ends the phase `name`, which began at the previous lap.
+    pub(crate) fn lap(&mut self, name: &str) {
+        let now = Instant::now();
+        self.laps.push(format!("{name} {:.2?}", now - self.last));
+        self.last = now;
+    }
+}
+
+impl Drop for Phases {
+    fn drop(&mut self) {
+        log::info!(
+            "{} took {:.2?} ({})",
+            self.operation,
+            self.started.elapsed(),
+            self.laps.join(", ")
+        );
     }
 }
 

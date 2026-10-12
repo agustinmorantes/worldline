@@ -5,16 +5,19 @@
 use crate::core_facade::WorldlineCore;
 use crate::detection::Notification;
 use crate::error::Failure;
+use std::collections::HashSet;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 const TICK: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) enum Trigger {
     Sync,
-    Push,
+    /// A game got a new version.
+    Push(Uuid),
     Stop,
 }
 
@@ -68,11 +71,15 @@ fn run(
         );
         let Some(core) = core.upgrade() else { return };
         // Shutting down only publishes; a pull or prune could keep the exit waiting.
-        if stop || (push && !sync) {
-            push_only(&core, &notifications);
+        // It publishes every game, like a full sync, catching whatever a game's
+        // own push left out.
+        if stop {
+            push_only(&core, &notifications, None);
         } else if sync {
             full_sync(&core, &notifications);
             due = Instant::now() + TICK;
+        } else if !push.is_empty() {
+            push_only(&core, &notifications, Some(&push));
         }
         if stop {
             return;
@@ -116,13 +123,24 @@ fn full_sync(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notificatio
     }
 }
 
-fn push_only(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notification>) {
+/// Pushes `games`, or every game.
+fn push_only(
+    core: &Arc<WorldlineCore>,
+    notifications: &mpsc::Sender<Notification>,
+    games: Option<&HashSet<Uuid>>,
+) {
     if !sync_configured(core) {
         return;
     }
     let _ = notifications.send(Notification::SyncStarted);
     // Refresh the shown report; this device's pointers just moved.
-    match core.push_sync().and_then(|()| core.sync_status()) {
+    let pushed = match games {
+        Some(games) => core
+            .push_games(games)
+            .and_then(|()| core.pushed_status(games)),
+        None => core.push_sync().and_then(|()| core.sync_status()),
+    };
+    match pushed {
         Ok(report) => {
             let _ = notifications.send(Notification::SyncCompleted(report));
         }
@@ -135,7 +153,8 @@ fn push_only(core: &Arc<WorldlineCore>, notifications: &mpsc::Sender<Notificatio
 #[derive(Debug, PartialEq, Eq)]
 struct Plan {
     sync: bool,
-    push: bool,
+    /// Games to push.
+    push: HashSet<Uuid>,
     stop: bool,
 }
 
@@ -144,13 +163,15 @@ struct Plan {
 fn coalesce(triggers: impl Iterator<Item = Trigger>, due: Instant, now: Instant) -> Plan {
     let mut plan = Plan {
         sync: now >= due,
-        push: false,
+        push: HashSet::new(),
         stop: false,
     };
     for trigger in triggers {
         match trigger {
             Trigger::Sync => plan.sync = true,
-            Trigger::Push => plan.push = true,
+            Trigger::Push(game) => {
+                plan.push.insert(game);
+            }
             Trigger::Stop => plan.stop = true,
         }
     }
@@ -164,10 +185,12 @@ mod tests {
     #[test]
     fn a_due_sync_is_not_starved_by_pushes() {
         let now = Instant::now();
-        let queued = || [Trigger::Push, Trigger::Push].into_iter();
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let queued = || [Trigger::Push(a), Trigger::Push(b), Trigger::Push(a)].into_iter();
         let plan = coalesce(queued(), now - Duration::from_secs(1), now);
-        assert!(plan.sync && plan.push);
+        assert!(plan.sync && !plan.push.is_empty());
         let plan = coalesce(queued(), now + TICK, now);
-        assert!(!plan.sync && plan.push, "not due yet: push only");
+        assert!(!plan.sync, "not due yet: push only");
+        assert_eq!(plan.push, HashSet::from([a, b]), "each game pushed once");
     }
 }

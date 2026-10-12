@@ -51,6 +51,9 @@ pub struct Transfer<'a> {
     screenshots: bool,
     /// Chunks already checked in this run, so each is handled once.
     seen: HashSet<String>,
+    /// The destination's chunks, when listed up front; otherwise each chunk
+    /// is checked on its own.
+    dst_chunks: Option<HashSet<String>>,
     pub report: TransferReport,
 }
 
@@ -62,6 +65,7 @@ impl<'a> Transfer<'a> {
             completeness,
             screenshots: true,
             seen: HashSet::new(),
+            dst_chunks: None,
             report: TransferReport::default(),
         }
     }
@@ -71,6 +75,13 @@ impl<'a> Transfer<'a> {
     pub fn screenshots(mut self, copy: bool) -> Self {
         self.screenshots = copy;
         self
+    }
+
+    /// Lists the destination's chunks once, for runs that check most of them
+    /// (a full heal): one listing per shard instead of a stat per chunk.
+    pub fn list_dst_chunks(&mut self) -> Result<()> {
+        self.dst_chunks = Some(self.dst.chunk_sizes()?.into_keys().collect());
+        Ok(())
     }
 
     /// Copies one game (as read from `src`) and returns the version UUIDs
@@ -103,32 +114,53 @@ impl<'a> Transfer<'a> {
                 bail!("the icon {wanted} of '{}' is missing", game.meta.title);
             }
         }
+        // Read once. Metadata it already holds is not written again; anything
+        // else still goes through the store's merging writes, which re-read.
+        let existing = self.dst.game_by_slug(slug)?;
+        let held: HashMap<Uuid, &VersionMeta> = existing
+            .iter()
+            .flat_map(|record| record.versions().map(|version| (version.uuid, version)))
+            .collect();
         // The icon travels before the metadata naming it, when that metadata
         // will win; afterwards whatever metadata won gets its icon if `src`
         // has it (an icon that hasn't arrived yet is healed on a later run).
-        let wins = self
-            .dst
-            .game_meta(slug)?
-            .is_none_or(|existing| game.meta.updated_at > existing.updated_at);
-        if wins {
-            self.copy_icon(&game.meta)?;
-        }
-        self.dst.write_game(&game.meta)?;
-        if let Some(stored) = self.dst.game_meta(slug)? {
+        let stored = match &existing {
+            Some(record) if record.meta == game.meta => Some(record.meta.clone()),
+            _ => {
+                let wins = existing
+                    .as_ref()
+                    .is_none_or(|record| game.meta.updated_at > record.meta.updated_at);
+                if wins {
+                    self.copy_icon(&game.meta)?;
+                }
+                self.dst.write_game(&game.meta)?;
+                // Already given its icon when it won unchanged.
+                self.dst
+                    .game_meta(slug)?
+                    .filter(|stored| !(wins && *stored == game.meta))
+            }
+        };
+        if let Some(stored) = stored {
             self.copy_icon(&stored)?;
         }
         for dir in &game.tracked_dirs {
-            self.dst.write_tracked_dir(slug, dir)?;
+            if !existing
+                .as_ref()
+                .is_some_and(|record| record.tracked_dirs.contains(dir))
+            {
+                self.dst.write_tracked_dir(slug, dir)?;
+            }
         }
         for slot in &game.slots {
-            self.dst.write_slot(slug, &slot.meta)?;
+            if !existing
+                .as_ref()
+                .is_some_and(|record| record.slots.iter().any(|held| held.meta == slot.meta))
+            {
+                self.dst.write_slot(slug, &slot.meta)?;
+            }
         }
 
-        let existing = self.dst.game_by_slug(slug)?;
-        let mut present: HashSet<Uuid> = existing
-            .iter()
-            .flat_map(|record| record.versions().map(|version| version.uuid))
-            .collect();
+        let mut present: HashSet<Uuid> = held.keys().copied().collect();
         let slot_slugs: HashMap<Uuid, &str> = game
             .slots
             .iter()
@@ -169,8 +201,10 @@ impl<'a> Transfer<'a> {
                         continue;
                     }
                 }
-                self.dst
-                    .publish_version(slug, slot_slugs[&version.slot_uuid], version)?;
+                if held.get(&version.uuid) != Some(&version) {
+                    self.dst
+                        .publish_version(slug, slot_slugs[&version.slot_uuid], version)?;
+                }
                 if !retired {
                     self.copy_screenshot(slug, slot_slugs[&version.slot_uuid], version)?;
                 }
@@ -263,7 +297,11 @@ impl<'a> Transfer<'a> {
             if self.seen.contains(hash) {
                 continue;
             }
-            if !self.dst.has_chunk(hash) {
+            let present = match &self.dst_chunks {
+                Some(listed) => listed.contains(hash),
+                None => self.dst.has_chunk(hash),
+            };
+            if !present {
                 let compressed = chunks::read_compressed(self.src, hash)?;
                 let valid = zstd::stream::decode_all(compressed.as_slice())
                     .is_ok_and(|raw| format_hash(&Sha256::digest(&raw)) == hash);
@@ -484,6 +522,19 @@ mod tests {
             )
             .unwrap();
         assert!(chunk.exists());
+
+        // A full heal over a listed destination finds the gap the same way.
+        std::fs::remove_file(&chunk).unwrap();
+        let mut transfer = Transfer::new(&src, &dst, Completeness::Partial);
+        transfer.list_dst_chunks().unwrap();
+        transfer
+            .copy_game(&record, &HashMap::new(), Heal::All)
+            .unwrap();
+        assert!(chunk.exists());
+        assert_eq!(
+            transfer.report.chunks_copied, 1,
+            "listed chunks are trusted"
+        );
     }
 
     #[test]
