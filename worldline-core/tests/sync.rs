@@ -1322,3 +1322,70 @@ fn one_games_status_is_read_as_it_is_now_without_pulling() {
         .unwrap();
     assert!(b.core.game_sync_status(uuid).is_err());
 }
+
+#[test]
+fn a_games_push_publishes_only_that_game() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let pushed = a.add_game("Pushed");
+    let other_dir = a.saves.path().join("Other Saves");
+    fs::create_dir_all(&other_dir).unwrap();
+    fs::write(other_dir.join("save.dat"), "1").unwrap();
+    let other = a.add_game_at("Other", &other_dir);
+    a.core.refresh_sync().unwrap();
+
+    a.write("save.dat", "2");
+    a.checkpoint(pushed.game.id);
+    fs::write(other_dir.join("save.dat"), "2").unwrap();
+    a.checkpoint(other.game.id);
+    a.core
+        .push_games(&std::collections::HashSet::from([uuid_of(&pushed)]))
+        .unwrap();
+    let store = Store::open_existing(remote.path()).unwrap();
+    let versions = |game| store.game(game).unwrap().unwrap().versions().count();
+    assert_eq!(versions(uuid_of(&pushed)), 2);
+    assert_eq!(versions(uuid_of(&other)), 1, "left for the next full push");
+
+    a.core.push_sync().unwrap();
+    assert_eq!(versions(uuid_of(&other)), 2);
+}
+
+#[test]
+fn a_games_push_keeps_the_last_status_of_the_others() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let shared = a.add_game("Shared");
+    let uuid = uuid_of(&shared);
+    a.core.refresh_sync().unwrap();
+    let b = Device::synced(remote.path());
+    b.core.adopt_remote_game(uuid).unwrap();
+    let own_dir = b.saves.path().join("Own Saves");
+    fs::create_dir_all(&own_dir).unwrap();
+    fs::write(own_dir.join("save.dat"), "1").unwrap();
+    let own = b.add_game_at("Own", &own_dir);
+
+    a.write("save.dat", "2");
+    a.checkpoint(shared.game.id);
+    a.core.push_sync().unwrap();
+    a.write("save.dat", "1"); // B's machine still holds version 1
+    assert_eq!(relation(&b, uuid).0, Divergence::FastForward);
+
+    // A moves on again; B pushes only its own game before any full sync.
+    a.write("save.dat", "3");
+    a.checkpoint(shared.game.id);
+    a.core.push_sync().unwrap();
+    a.write("save.dat", "1");
+    fs::write(own_dir.join("save.dat"), "2").unwrap();
+    b.checkpoint(own.game.id);
+    let pushed = std::collections::HashSet::from([uuid_of(&own)]);
+    b.core.push_games(&pushed).unwrap();
+    let report = b.core.pushed_status(&pushed).unwrap();
+    let status = report.games.iter().find(|s| s.game_uuid == uuid).unwrap();
+    assert_eq!(
+        status.relation,
+        Divergence::FastForward,
+        "not shown as in sync"
+    );
+}

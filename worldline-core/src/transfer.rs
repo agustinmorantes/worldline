@@ -114,32 +114,53 @@ impl<'a> Transfer<'a> {
                 bail!("the icon {wanted} of '{}' is missing", game.meta.title);
             }
         }
+        // Read once. Metadata it already holds is not written again; anything
+        // else still goes through the store's merging writes, which re-read.
+        let existing = self.dst.game_by_slug(slug)?;
+        let held: HashMap<Uuid, &VersionMeta> = existing
+            .iter()
+            .flat_map(|record| record.versions().map(|version| (version.uuid, version)))
+            .collect();
         // The icon travels before the metadata naming it, when that metadata
         // will win; afterwards whatever metadata won gets its icon if `src`
         // has it (an icon that hasn't arrived yet is healed on a later run).
-        let wins = self
-            .dst
-            .game_meta(slug)?
-            .is_none_or(|existing| game.meta.updated_at > existing.updated_at);
-        if wins {
-            self.copy_icon(&game.meta)?;
-        }
-        self.dst.write_game(&game.meta)?;
-        if let Some(stored) = self.dst.game_meta(slug)? {
+        let stored = match &existing {
+            Some(record) if record.meta == game.meta => Some(record.meta.clone()),
+            _ => {
+                let wins = existing
+                    .as_ref()
+                    .is_none_or(|record| game.meta.updated_at > record.meta.updated_at);
+                if wins {
+                    self.copy_icon(&game.meta)?;
+                }
+                self.dst.write_game(&game.meta)?;
+                // Already given its icon when it won unchanged.
+                self.dst
+                    .game_meta(slug)?
+                    .filter(|stored| !(wins && *stored == game.meta))
+            }
+        };
+        if let Some(stored) = stored {
             self.copy_icon(&stored)?;
         }
         for dir in &game.tracked_dirs {
-            self.dst.write_tracked_dir(slug, dir)?;
+            if !existing
+                .as_ref()
+                .is_some_and(|record| record.tracked_dirs.contains(dir))
+            {
+                self.dst.write_tracked_dir(slug, dir)?;
+            }
         }
         for slot in &game.slots {
-            self.dst.write_slot(slug, &slot.meta)?;
+            if !existing
+                .as_ref()
+                .is_some_and(|record| record.slots.iter().any(|held| held.meta == slot.meta))
+            {
+                self.dst.write_slot(slug, &slot.meta)?;
+            }
         }
 
-        let existing = self.dst.game_by_slug(slug)?;
-        let mut present: HashSet<Uuid> = existing
-            .iter()
-            .flat_map(|record| record.versions().map(|version| version.uuid))
-            .collect();
+        let mut present: HashSet<Uuid> = held.keys().copied().collect();
         let slot_slugs: HashMap<Uuid, &str> = game
             .slots
             .iter()
@@ -180,8 +201,10 @@ impl<'a> Transfer<'a> {
                         continue;
                     }
                 }
-                self.dst
-                    .publish_version(slug, slot_slugs[&version.slot_uuid], version)?;
+                if held.get(&version.uuid) != Some(&version) {
+                    self.dst
+                        .publish_version(slug, slot_slugs[&version.slot_uuid], version)?;
+                }
                 if !retired {
                     self.copy_screenshot(slug, slot_slugs[&version.slot_uuid], version)?;
                 }

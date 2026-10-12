@@ -84,6 +84,13 @@ fn heal_window() -> chrono::Duration {
     maintenance::GRACE * 2
 }
 
+/// What the last sync report read from a remote.
+struct LastReport {
+    root: PathBuf,
+    catalog: Vec<GameRecord>,
+    statuses: Vec<sync::GameSyncStatus>,
+}
+
 /// State shared with the watcher thread.
 struct Inner {
     history: History,
@@ -127,8 +134,10 @@ impl Inner {
         }
         let started = chrono::Utc::now().naive_utc();
         let outcome = self.history.checkpoint_locked(game, reason, limited)?;
-        if matches!(outcome, CheckpointOutcome::Created(_)) {
-            let _ = self.sync_trigger.send(Trigger::Push);
+        if matches!(outcome, CheckpointOutcome::Created(_))
+            && let Ok(uuid) = game_uuid(&game.game)
+        {
+            let _ = self.sync_trigger.send(Trigger::Push(uuid));
         }
         if let Some(checkpoints) = self.checkpoints.get() {
             checkpoints.completed(game.game.id, started, &outcome);
@@ -210,6 +219,9 @@ pub struct WorldlineCore {
     sync_lock: Mutex<()>,
     /// Installed titles seen by the last full sync, for later reports.
     last_installs: Mutex<HashMap<String, Option<String>>>,
+    /// The last report's remote, so the report after a game's push re-reads
+    /// only that game.
+    last_report: Mutex<Option<LastReport>>,
     /// Install dirs by normalized title, from the last install scan.
     scanned_installs: Mutex<HashMap<String, Option<String>>>,
     last_prune: Mutex<Option<DateTime<Utc>>>,
@@ -294,6 +306,7 @@ impl WorldlineCore {
             device: RwLock::new(device),
             sync_lock: Mutex::new(()),
             last_installs: Mutex::new(HashMap::new()),
+            last_report: Mutex::new(None),
             scanned_installs: Mutex::new(HashMap::new()),
             last_prune: Mutex::new(None),
             moved_old_data,
@@ -590,7 +603,7 @@ impl WorldlineCore {
             self.history().refresh_game(uuid)
         })?;
         // Publishes the captured progress, and pointers without the game.
-        for problem in self.push_locked(&remote)? {
+        for problem in self.push_locked(&remote, None)? {
             eprintln!("Sync: {problem}");
         }
         Ok(())
@@ -1214,24 +1227,40 @@ impl WorldlineCore {
             return Ok(());
         };
         let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let problems = self.push_locked(&remote)?;
+        let problems = self.push_locked(&remote, None)?;
         if !problems.is_empty() {
             bail!("Some games could not be pushed: {}", problems.join("; "));
         }
         Ok(())
     }
 
-    /// Publishes every game (one game's failure doesn't stop the others) and
-    /// this device's pointers. Returns the per-game problems.
-    fn push_locked(&self, remote: &Remote) -> Result<Vec<String>> {
+    /// Publishes only `games` (after their new versions) and this device's
+    /// pointers. The next full sync or push publishes everything else.
+    pub fn push_games(&self, games: &HashSet<Uuid>) -> Result<()> {
+        let Some(remote) = self.remote()? else {
+            return Ok(());
+        };
+        let _guard = self.sync_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let problems = self.push_locked(&remote, Some(games))?;
+        if !problems.is_empty() {
+            bail!("Some games could not be pushed: {}", problems.join("; "));
+        }
+        Ok(())
+    }
+
+    /// Publishes every game, or only `games` (one game's failure doesn't stop
+    /// the others), and this device's pointers. Returns the per-game problems.
+    fn push_locked(&self, remote: &Remote, games: Option<&HashSet<Uuid>>) -> Result<Vec<String>> {
         let mut phases = sync::Phases::start("Sync push");
         let history = self.history();
         let state_path = self.data_dir.join("sync_state.json");
         let mut state: SyncState = read_json(&state_path).unwrap_or_default();
         let now = Utc::now();
-        let full = state
-            .last_full_heal
-            .is_none_or(|at| now - at > chrono::Duration::days(1));
+        // A full heal is left to pushes of every game.
+        let full = games.is_none()
+            && state
+                .last_full_heal
+                .is_none_or(|at| now - at > chrono::Duration::days(1));
         let pulled: HashSet<Uuid> = state
             .recent_pulls
             .iter()
@@ -1256,7 +1285,13 @@ impl WorldlineCore {
             // Healing checks every chunk: one listing per shard beats a stat per chunk.
             transfer.list_dst_chunks()?;
         }
-        let catalog = history.store.catalog()?;
+        let catalog = match games {
+            None => history.store.catalog()?,
+            Some(games) => games
+                .iter()
+                .filter_map(|uuid| history.store.game(*uuid).transpose())
+                .collect::<Result<_>>()?,
+        };
         phases.lap("prepare");
         let mut problems = Vec::new();
         for game in catalog {
@@ -1637,7 +1672,7 @@ impl WorldlineCore {
         }
 
         phases.lap("fast-forward");
-        problems.extend(self.push_locked(&remote)?);
+        problems.extend(self.push_locked(&remote, None)?);
         phases.lap("push");
         self.reload_watcher();
         let remote = self.require_remote()?;
@@ -1652,7 +1687,7 @@ impl WorldlineCore {
         let installed = installs.get().cloned().unwrap_or_default();
         *self.last_installs.lock().unwrap_or_else(|e| e.into_inner()) = installed.clone();
         phases.lap("installs");
-        let report = self.sync_report(&remote, &auto_applied, &installed, problems);
+        let report = self.sync_report(&remote, None, &auto_applied, &installed, problems);
         phases.lap("report");
         report
     }
@@ -1665,7 +1700,25 @@ impl WorldlineCore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        self.sync_report(&remote, &HashSet::new(), &installed, Vec::new())
+        self.sync_report(&remote, None, &HashSet::new(), &installed, Vec::new())
+    }
+
+    /// The sync state after a push of `games`: they are read again, the rest
+    /// of the remote's games are as the last report read them.
+    pub fn pushed_status(&self, games: &HashSet<Uuid>) -> Result<SyncReport> {
+        let remote = self.require_remote()?;
+        let installed = self
+            .last_installs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.sync_report(
+            &remote,
+            Some(games),
+            &HashSet::new(),
+            &installed,
+            Vec::new(),
+        )
     }
 
     /// One game's sync status as it is now (like `sync_status`, without pulling or applying
@@ -1682,7 +1735,7 @@ impl WorldlineCore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let report = self.sync_report(&remote, &HashSet::new(), &installed, Vec::new())?;
+        let report = self.sync_report(&remote, None, &HashSet::new(), &installed, Vec::new())?;
         let Some(status) = report.games.into_iter().find(|s| s.game_uuid == game_uuid) else {
             return Ok(None);
         };
@@ -1717,7 +1770,7 @@ impl WorldlineCore {
                 return Err(anyhow::Error::new(kind).context(reason));
             }
         }
-        for problem in self.push_locked(&remote)? {
+        for problem in self.push_locked(&remote, None)? {
             eprintln!("Sync: {problem}");
         }
         self.reload_watcher();
@@ -2103,15 +2156,53 @@ impl WorldlineCore {
         Ok(applied)
     }
 
+    /// The remote's games for a report: all read now, or only `pushed` read
+    /// again over the last report's copy, with the last report's statuses.
+    fn report_catalog(
+        &self,
+        remote: &Remote,
+        pushed: Option<&HashSet<Uuid>>,
+    ) -> Result<(Vec<GameRecord>, Option<Vec<sync::GameSyncStatus>>)> {
+        let last = self
+            .last_report
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        Ok(match (pushed, last) {
+            (Some(pushed), Some(last)) if last.root == remote.store.root() => {
+                let mut catalog = last.catalog;
+                let history = self.history();
+                for &uuid in pushed {
+                    let Some(local) = history.store.find_game(uuid)? else {
+                        continue;
+                    };
+                    let fresh = remote.store.game_by_slug(&local.folder_slug)?;
+                    let at = catalog.iter().position(|g| g.meta.uuid == uuid);
+                    match (fresh, at) {
+                        (Some(fresh), Some(at)) => catalog[at] = fresh,
+                        (Some(fresh), None) => catalog.push(fresh),
+                        (None, Some(at)) => {
+                            catalog.remove(at);
+                        }
+                        (None, None) => {}
+                    }
+                }
+                (catalog, Some(last.statuses))
+            }
+            _ => (remote.store.catalog()?, None),
+        })
+    }
+
     fn sync_report(
         &self,
         remote: &Remote,
+        pushed: Option<&HashSet<Uuid>>,
         auto_applied: &HashSet<Uuid>,
         installed_titles: &HashMap<String, Option<String>>,
         problems: Vec<String>,
     ) -> Result<SyncReport> {
         let me = self.device_metadata().device_uuid;
-        let catalog = remote.store.catalog()?;
+        let (catalog, last_statuses) = self.report_catalog(remote, pushed)?;
         let pointers = self.history().index.pointers()?;
         let games = self.get_games()?;
         let mut statuses = Vec::new();
@@ -2168,6 +2259,27 @@ impl WorldlineCore {
                 auto_applied: auto_applied.contains(&uuid),
             });
         }
+        // Games not pushed keep their last status: their catalog entry is old,
+        // so newer tips of other devices would be dropped as not arrived.
+        if let (Some(pushed), Some(last)) = (pushed, last_statuses) {
+            for status in &mut statuses {
+                if let Some(kept) = last
+                    .iter()
+                    .find(|kept| kept.game_uuid == status.game_uuid)
+                    .filter(|_| !pushed.contains(&status.game_uuid))
+                {
+                    *status = sync::GameSyncStatus {
+                        auto_applied: false,
+                        ..kept.clone()
+                    };
+                }
+            }
+        }
+        *self.last_report.lock().unwrap_or_else(|e| e.into_inner()) = Some(LastReport {
+            root: remote.store.root().to_path_buf(),
+            catalog: catalog.clone(),
+            statuses: statuses.clone(),
+        });
         let local: HashSet<String> = games.iter().map(|g| g.game.uuid.clone()).collect();
         Ok(SyncReport {
             synced_at: Utc::now(),
@@ -2340,7 +2452,7 @@ impl WorldlineCore {
                     path.display()
                 );
             }
-            let problems = self.push_locked(remote)?;
+            let problems = self.push_locked(remote, None)?;
             if !problems.is_empty() {
                 bail!(
                     "Cleanup needs a complete push first: {}",
