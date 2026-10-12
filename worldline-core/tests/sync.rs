@@ -6,7 +6,7 @@ mod common;
 
 use common::Device;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -29,7 +29,9 @@ fn relation(device: &Device, game: Uuid) -> (Divergence, Option<i32>) {
     (status.relation, status.remote_version_id)
 }
 
-fn remove_version_dir(remote: &Path, version_uuid: &str) -> std::path::PathBuf {
+/// Moves a version's folder out of the remote; returns where it went and
+/// where it was.
+fn remove_version_dir(remote: &Path, version_uuid: &str) -> (PathBuf, PathBuf) {
     let short = &Uuid::parse_str(version_uuid).unwrap().simple().to_string()[..8];
     for game in fs::read_dir(remote.join("games")).unwrap() {
         for slot in fs::read_dir(game.unwrap().path().join("slots")).unwrap() {
@@ -38,7 +40,7 @@ fn remove_version_dir(remote: &Path, version_uuid: &str) -> std::path::PathBuf {
                 if path.file_name().unwrap().to_string_lossy().ends_with(short) {
                     let parked = remote.join(format!("parked-{short}"));
                     fs::rename(&path, &parked).unwrap();
-                    return parked;
+                    return (parked, path);
                 }
             }
         }
@@ -117,7 +119,7 @@ fn a_child_that_arrives_before_its_parent_waits_without_aborting() {
     a.write("save.dat", "3");
     a.checkpoint(game.game.id);
     a.core.refresh_sync().unwrap();
-    let parked = remove_version_dir(remote.path(), &v2.uuid);
+    let (parked, original) = remove_version_dir(remote.path(), &v2.uuid);
 
     let b = Device::synced(remote.path());
     fs::remove_file(a.save_dir().join("save.dat")).unwrap(); // B's machine has no saves yet
@@ -131,8 +133,8 @@ fn a_child_that_arrives_before_its_parent_waits_without_aborting() {
         1
     );
 
-    fs::rename(&parked, parked.parent().unwrap().join("placeholder")).unwrap();
-    a.core.push_sync().unwrap(); // A republishes the missing version
+    // The parent arrives late; B's next sync takes it without A doing anything.
+    fs::rename(&parked, &original).unwrap();
     let report = b.core.refresh_sync().unwrap();
     assert!(report.problems.is_empty(), "{:?}", report.problems);
     assert_eq!(b.game(adopted.game.id).versions.len(), 3);

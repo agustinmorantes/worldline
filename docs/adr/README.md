@@ -14,3 +14,4 @@ Each record states a decision, the options it was weighed against, and what foll
 | [0008](0008-live-saves-change-atomically-or-not-at-all.md) | Live saves change atomically or not at all |
 | [0009](0009-game-overlay-is-a-separate-window-driven-from-rust.md) | The game overlay is a separate window, driven from Rust |
 | [0010](0010-icons-may-be-fetched-from-steam.md) | Game icons may be fetched from Steam |
+| [0012](0012-full-sync-reads-and-pushes-only-changed-games.md) | A full sync reads and pushes only the games that changed |

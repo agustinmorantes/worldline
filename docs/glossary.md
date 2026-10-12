@@ -73,6 +73,9 @@ What a device is (desktop, laptop or handheld), chosen by the user and published
 The shared store in a cloud-synced folder, through which devices exchange history.
 _Avoid_: cloud, server
 
+**Game stamp**:
+What a device has published of a game, used by other devices to notice changes and identify data still arriving.
+
 **Active version**:
 The version a device's live saves currently correspond to, per slot. It is a per-device fact, never shared history.
 _Avoid_: current version, HEAD

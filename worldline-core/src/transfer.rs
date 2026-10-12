@@ -37,6 +37,19 @@ pub enum Heal<'a> {
     All,
 }
 
+impl Heal<'_> {
+    /// Whether a version `dst` already holds gets its chunks re-checked.
+    fn covers(self, version: &VersionMeta) -> bool {
+        match self {
+            Heal::None => false,
+            Heal::Recent { since, pulled } => {
+                version.created_at >= since || pulled.contains(&version.uuid)
+            }
+            Heal::All => true,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, PartialEq, Eq)]
 pub struct TransferReport {
     /// Versions newly published to the destination.
@@ -186,14 +199,7 @@ impl<'a> Transfer<'a> {
                 }
                 let already = present.contains(&version.uuid);
                 let retired = markers.contains_key(&version.uuid);
-                let check_chunks = !retired
-                    && match (already, heal) {
-                        (false, _) | (true, Heal::All) => true,
-                        (true, Heal::Recent { since, pulled }) => {
-                            version.created_at >= since || pulled.contains(&version.uuid)
-                        }
-                        (true, Heal::None) => false,
-                    };
+                let check_chunks = !retired && (!already || heal.covers(version));
                 if check_chunks && let Err(error) = self.copy_chunks(version) {
                     if self.completeness == Completeness::Complete {
                         return Err(
@@ -238,6 +244,36 @@ impl<'a> Transfer<'a> {
             }
         }
         Ok(present)
+    }
+
+    /// Heals a game whose metadata `dst` already holds, without reading it:
+    /// re-checks the chunks `heal` asks for of the `held` versions, and the
+    /// icon when the game changed as recently as those versions.
+    pub fn heal_held(
+        &mut self,
+        game: &GameRecord,
+        held: &HashSet<Uuid>,
+        markers: &HashMap<Uuid, RetirementMarker>,
+        heal: Heal<'_>,
+    ) {
+        let icon = match heal {
+            Heal::None => false,
+            Heal::Recent { since, .. } => game.meta.updated_at >= since,
+            Heal::All => true,
+        };
+        if icon {
+            // Like chunks, an icon that can't be healed now is healed later.
+            let _ = self.copy_icon(&game.meta);
+        }
+        for version in game.versions().filter(|version| {
+            held.contains(&version.uuid)
+                && !markers.contains_key(&version.uuid)
+                && heal.covers(version)
+        }) {
+            // As in `copy_game`, a held version whose chunks can't be healed
+            // stays published; a later run heals it.
+            let _ = self.copy_chunks(version);
+        }
     }
 
     /// `src`'s icon of the game when it is the one `meta` names.

@@ -3,11 +3,12 @@
 
 use crate::error::ErrorKind;
 use crate::index::Pointer;
-use crate::store::{self, GameRecord, Store, read_json, write_json};
+use crate::store::{self, GameRecord, RetirementMarker, Store, VersionMeta, read_json, write_json};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use uuid::Uuid;
@@ -39,6 +40,186 @@ pub struct DeviceState {
     pub device_uuid: Uuid,
     pub updated_at: DateTime<Utc>,
     pub games: HashMap<Uuid, DeviceGameState>,
+    /// What this device's verified pushes put on the remote, per game
+    /// (ADR 0012). `None` from devices that don't publish them: readers then
+    /// read every game.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamps: Option<HashMap<Uuid, GameStamp>>,
+}
+
+/// One game as a device last pushed it. Readers use it to skip games that
+/// didn't change and to tell whether what the stamp describes has arrived.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GameStamp {
+    /// Hash of the pushed game, its markers and which of its versions have
+    /// screenshots. Only a hint that something changed.
+    pub digest: String,
+    pub updated_at: DateTime<Utc>,
+    /// Sticky deletion is independent of which metadata timestamp wins.
+    #[serde(default)]
+    pub deleted: bool,
+    /// Deleted slots and the versions their deletion observed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deleted_slots: BTreeMap<Uuid, BTreeSet<Uuid>>,
+    pub slots: BTreeMap<Uuid, DateTime<Utc>>,
+    pub tracked_dirs: BTreeMap<Uuid, DateTime<Utc>>,
+    /// Versions no other version descends from: with their ancestors, all of them.
+    pub tips: BTreeSet<Uuid>,
+    /// Versions edited since they were created (tags), at their `updated_at`.
+    pub edited: BTreeMap<Uuid, DateTime<Utc>>,
+    /// Versions whose activity (`last_played_at`) has been filled in.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub played: BTreeSet<Uuid>,
+    /// Unretired versions whose screenshots were pushed. A screenshot of a
+    /// different version cannot satisfy this expectation.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub screenshots: BTreeSet<Uuid>,
+}
+
+impl GameStamp {
+    /// `game` as this device holds it, with its retirement `markers`, the
+    /// versions with a screenshot to push (`screenshots`) and those retired
+    /// anywhere (`retired`), whose screenshots aren't pulled.
+    pub fn of(
+        game: &GameRecord,
+        markers: &HashMap<Uuid, RetirementMarker>,
+        screenshots: &BTreeSet<Uuid>,
+        retired: &HashMap<Uuid, RetirementMarker>,
+    ) -> Result<Self> {
+        let mut canonical = game.clone();
+        canonical.tracked_dirs.sort_by_key(|dir| dir.uuid);
+        let markers: BTreeMap<Uuid, &RetirementMarker> = markers
+            .iter()
+            .filter(|(_, marker)| marker.game_uuid == game.meta.uuid)
+            .map(|(uuid, marker)| (*uuid, marker))
+            .collect();
+        let mut hasher = Sha256::new();
+        hasher.update(serde_json::to_vec(&(&canonical, &markers, screenshots))?);
+        let parents: HashSet<Uuid> = game.versions().filter_map(|v| v.parent_uuid).collect();
+        Ok(Self {
+            digest: store::format_hash(&hasher.finalize()),
+            updated_at: game.meta.updated_at,
+            deleted: game.meta.deleted_at.is_some(),
+            deleted_slots: game
+                .slots
+                .iter()
+                .filter(|slot| slot.meta.deleted_at.is_some())
+                .map(|slot| {
+                    (
+                        slot.meta.uuid,
+                        slot.meta.seen_versions.iter().copied().collect(),
+                    )
+                })
+                .collect(),
+            slots: game
+                .slots
+                .iter()
+                .map(|slot| (slot.meta.uuid, slot.meta.updated_at))
+                .collect(),
+            tracked_dirs: game
+                .tracked_dirs
+                .iter()
+                .map(|dir| (dir.uuid, dir.updated_at))
+                .collect(),
+            tips: game
+                .versions()
+                .map(|v| v.uuid)
+                .filter(|uuid| !parents.contains(uuid))
+                .collect(),
+            edited: game
+                .versions()
+                .filter(|v| v.updated_at > v.created_at)
+                .map(|v| (v.uuid, v.updated_at))
+                .collect(),
+            played: game
+                .versions()
+                .filter(|v| v.last_played_at.is_some())
+                .map(|v| v.uuid)
+                .collect(),
+            screenshots: screenshots
+                .iter()
+                .filter(|uuid| !retired.contains_key(uuid))
+                .copied()
+                .collect(),
+        })
+    }
+
+    /// The versions the stamp describes as `game` holds them, when it holds
+    /// every one: each tip with its ancestors.
+    fn versions_in<'a>(&self, game: &'a GameRecord) -> Option<Vec<&'a VersionMeta>> {
+        let versions: HashMap<Uuid, &VersionMeta> = game.versions().map(|v| (v.uuid, v)).collect();
+        let mut found = HashMap::new();
+        for tip in &self.tips {
+            let mut current = Some(*tip);
+            let mut chain = HashSet::new();
+            while let Some(uuid) = current {
+                if !chain.insert(uuid) {
+                    return None;
+                }
+                if found.contains_key(&uuid) {
+                    break;
+                }
+                let version = versions.get(&uuid)?;
+                found.insert(uuid, *version);
+                current = version.parent_uuid;
+            }
+        }
+        Some(found.into_values().collect())
+    }
+
+    /// Whether `game`, as held here with screenshots of the versions in
+    /// `shots`, has every screenshot the stamp's versions were pushed with,
+    /// leaving out versions retired in `markers`.
+    pub fn screenshots_arrived(
+        &self,
+        game: &GameRecord,
+        shots: &BTreeSet<Uuid>,
+        markers: &HashMap<Uuid, RetirementMarker>,
+    ) -> bool {
+        let versions: HashSet<Uuid> = game.versions().map(|v| v.uuid).collect();
+        self.screenshots.iter().all(|uuid| {
+            markers.contains_key(uuid) || (versions.contains(uuid) && shots.contains(uuid))
+        })
+    }
+
+    /// Whether `game`, as read from the remote, holds everything the stamp
+    /// describes or newer: missing or older metadata means it hasn't arrived.
+    pub fn arrived_in(&self, game: &GameRecord) -> bool {
+        if self.versions_in(game).is_none() {
+            return false;
+        }
+        let versions: HashMap<Uuid, &VersionMeta> = game.versions().map(|v| (v.uuid, v)).collect();
+        game.meta.updated_at >= self.updated_at
+            && (!self.deleted || game.meta.deleted_at.is_some())
+            && self.deleted_slots.iter().all(|(uuid, seen)| {
+                game.slots.iter().any(|slot| {
+                    slot.meta.uuid == *uuid
+                        && slot.meta.deleted_at.is_some()
+                        && seen
+                            .iter()
+                            .all(|version| slot.meta.seen_versions.contains(version))
+                })
+            })
+            && self.slots.iter().all(|(uuid, at)| {
+                game.slots
+                    .iter()
+                    .any(|slot| slot.meta.uuid == *uuid && slot.meta.updated_at >= *at)
+            })
+            && self.tracked_dirs.iter().all(|(uuid, at)| {
+                game.tracked_dirs
+                    .iter()
+                    .any(|dir| dir.uuid == *uuid && dir.updated_at >= *at)
+            })
+            && self
+                .edited
+                .iter()
+                .all(|(uuid, at)| versions.get(uuid).is_some_and(|v| v.updated_at >= *at))
+            && self.played.iter().all(|uuid| {
+                versions
+                    .get(uuid)
+                    .is_some_and(|v| v.last_played_at.is_some())
+            })
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +252,7 @@ impl DeviceState {
             device_uuid,
             updated_at: Utc::now(),
             games,
+            stamps: None,
         }
     }
 

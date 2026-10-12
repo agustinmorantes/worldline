@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -202,13 +202,13 @@ pub struct RetirementMarker {
     pub retired_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SlotRecord {
     pub meta: SlotMeta,
     pub versions: Vec<VersionMeta>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameRecord {
     pub meta: GameMeta,
     pub tracked_dirs: Vec<TrackedDirMeta>,
@@ -271,6 +271,12 @@ impl Store {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// When the store was created: a store recreated at the same path is
+    /// another store.
+    pub fn created_at(&self) -> Result<DateTime<Utc>> {
+        Ok(read_json::<StoreMeta>(&self.root.join(METADATA))?.created_at)
     }
 
     pub fn game_dir(&self, game_slug: &str) -> PathBuf {
@@ -374,6 +380,15 @@ impl Store {
             .into_iter()
             .filter_map(|dir| read_entity::<GameMeta>(&dir))
             .filter(game_loadable)
+            .collect())
+    }
+
+    /// The folder names under `games/` that could hold a game, from one
+    /// listing and without reading any metadata.
+    pub fn game_slugs(&self) -> Result<Vec<String>> {
+        Ok(entity_dirs(&self.root.join("games"))?
+            .into_iter()
+            .filter_map(|dir| Some(dir.file_name()?.to_str()?.to_string()))
             .collect())
     }
 
@@ -510,6 +525,24 @@ impl Store {
             .join("versions")
             .join(version_slug)
             .join(SCREENSHOT)
+    }
+
+    /// The versions of `game` that have a screenshot here.
+    pub fn screenshot_versions(&self, game: &GameRecord) -> BTreeSet<Uuid> {
+        game.slots
+            .iter()
+            .flat_map(|slot| {
+                slot.versions.iter().filter(|version| {
+                    self.screenshot_path(
+                        &game.meta.folder_slug,
+                        &slot.meta.folder_slug,
+                        &version.folder_slug,
+                    )
+                    .exists()
+                })
+            })
+            .map(|version| version.uuid)
+            .collect()
     }
 
     /// Atomically stores the screenshot of a published version.
@@ -700,6 +733,31 @@ impl Store {
             }
         }
         Ok(markers)
+    }
+
+    /// The versions with a marker file, from one listing and without reading
+    /// the markers.
+    pub fn marker_uuids(&self) -> Result<HashSet<Uuid>> {
+        Ok(dir_entries(&self.root.join("retired-versions"))?
+            .into_iter()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                Uuid::parse_str(name.to_str()?.strip_suffix(".json")?).ok()
+            })
+            .collect())
+    }
+
+    /// One version's marker, if it is readable.
+    pub fn marker(&self, version: Uuid) -> Option<RetirementMarker> {
+        read_json::<RetirementMarker>(
+            &self
+                .root
+                .join("retired-versions")
+                .join(format!("{version}.json")),
+        )
+        .ok()
+        .filter(|marker| marker.version_uuid == version)
     }
 
     /// Write-once: an existing marker for the same version is kept.

@@ -25,6 +25,7 @@ pub mod screenshot;
 pub mod screenshot;
 pub mod store;
 pub mod sync;
+mod sync_cache;
 mod sync_loop;
 pub mod transfer;
 
