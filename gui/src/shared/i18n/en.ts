@@ -155,6 +155,27 @@ export const en = {
       undo: 'Couldn’t bring the game back.',
     },
   },
+  bulk: {
+    selected: (n: number): string => plural('en', n, { one: '# game selected', other: '# games selected' }),
+    selectedHint: (n: number): string => `${plural('en', n, { one: '# game selected', other: '# games selected' })}. Press Escape to clear.`,
+    rowSelected: 'Selected',
+    removeFromPc: (n: number): string => plural('en', n, { one: 'Remove # game from this PC', other: 'Remove # games from this PC' }),
+    skipped: (titles: string, n: number): string => `${titles} ${n === 1 ? 'stays' : 'stay'}: not in your cloud yet.`,
+    removed: (n: number): string =>
+      plural('en', n, { one: '# game is off this PC. Its history is still in your cloud.', other: '# games are off this PC. Their history is still in your cloud.' }),
+    deleteEverywhere: (n: number): string => plural('en', n, { one: 'Delete # game everywhere', other: 'Delete # games everywhere' }),
+    deleteTitle: (n: number): string => plural('en', n, { one: 'Delete # game everywhere?', other: 'Delete # games everywhere?' }),
+    deleteBody: 'They leave every device. The save files themselves stay where they are. You can restore them from Recently deleted for 30 days.',
+    delete: (n: number): string => plural('en', n, { one: 'Delete # game', other: 'Delete # games' }),
+    deleted: (n: number): string => plural('en', n, { one: '# game deleted', other: '# games deleted' }),
+    clear: 'Clear selection',
+    undoHint: 'They’re still in Settings, under Recently deleted.',
+    failed: {
+      remove: (titles: string): string => `Couldn’t remove ${titles}.`,
+      delete: (titles: string): string => `Couldn’t delete ${titles}.`,
+      undo: (titles: string): string => `Couldn’t bring back ${titles}.`,
+    },
+  },
   addGames: {
     title: 'Add games',
     inCloud: 'In your cloud',

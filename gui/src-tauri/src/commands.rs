@@ -67,6 +67,42 @@ async fn delete_game(id: i32, core: State<'_, Arc<WorldlineCore>>) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
+/// Deletes several games everywhere, with one push; a result per game.
+#[tauri::command]
+async fn delete_games(
+    ids: Vec<i32>,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<Vec<GameResult>, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.delete_games(&ids))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+/// Recovers several deleted games (the batch undo), with one push.
+#[tauri::command]
+async fn recover_games(
+    uuids: Vec<uuid::Uuid>,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<Vec<GameResult>, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.recover_games(&uuids))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
+/// Removes several games from this PC; those not in the cloud are skipped.
+#[tauri::command]
+async fn untrack_games(
+    ids: Vec<i32>,
+    core: State<'_, Arc<WorldlineCore>>,
+) -> Result<Vec<GameResult>, Failure> {
+    let core = Arc::clone(&core);
+    off_main(move || core.untrack_games(&ids))
+        .await
+        .map_err(|e| Failure::from(&e))
+}
+
 /// Games and slots deleted everywhere that can still be recovered (ADR 0011).
 #[tauri::command]
 async fn recently_deleted(core: State<'_, Arc<WorldlineCore>>) -> Result<Vec<DeletedItem>, String> {
@@ -559,11 +595,14 @@ pub fn add_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         get_unrecorded_changes,
         save_game,
         delete_game,
+        delete_games,
         recently_deleted,
         recover_game,
+        recover_games,
         recover_slot,
         purge_deleted,
         untrack_game,
+        untrack_games,
         create_slot,
         switch_slot,
         dismiss_linked_slots,

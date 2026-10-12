@@ -153,6 +153,27 @@ export const es: Messages = {
       undo: 'No se pudo recuperar el juego.',
     },
   },
+  bulk: {
+    selected: (n) => plural('es', n, { one: '# juego seleccionado', other: '# juegos seleccionados' }),
+    selectedHint: (n) => `${plural('es', n, { one: '# juego seleccionado', other: '# juegos seleccionados' })}. Pulsa Escape para quitar la selección.`,
+    rowSelected: 'Seleccionado',
+    removeFromPc: (n) => plural('es', n, { one: 'Quitar # juego de esta PC', other: 'Quitar # juegos de esta PC' }),
+    skipped: (titles, n) => (n === 1 ? `${titles} se queda: aún no está en tu nube.` : `${titles} se quedan: aún no están en tu nube.`),
+    removed: (n) =>
+      plural('es', n, { one: '# juego ya no está en esta PC. Su historial sigue en tu nube.', other: '# juegos ya no están en esta PC. Su historial sigue en tu nube.' }),
+    deleteEverywhere: (n) => plural('es', n, { one: 'Borrar # juego en todas partes', other: 'Borrar # juegos en todas partes' }),
+    deleteTitle: (n) => plural('es', n, { one: '¿Borrar # juego en todas partes?', other: '¿Borrar # juegos en todas partes?' }),
+    deleteBody: 'Salen de todos los dispositivos. Los archivos de partida se quedan donde están. Puedes restaurarlos desde Borrados recientemente durante 30 días.',
+    delete: (n) => plural('es', n, { one: 'Borrar # juego', other: 'Borrar # juegos' }),
+    deleted: (n) => plural('es', n, { one: '# juego borrado', other: '# juegos borrados' }),
+    clear: 'Quitar la selección',
+    undoHint: 'Siguen en Configuración, en Borrados recientemente.',
+    failed: {
+      remove: (titles) => `No se pudo quitar ${titles}.`,
+      delete: (titles) => `No se pudo borrar ${titles}.`,
+      undo: (titles) => `No se pudo recuperar ${titles}.`,
+    },
+  },
   addGames: {
     title: 'Agregar juegos',
     inCloud: 'En tu nube',

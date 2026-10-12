@@ -8,6 +8,7 @@ import type { DeviceMetadata } from './bindings/DeviceMetadata';
 import type { FullGame } from './bindings/FullGame';
 import type { Game } from './bindings/Game';
 import type { GameForm } from './bindings/GameForm';
+import type { GameResult } from './bindings/GameResult';
 import type { HistoryBundleSummary } from './bindings/HistoryBundleSummary';
 import type { HistoryTransferReport } from './bindings/HistoryTransferReport';
 import type { IconSource } from './bindings/IconSource';
@@ -40,6 +41,10 @@ export const saveGame = (game: GameForm, dirs: string[] | null, allowLarge = fal
 export const deleteGame = (id: number): Promise<void> => invoke('delete_game', { id });
 /** Stops tracking the game on this device; its history stays in the remote (ADR 0006). */
 export const untrackGame = (id: number): Promise<void> => invoke('untrack_game', { id });
+/** `deleteGame` for several games, with one sync push. A result per game, in order, each once. */
+export const deleteGames = (ids: number[]): Promise<GameResult[]> => invoke('delete_games', { ids });
+/** `untrackGame` for several games, with one sync push; games not in the cloud come back `not_in_cloud`. */
+export const untrackGames = (ids: number[]): Promise<GameResult[]> => invoke('untrack_games', { ids });
 /** `null` goes back to the hue from the icon. */
 export const setGameAccent = (gameId: number, hue: number | null): Promise<Game> =>
   invoke('set_game_accent', { gameId, hue });
@@ -64,6 +69,8 @@ export const recentlyDeleted = (): Promise<DeletedItem[]> => invoke('recently_de
 /** Fails with `name_taken` or `folder_taken` when the game no longer fits this library. */
 /** Whether the game is back in this PC's library; one this PC doesn't track stays in the cloud. */
 export const recoverGame = (uuid: string): Promise<boolean> => invoke('recover_game', { uuid });
+/** `recoverGame` for several games (the batch undo), with one sync push. Ones already back count as `done`. */
+export const recoverGames = (uuids: string[]): Promise<GameResult[]> => invoke('recover_games', { uuids });
 export const recoverSlot = (uuid: string): Promise<void> => invoke('recover_slot', { uuid });
 /** Deletes a game or slot for good, ahead of its window. */
 export const purgeDeleted = (uuid: string): Promise<void> => invoke('purge_deleted', { uuid });

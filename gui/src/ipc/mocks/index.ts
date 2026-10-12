@@ -7,6 +7,7 @@ import { makeGame, makeSlot, makeTrackedDir } from '../builders';
 import type { DeviceKind } from '../bindings/DeviceKind';
 import type { Failure } from '../bindings/Failure';
 import type { FullGame } from '../bindings/FullGame';
+import type { GameResult } from '../bindings/GameResult';
 import type { MonitoringSettings } from '../bindings/MonitoringSettings';
 import type { PruningPreview } from '../bindings/PruningPreview';
 import type { RetentionSettings } from '../bindings/RetentionSettings';
@@ -185,6 +186,26 @@ function backendCommand(state: Fixture, cmd: string, args: Args): unknown {
     case 'untrack_game':
       state.games = state.games.filter((g) => g.id !== args.id);
       return null;
+    case 'delete_games':
+    case 'untrack_games': {
+      // Each game once, like the core; only games already in the cloud leave this PC.
+      const cloud = typeof state.syncReport === 'object' ? state.syncReport.remote_games.map((g) => g.uuid) : [];
+      return [...new Set(args.ids as number[])].map((id): GameResult => {
+        const found = state.games.find((g) => g.id === id);
+        if (found === undefined) return { uuid: null, game_id: id, title: '', outcome: { outcome: 'not_found' } };
+        const result = { uuid: found.uuid, game_id: id, title: found.title };
+        if (cmd === 'untrack_games' && !cloud.includes(found.uuid)) return { ...result, outcome: { outcome: 'not_in_cloud' } };
+        backendCommand(state, cmd === 'delete_games' ? 'delete_game' : 'untrack_game', { id });
+        return { ...result, outcome: { outcome: 'done' } };
+      });
+    }
+    case 'recover_games':
+      return [...new Set(args.uuids as string[])].map((uuid): GameResult => {
+        const title = binned.get(uuid)?.title ?? state.games.find((g) => g.uuid === uuid)?.title;
+        if (title === undefined) return { uuid, game_id: null, title: '', outcome: { outcome: 'not_found' } };
+        backendCommand(state, 'recover_game', { uuid });
+        return { uuid, game_id: state.games.find((g) => g.uuid === uuid)?.id ?? null, title, outcome: { outcome: 'done' } };
+      });
     case 'recently_deleted':
       return structuredClone(state.deleted ?? []);
     case 'recover_game': {

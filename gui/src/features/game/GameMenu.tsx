@@ -31,7 +31,7 @@ const refresh = (id: number): void => {
 type Open = 'rename' | 'folders' | 'delete' | null;
 
 /** What both menus render items with: the context menu's parts take the same props as the dropdown's. */
-type MenuParts = Pick<typeof DropdownMenu, 'Item' | 'Sub' | 'SubTrigger' | 'SubContent' | 'Portal' | 'RadioGroup' | 'RadioItem' | 'ItemIndicator' | 'Separator'>;
+export type MenuParts = Pick<typeof DropdownMenu, 'Label' | 'Item' | 'Sub' | 'SubTrigger' | 'SubContent' | 'Portal' | 'RadioGroup' | 'RadioItem' | 'ItemIndicator' | 'Separator'>;
 
 interface GameMenuProps {
   game: FullGame;
@@ -58,15 +58,18 @@ export function GameMenu({ game, inCloud }: GameMenuProps): ReactElement {
   );
 }
 
-/** Right-clicking the `ContextMenu.Trigger` among `children` opens the game's menu. */
-export function GameContextMenu({ game, inCloud, children }: GameMenuProps & { children: ReactNode }): ReactElement {
+/**
+ * Right-clicking the `ContextMenu.Trigger` among `children` opens the game's menu, or `bulk`'s items
+ * instead while the game is one of several picked.
+ */
+export function GameContextMenu({ game, inCloud, bulk, children }: GameMenuProps & { bulk?: (Menu: MenuParts) => ReactElement; children: ReactNode }): ReactElement {
   const { items, dialogs } = useGameMenu(game, inCloud);
   return (
     <>
       <ContextMenu.Root>
         {children}
         <ContextMenu.Portal>
-          <ContextMenu.Content className={`${popover} w-[240px]`}>{items(ContextMenu)}</ContextMenu.Content>
+          <ContextMenu.Content className={`${popover} w-[240px]`}>{(bulk ?? items)(ContextMenu)}</ContextMenu.Content>
         </ContextMenu.Portal>
       </ContextMenu.Root>
       {dialogs}
