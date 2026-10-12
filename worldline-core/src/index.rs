@@ -402,14 +402,21 @@ fn upsert_game(
         diesel::delete(games::table.filter(games::uuid.eq(meta.uuid.to_string()))).execute(conn)?;
         return Ok(());
     }
-    // An icon that hasn't arrived yet is shown once it has.
-    let icon_path = meta
-        .icon_sha256
-        .as_ref()
-        .map(|_| store.icon_path(&meta.folder_slug))
-        .filter(|path| path.is_file())
-        .map(|path| path.to_string_lossy().into_owned());
-    let icon_sha256 = icon_path.as_ref().and(meta.icon_sha256.as_ref());
+    // An icon that hasn't arrived yet is shown once it has; until then an
+    // older one at the same path is not shown under the new one's revision.
+    let icon_sha256 = meta.icon_sha256.as_ref().filter(|wanted| {
+        store
+            .read_icon(&meta.folder_slug)
+            .ok()
+            .flatten()
+            .is_some_and(|png| crate::icon::sha256(&png) == **wanted)
+    });
+    let icon_path = icon_sha256.map(|_| {
+        store
+            .icon_path(&meta.folder_slug)
+            .to_string_lossy()
+            .into_owned()
+    });
     let accent_hue = i32::from(
         meta.accent_hue
             .unwrap_or_else(|| crate::icon::fallback_hue(meta.uuid)),

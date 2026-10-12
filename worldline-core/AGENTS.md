@@ -19,7 +19,7 @@ This file provides guidance to coding agents working in `worldline-core/`.
 - `src/screenshot.rs` - window capture through Windows.Graphics.Capture (`screenshot_unsupported.rs` on other platforms)
 - `src/core_facade.rs` - `WorldlineCore`, including guarded mutation and the sync refresh flow
 - `src/install_scanner.rs` - installed-game scanning and manifest handling
-- `migrations/` - one squashed initial migration
+- `migrations/` - the squashed initial schema plus later migrations. An index change is a new migration that leaves applied ones untouched, so existing databases upgrade in place; a database that has applied a migration missing from this folder is moved aside on open (`move_aside_old_data`)
 
 ## Design Rules
 

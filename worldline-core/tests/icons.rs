@@ -637,3 +637,34 @@ fn a_database_from_before_the_icon_revision_gains_it_in_place() {
     let device = Device { core, data, saves };
     assert!(revision(&device, &uuid).is_some());
 }
+
+#[test]
+fn an_old_icon_is_not_shown_as_a_new_one_that_has_not_arrived() {
+    let remote = tempfile::tempdir().unwrap();
+    let a = Device::synced(remote.path());
+    a.write("save.dat", "1");
+    let id = a.add_game("Replaced").game.id;
+    set_icon(&a, id, RED);
+    a.core.refresh_sync().unwrap();
+    let uuid = a.game(id).game.uuid;
+    let b = Device::synced(remote.path());
+    b.core
+        .adopt_remote_game(Uuid::parse_str(&uuid).unwrap())
+        .unwrap();
+    assert_eq!(icon_color(&b, &uuid), Some(RED));
+
+    // A picks a new icon; its metadata reaches B before the icon does.
+    set_icon(&a, id, GREEN);
+    a.core.refresh_sync().unwrap();
+    let on_a = a.game(id).game;
+    fs::remove_file(remote_icon(remote.path(), &on_a)).unwrap();
+    b.core.refresh_sync().unwrap();
+    assert_eq!(meta(&b, &uuid).icon_sha256, on_a.icon_sha256);
+    assert_eq!(revision(&b, &uuid), None, "the old icon is not the new one");
+
+    // The new icon arrives on a later sync and is shown under its revision.
+    a.core.refresh_sync().unwrap();
+    b.core.refresh_sync().unwrap();
+    assert_eq!(revision(&b, &uuid), on_a.icon_sha256);
+    assert_eq!(icon_color(&b, &uuid), Some(GREEN));
+}
