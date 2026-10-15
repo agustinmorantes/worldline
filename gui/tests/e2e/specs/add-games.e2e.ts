@@ -32,6 +32,13 @@ async function syncAndReload(): Promise<void> {
   await browser.refresh();
 }
 
+/** Syncs from the sidebar card: a reload would get the backend's cached startup report. */
+async function syncNow(): Promise<void> {
+  const card = $('button[aria-label^="Sync now"]');
+  await card.click();
+  await browser.waitUntil(async () => (await card.getAttribute('aria-busy')) === 'false', { timeoutMsg: 'the sync did not finish' });
+}
+
 // One journey: add a game from its save folder, export its history, remove it from this
 // PC, then bring it back by importing the bundle.
 describe('Add games', () => {
@@ -72,7 +79,7 @@ describe('Add games', () => {
   });
 
   it('removes the game from this PC', async () => {
-    await syncAndReload();
+    await syncNow();
     await expect($('h1=Hades')).toBeDisplayed();
     await openMenu();
     const remove = menuItem('Remove from this PC');

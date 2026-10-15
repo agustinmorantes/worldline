@@ -33,6 +33,8 @@ zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 [features]
 # Exports the GUI-facing types as TypeScript (see `../.cargo/config.toml`).
 ts = ["dep:ts-rs"]
+# Test builds: no network, so game icons and the Ludusavi manifest are never downloaded.
+offline = []
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

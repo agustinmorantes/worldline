@@ -10,15 +10,14 @@ function invoke<T>(cmd: string, args: unknown = {}): Promise<T> {
   }, cmd, args) as Promise<T>;
 }
 
+// One round trip: per-row WebDriver calls fail on slow CI runners while the page reloads.
 async function titles(): Promise<string[]> {
-  const result: string[] = [];
-  const rows = await browser.$$('aside[aria-label="Library"] a');
-  for (const row of rows) {
-    const text = await row.getText();
-    const title = ['Recent game', 'Old import'].find((title) => text.includes(title));
-    if (title !== undefined) result.push(title);
-  }
-  return result;
+  interface Doc { querySelectorAll: (selector: string) => ArrayLike<{ textContent: string | null }> }
+  const texts = await (browser.execute(() => {
+    const doc = (globalThis as unknown as { document: Doc }).document;
+    return Array.from(doc.querySelectorAll('aside[aria-label="Library"] a'), (row) => row.textContent ?? '').join('\n');
+  }) as unknown as Promise<string>);
+  return texts.split('\n').flatMap((text) => ['Recent game', 'Old import'].filter((title) => text.includes(title)));
 }
 
 describe('Imported save activity', () => {

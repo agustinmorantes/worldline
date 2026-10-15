@@ -44,8 +44,9 @@ tauri-plugin-global-shortcut = "2.4"
 
 [features]
 # Test build for WebdriverIO: `WORLDLINE_E2E_DATA_DIR` overrides the data directory and
-# native dialogs are stubbed (pickers return `WORLDLINE_E2E_DIALOG_PATH`, confirms accept).
-e2e = []
+# native dialogs are stubbed (pickers return `WORLDLINE_E2E_DIALOG_PATH`, confirms accept),
+# and nothing is downloaded.
+e2e = ["worldline-core/offline"]
 
 [dev-dependencies]
 tauri = { version = "2.12", features = ["test"] }

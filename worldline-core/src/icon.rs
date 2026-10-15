@@ -240,6 +240,9 @@ pub fn steam_icon(
 
 /// Downloads `url` with a short timeout.
 pub fn download(url: &str) -> Result<Vec<u8>> {
+    if cfg!(feature = "offline") {
+        anyhow::bail!("Offline build: {url} not downloaded");
+    }
     let response = ureq::get(url)
         .timeout(Duration::from_secs(10))
         .call()

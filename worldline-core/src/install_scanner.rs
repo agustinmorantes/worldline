@@ -124,7 +124,7 @@ fn load_manifest(cache_dir: &Path) -> Manifest {
         }
     }
 
-    if !use_cache {
+    if !use_cache && !cfg!(feature = "offline") {
         let etag = if cache_etag.exists() {
             fs::read_to_string(&cache_etag)
                 .unwrap_or_default()
