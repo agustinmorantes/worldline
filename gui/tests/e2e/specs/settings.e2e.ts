@@ -29,6 +29,8 @@ describe('Settings', () => {
 
   before(async () => {
     await $('button=Skip, I’ll explore').click();
+    // The tour's backdrop takes clicks until its exit animation ends.
+    await $('[role="dialog"]').waitForExist({ reverse: true });
     // The sync folder can't live inside the data directory.
     remote = mkdtempSync(path.join(os.tmpdir(), 'worldline-e2e-remote-'));
     await library().$('a*=Settings').click();
