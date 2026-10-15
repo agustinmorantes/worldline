@@ -6,7 +6,7 @@
 use crate::error::ErrorKind;
 use crate::history::{History, overlapping_paths, same_path};
 use crate::store::{
-    Deletion, GameRecord, Store, normalize_display_name, atomic_replace, read_json, write_json,
+    Deletion, GameRecord, Store, atomic_replace, normalize_display_name, read_json, write_json,
 };
 use crate::transfer::{Completeness, Heal, Transfer};
 use anyhow::{Context, Result, bail};
