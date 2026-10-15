@@ -25,17 +25,26 @@ export const useSyncSettings = (): UseQueryResult<SyncSettings> => {
   return useQuery({ queryKey: ['sync-settings'], queryFn: getSyncSettings });
 };
 
+let startupShared = false;
+
+/** The backend caches its startup report for the whole run: refetching it would undo later changes. */
+function nextSync(): Promise<SyncReport> {
+  if (startupShared) return refreshSync();
+  startupShared = true;
+  return initialSync();
+}
+
 /**
  * The last sync report. The first request shares the backend's startup sync;
  * the cache is then fed by the backend's periodic `sync-complete` events.
- * Explicit refreshes run a new sync. Disabled while sync is off.
+ * Explicit refreshes and invalidations run a new sync. Disabled while sync is off.
  */
 export const useSyncReport = (): UseQueryResult<SyncReport> => {
   const { data: settings } = useSyncSettings();
   const remote = settings?.remote_path;
   return useQuery({
     queryKey: ['sync-report'],
-    queryFn: () => initialSync().then(
+    queryFn: () => nextSync().then(
       (report) => { setSyncOutcome(null); return report; },
       (err: unknown) => { setSyncOutcome(err); throw err; },
     ),
