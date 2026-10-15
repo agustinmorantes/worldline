@@ -192,7 +192,13 @@ export interface FileFilter {
 export const pickFolder = (title: string): Promise<string | null> => invoke('pick_folder', { title });
 export const pickFile = (title: string, filters: FileFilter[]): Promise<string | null> =>
   invoke('pick_file', { title, filters });
+// Windows rejects these in file names; titles like "Hollow Knight: Silksong" have them.
 export const pickSavePath = (title: string, fileName: string, filters: FileFilter[]): Promise<string | null> =>
-  invoke('pick_save_path', { title, fileName, filters });
+  invoke('pick_save_path', {
+    title,
+    // eslint-disable-next-line no-control-regex
+    fileName: fileName.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').replace(/\s+/g, ' ').trim(),
+    filters,
+  });
 export const confirm = (title: string, message: string): Promise<boolean> =>
   invoke('confirm', { title, message });

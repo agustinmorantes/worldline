@@ -1265,7 +1265,7 @@ fn move_file(source: &Path, destination: &Path, replace: bool) -> io::Result<()>
 }
 
 #[cfg(windows)]
-fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
     move_file(source, destination, true)
 }
 
@@ -1275,7 +1275,7 @@ pub fn rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(source, destination)
 }
 

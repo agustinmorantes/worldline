@@ -6,7 +6,7 @@
 use crate::error::ErrorKind;
 use crate::history::{History, overlapping_paths, same_path};
 use crate::store::{
-    Deletion, GameRecord, Store, normalize_display_name, read_json, rename_no_replace, write_json,
+    Deletion, GameRecord, Store, normalize_display_name, atomic_replace, read_json, write_json,
 };
 use crate::transfer::{Completeness, Heal, Transfer};
 use anyhow::{Context, Result, bail};
@@ -206,7 +206,7 @@ pub fn inspect(path: &Path) -> Result<HistoryBundleSummary> {
     Ok(summary(&open(path)?))
 }
 
-/// Writes one game into a new zip file. The caller holds the repository lock.
+/// Writes one game into a zip file, replacing any file already there. The caller holds the repository lock.
 pub fn export(
     history: &History,
     game_id: i32,
@@ -240,12 +240,6 @@ fn export_record(
     mut record: GameRecord,
     destination: &Path,
 ) -> Result<HistoryTransferReport> {
-    if destination.exists() {
-        bail!(
-            "{} already exists; choose a new file name",
-            destination.display()
-        );
-    }
     let parent = destination
         .parent()
         .context("The destination has no parent folder")?;
@@ -273,7 +267,7 @@ fn export_record(
         )?;
         let summary = summary(&load(&staging, destination)?);
         pack(&staging, &staging_zip)?;
-        rename_no_replace(&staging_zip, destination).with_context(|| {
+        atomic_replace(&staging_zip, destination).with_context(|| {
             format!("Failed to publish the bundle at {}", destination.display())
         })?;
         Ok(summary)

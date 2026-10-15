@@ -18,13 +18,12 @@ fn exported(device: &Device) -> (tempfile::TempDir, std::path::PathBuf, i32) {
         .export_game_history(game.game.id, &path)
         .unwrap();
     assert_eq!(report.version_count, 2);
-    assert!(
-        device
-            .core
-            .export_game_history(game.game.id, &path)
-            .is_err(),
-        "never overwrites"
-    );
+    fs::write(&path, "stale").unwrap();
+    device
+        .core
+        .export_game_history(game.game.id, &path)
+        .expect("replaces an existing file");
+    assert_ne!(fs::read(&path).unwrap(), b"stale");
     assert_eq!(
         fs::read_dir(out.path()).unwrap().count(),
         1,

@@ -38,6 +38,7 @@ describe('ipc commands', () => {
     ['set_overlay_config', () => commands.setOverlayConfig(overlay), { config: overlay }],
     ['check_shortcut', () => commands.checkShortcut('Alt+J'), { accelerator: 'Alt+J' }],
     ['pick_save_path', () => commands.pickSavePath('Export', 'history.zip', [{ name: 'Zip', extensions: ['zip'] }]), { title: 'Export', fileName: 'history.zip', filters: [{ name: 'Zip', extensions: ['zip'] }] }],
+    ['pick_save_path', () => commands.pickSavePath('Export', 'Hollow Knight: Silksong history.zip', []), { title: 'Export', fileName: 'Hollow Knight Silksong history.zip', filters: [] }],
   ])('%s', async (command, call, args) => {
     await call();
     expect(invoke).toHaveBeenCalledWith(command, args);
