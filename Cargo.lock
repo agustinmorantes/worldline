@@ -608,7 +608,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cli"
-version = "1.0.0-rc2"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6266,7 +6266,7 @@ dependencies = [
 
 [[package]]
 name = "worldline"
-version = "1.0.0-rc2"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6289,7 +6289,7 @@ dependencies = [
 
 [[package]]
 name = "worldline-core"
-version = "1.0.0-rc2"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",

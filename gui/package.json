@@ -1,7 +1,7 @@
 {
   "name": "worldline",
   "private": true,
-  "version": "1.0.0-rc2",
+  "version": "1.0.0",
   "type": "module",
   "packageManager": "bun@1.4.2",
   "scripts": {
