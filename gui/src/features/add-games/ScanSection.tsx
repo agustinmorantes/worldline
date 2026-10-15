@@ -73,7 +73,7 @@ function Results({ found, onLookAgain }: { found: InstallScannerItem[]; onLookAg
   const { land } = useShellNav();
   // The list is fixed at the scan; added games stay in it, faded.
   const [items] = useState(found);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(found.map((f) => f.title)));
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   // The run outlives this view: coming back mid-run shows it, and can't start another.
   const run = useAddRun();
   const added = run?.added ?? noneAdded;

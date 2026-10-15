@@ -24,20 +24,25 @@ test.describe('scanning', () => {
   test('shows the scan running once asked to look', async ({ page }) => {
     await page.goto('/add');
     await page.getByRole('button', { name: 'Look for installed games' }).click();
-    await expect(page.getByRole('status')).toHaveText('Looking in Steam, Epic and your save folders…');
+    await expect(page.getByRole('region', { name: 'On this PC' }).getByRole('status')).toHaveText('Looking in Steam, Epic and your save folders…');
   });
 });
 
 test.describe('scan results', () => {
   test.use({ fixture: 'scanned' });
 
-  test('offers the new games preselected and adds the chosen ones', async ({ page }) => {
+  test('starts with no games selected and adds the chosen ones', async ({ page }) => {
     await page.goto('/add');
     await page.getByRole('button', { name: 'Look for installed games' }).click();
     const scan = page.getByRole('region', { name: 'On this PC' });
     // Hades is already in the library.
     await expect(scan.getByRole('button', { name: /Hades/ })).toHaveCount(0);
-    await expect(scan.getByRole('button', { name: /Sea of Stars/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(scan.getByRole('button', { name: /Sea of Stars/ })).toHaveAttribute('aria-pressed', 'false');
+    await expect(scan.getByRole('button', { name: /Outer Wilds/ })).toHaveAttribute('aria-pressed', 'false');
+    await expect(scan.getByRole('button', { name: /Cassette Beasts/ })).toHaveAttribute('aria-pressed', 'false');
+    await expect(scan.getByRole('button', { name: 'Add games', exact: true })).toBeDisabled();
+    await expect(scan.getByRole('checkbox', { name: 'Select all' })).not.toBeChecked();
+    await scan.getByRole('checkbox', { name: 'Select all' }).check();
 
     await scan.getByRole('button', { name: /Outer Wilds/ }).click();
     await scan.getByRole('button', { name: 'Add 2 games' }).click();
@@ -62,7 +67,7 @@ test.describe('scan results', () => {
     const scan = page.getByRole('region', { name: 'On this PC' });
     await page.getByRole('button', { name: 'Look for installed games' }).click();
     const all = scan.getByRole('checkbox', { name: 'Select all' });
-    await all.uncheck();
+    await expect(all).not.toBeChecked();
     const search = scan.getByRole('searchbox');
     await search.fill('sea');
     await search.press('Control+f');
@@ -88,7 +93,7 @@ test.describe('scan results', () => {
     const scan = page.getByRole('region', { name: 'On this PC' });
     await scan.getByRole('button', { name: /Outer Wilds/ }).click();
     await scan.getByRole('button', { name: 'List view', exact: true }).click();
-    await expect(scan.getByRole('button', { name: /Outer Wilds/ })).toHaveAttribute('aria-pressed', 'false');
+    await expect(scan.getByRole('button', { name: /Outer Wilds/ })).toHaveAttribute('aria-pressed', 'true');
     await expect(scan.getByRole('button', { name: /Sea of Stars/ })).toHaveCSS('height', '52px');
     await expect.poll(() => page.evaluate(() => {
       const store = JSON.parse(localStorage.getItem('worldline-mock-store') ?? '{}') as { prefs: { scanView: string } };
@@ -111,6 +116,7 @@ test.describe('large scan', () => {
     await page.getByRole('button', { name: 'Look for installed games' }).click();
     const scan = page.getByRole('region', { name: 'On this PC' });
     const scroll = page.locator('[data-add-scroll]');
+    await scan.getByRole('checkbox', { name: 'Select all' }).check();
     const add = scan.getByRole('button', { name: 'Add 60 games' });
     await expect(scan.getByRole('button', { name: /^Game / })).toHaveCount(60);
     const inScrollport = async (): Promise<boolean> => {
