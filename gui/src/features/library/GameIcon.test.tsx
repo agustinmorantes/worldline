@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { GameIcon } from './GameIcon';
 
@@ -7,6 +7,20 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 describe('GameIcon', () => {
+  it('falls back after a failed image and retries a new path or revision', () => {
+    const { container, rerender } = render(<GameIcon title="Elden Ring" iconPath="/missing.png" />);
+    fireEvent.error(screen.getByAltText(''));
+    expect(screen.getByText('ER')).toBeInTheDocument();
+    expect(container.querySelector('img')).toBeNull();
+    rerender(<GameIcon title="Elden Ring" iconPath="/missing.png" />);
+    expect(container.querySelector('img')).toBeNull();
+    rerender(<GameIcon title="Elden Ring" iconPath="/valid.png" iconRevision="aa" />);
+    expect(container.querySelector('img')).not.toBeNull();
+    fireEvent.error(screen.getByAltText(''));
+    rerender(<GameIcon title="Elden Ring" iconPath="/valid.png" iconRevision="bb" />);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('asset:///valid.png?v=bb');
+  });
+
   it('shows the initials on the accent gradient', () => {
     const { container } = render(<GameIcon title="Elden Ring" hue={80} />);
     expect(screen.getByText('ER')).toBeInTheDocument();

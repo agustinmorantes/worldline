@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { motion } from 'motion/react';
 import { spring, useMotionReduced } from '@/shared/motion/motion';
@@ -24,6 +24,8 @@ interface GameIconProps {
  * (filled from an install in the background) settles into the tile instead of popping in. */
 export function GameIcon({ title, hue, size = 36, iconPath, iconRevision, className, style, ...data }: GameIconProps): ReactElement {
   const reduced = useMotionReduced();
+  const src = iconPath === undefined ? undefined : iconSrc(iconPath, iconRevision);
+  const [failedSrc, setFailedSrc] = useState<string>();
   const hadIconRef = useRef(iconPath !== undefined);
   const arrived = iconPath !== undefined && !hadIconRef.current && !reduced;
   useEffect(() => {
@@ -36,7 +38,7 @@ export function GameIcon({ title, hue, size = 36, iconPath, iconRevision, classN
     ...style,
   };
 
-  if (iconPath !== undefined) {
+  if (src !== undefined && src !== failedSrc) {
     // A dark tile in the game's hue, so icons with transparent corners still read as a tile.
     const h = hue ?? titleHue(title);
     return (
@@ -49,7 +51,8 @@ export function GameIcon({ title, hue, size = 36, iconPath, iconRevision, classN
         }}
       >
         <motion.img
-          src={iconSrc(iconPath, iconRevision)}
+          src={src}
+          onError={() => { setFailedSrc(src); }}
           alt=""
           className="size-full object-cover"
           draggable={false}
